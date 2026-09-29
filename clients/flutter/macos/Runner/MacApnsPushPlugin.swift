@@ -49,34 +49,43 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
     /// устройстве). Состояние держит Dart: у натива нет ни таймлайна, ни
     /// ресиптов, а дублировать их значило бы завести второй источник правды.
     ///
+    /// Ответ — имя `NativeBannerGate` из Dart (`apns_push_service.dart`):
+    /// `suppress` / `banner` (пуш обогнал sync — баннер рисует натив) / `silent`.
+    ///
     /// Fail-open по времени и по ошибке: нет канала / Flutter не ответил →
-    /// ПОКАЗАТЬ. Потерянный баннер хуже лишнего (инвариант LABA-2354).
+    /// `.silent`, т.е. не подавлять. Потерянный баннер хуже лишнего (инвариант
+    /// LABA-2354). `.banner` на fail-open НЕ даём: неизвестно, обогнал ли пуш sync,
+    /// а локальный баннер при этом не закрыт — вышло бы два.
+    enum BannerGate: String {
+        case suppress, banner, silent
+    }
+
     static func shouldSuppressBanner(
         _ userInfo: [AnyHashable: Any],
         timeout: TimeInterval = 1.5,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping (BannerGate) -> Void
     ) {
         let ch = queue.sync { channel }
-        guard let ch = ch else { return completion(false) }
+        guard let ch = ch else { return completion(.silent) }
         var payload: [String: Any] = [:]
         for key in ["room_id", "event_id", "client_name", "sender"] {
             if let value = userInfo[key] as? String { payload[key] = value }
         }
         guard payload["room_id"] != nil || payload["event_id"] != nil else {
-            return completion(false)
+            return completion(.silent)
         }
         var answered = false
-        let answer: (Bool) -> Void = { suppress in
+        let answer: (BannerGate) -> Void = { gate in
             guard !answered else { return }
             answered = true
-            completion(suppress)
+            completion(gate)
         }
         DispatchQueue.main.async {
             ch.invokeMethod("shouldSuppressBanner", arguments: payload) { reply in
-                answer((reply as? Bool) ?? false)
+                answer((reply as? String).flatMap(BannerGate.init(rawValue:)) ?? .silent)
             }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { answer(false) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { answer(.silent) }
     }
 
     /// Снять УЖЕ ПОКАЗАННЫЕ системой уведомления комнаты. Ищем по

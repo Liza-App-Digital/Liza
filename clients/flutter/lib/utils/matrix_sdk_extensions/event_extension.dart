@@ -380,6 +380,14 @@ extension LocalizedBody on Event {
     bool fromLocalStoreOnly = false,
     void Function(int)? onDownloadProgress,
   }) async {
+    // Заливка упала (`error`), а байты SDK оставил в `sendingFilePlaceholders`
+    // (`sendFileEvent` снимает их только на успехе). Сам SDK отдаёт их лишь при
+    // `isSending`, на `error` бросает «hasn't any attachment» — хотя файл вот он
+    // (#2080, найдено adversarial-verifier). Отдаём байты сами.
+    if (!getThumbnail && attachmentMxcUrl == null) {
+      final pending = room.sendingFilePlaceholders[eventId];
+      if (pending != null) return pending;
+    }
     // Инструментовка диагностики (`[MediaDiag]`): оборачиваем эффективный
     // download-callback, чтобы на СБОЕ собрать поля для классификации причины.
     // Для дефолт-пути (аудио/файлы — главный кейс Максима) снимаем полную

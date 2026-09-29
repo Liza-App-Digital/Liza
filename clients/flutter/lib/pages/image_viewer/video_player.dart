@@ -16,6 +16,7 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/bandwidth_estimator.dart';
 import 'package:liza/utils/e2ee_media_proxy.dart';
+import 'package:liza/utils/file_description.dart';
 import 'package:liza/utils/foreground_witness.dart';
 import 'package:liza/utils/idle_timeout_stream.dart';
 import 'package:liza/utils/mp4_faststart.dart';
@@ -57,7 +58,8 @@ class VideoPlaybackException implements Exception {
   /// это ОК: он остаётся целым в теле события, куда ведёт ссылка «Открыть issue».
   @override
   String toString() {
-    final head = '[video-fail] reason=${reason ?? 'unknown'} '
+    final head =
+        '[video-fail] reason=${reason ?? 'unknown'} '
         'host=${Monitoring.shortHost(host)}';
     return '$head — $message${cause != null ? ' | cause: $cause' : ''}';
   }
@@ -338,6 +340,10 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
   DateTime _lastProgressUpdate = DateTime.fromMillisecondsSinceEpoch(0);
   bool _ready = false;
   bool _showErrorFallback = false;
+  bool _awaitingUpload = false;
+  // Отправка копии уже провалилась (`EventStatus.error`): «ещё отправляется»
+  // было бы неправдой навсегда — файл сам не дойдёт.
+  bool _uploadFailed = false;
 
   // ID сессии E2EE прокси — для cleanup в dispose.
   String? _proxySessionId;
@@ -392,8 +398,9 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
   // watchdog по `paused-for-cache=yes` считал «живым» → тихий провал. 8×2с=16с
   // (> watchdog-delay 15с MMR non-faststart первого кадра). Логика — в чистом
   // тестируемом `StalledReconnectDetector`.
-  final StalledReconnectDetector _stallDetector =
-      StalledReconnectDetector(thresholdTicks: 8);
+  final StalledReconnectDetector _stallDetector = StalledReconnectDetector(
+    thresholdTicks: 8,
+  );
 
   // `Failed to open` (терминальный провал открытия, напр. HTTP 500 от MMR на пустом
   // источнике 556МБ) фатален ТОЛЬКО со 2-го раза: mpv `reconnect_on_network_error`
@@ -553,7 +560,10 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
       final streamPosStr = await getMpvProperty(_player, 'stream-pos');
       if (_disposed) return;
       final streamPos = int.tryParse(streamPosStr ?? '') ?? -1;
-      if (_stallDetector.observe(streamPos: streamPos, pausedForCache: pausedForCache) &&
+      if (_stallDetector.observe(
+            streamPos: streamPos,
+            pausedForCache: pausedForCache,
+          ) &&
           mounted &&
           !_useLocalFile &&
           !_swappingToLocal) {
@@ -576,7 +586,6 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
       }
     });
   }
-
 
   /// Watchdog: через [delay] (8с; 15с на MMR-стриминге, где non-faststart
   /// делает Range-seek к moov-в-хвосте и первый кадр может прийти позже)
@@ -616,8 +625,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
       // reconnect/resume — libmpv (не-E2EE) или E2eeMediaProxy (докачка Range).
       // paused-for-cache=yes = идёт добор данных, а НЕ зависание → не убиваем
       // живой resume (иначе watchdog схлопнет докачку 169МБ E2EE на 15-й секунде).
-      final pausedForCache =
-          await getMpvProperty(_player, 'paused-for-cache');
+      final pausedForCache = await getMpvProperty(_player, 'paused-for-cache');
       if (!mounted || _disposed || _swappingToLocal || _useLocalFile) return;
       if (pausedForCache == 'yes') {
         Logs().i(
@@ -885,8 +893,10 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
   /// РАСШИРЯЕМ сборкой через `--dart-define=MMR_HOSTS=host1,host2` — новый
   /// MMR-хост добавляется БЕЗ правки кода (только пересборка). Долгосрочно —
   /// рантайм-проба Accept-Ranges/capability (follow-up).
-  static const String _mmrHostsFromEnv =
-      String.fromEnvironment('MMR_HOSTS', defaultValue: '');
+  static const String _mmrHostsFromEnv = String.fromEnvironment(
+    'MMR_HOSTS',
+    defaultValue: '',
+  );
   static final Set<String> _mmrBackedHomeservers = {
     'synapse.liza.laba.prodamus.tech',
     ..._mmrHostsFromEnv
@@ -901,8 +911,10 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
   /// НЕ-MMR-ветка (`seekable=0`), а не та, что у пользователя на проде → ложно-
   /// зелёный (класс рецидивов, CLAUDE.local.md «device-flow обязан…»). В проде
   /// дефолт false — поведение не меняется.
-  static const bool _forceMmrForTest =
-      bool.fromEnvironment('E2E_FORCE_MMR', defaultValue: false);
+  static const bool _forceMmrForTest = bool.fromEnvironment(
+    'E2E_FORCE_MMR',
+    defaultValue: false,
+  );
 
   /// Обслуживает ли [host] медиа через MMR с нативным Range из S3. Передаём
   /// ORIGIN медиа (mxc-host), а НЕ хоумсервер читателя: MMR отдаёт полный Range
@@ -1077,6 +1089,21 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
       'size=$size e2ee=${event.isAttachmentEncrypted} kIsWeb=$kIsWeb',
     );
 
+    // Файл ещё не залит и байтов у SDK нет — ни стримить, ни качать нечего.
+    // Без этой проверки путь уходил в скачивание → свап → ложный `swap-failed`.
+    if (event.isPendingMediaWithoutBytes) {
+      Logs().i(
+        'Video open[${event.eventId}]: still uploading, nothing to play',
+      );
+      if (mounted) {
+        setState(() {
+          _awaitingUpload = true;
+          _uploadFailed = event.status.isError;
+        });
+      }
+      return;
+    }
+
     try {
       // Общие настройки декода применяем ВСЕГДА (стриминг, E2EE-download,
       // local swap) — без hwdec=auto-safe libmpv может зафейлить HEVC.
@@ -1129,10 +1156,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
           // cyber-agro/nadezhda без MMR) seekable=0 сохраняем — иначе ffmpeg
           // зацикливается на reconnect (инцидент 2026-09-01).
           final onMmr = isMmrBackedHost(_mediaOriginHost);
-          await _tuneMpvForStreaming(
-            encrypted: false,
-            mediaOriginOnMmr: onMmr,
-          );
+          await _tuneMpvForStreaming(encrypted: false, mediaOriginOnMmr: onMmr);
           // Плеер мог быть закрыт пока шли async setMpvProperty.
           if (!mounted || _disposed) return;
           Logs().i(
@@ -1803,6 +1827,9 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
         ? MediaQuery.sizeOf(context).width
         : videoWidth * (height / videoHeight);
 
+    if (_awaitingUpload) {
+      return _buildAwaitingUploadOverlay(width, height, blurHash);
+    }
     if (_showErrorFallback) {
       return _buildErrorOverlay(width, height, blurHash);
     }
@@ -1957,6 +1984,58 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
     );
   }
 
+  /// Видео ещё отправляется ([isPendingMediaWithoutBytes]): постер + пояснение;
+  /// отправка уже провалилась — честное «не удалось отправить».
+  /// Без «Повторить» — `widget.event` здесь снимок локальной копии, повтор на нём
+  /// дал бы тот же результат; после заливки пузырь в ленте сменится на
+  /// отправленное событие, и его откроют заново.
+  Widget _buildAwaitingUploadOverlay(
+    double width,
+    double height,
+    String blurHash,
+  ) {
+    return Stack(
+      key: const Key('video-awaiting-upload-overlay'),
+      fit: StackFit.expand,
+      children: [
+        _buildPoster(width, height, blurHash),
+        Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  _uploadFailed
+                      ? Icons.cloud_off_outlined
+                      : Icons.cloud_upload_outlined,
+                  color: Colors.white70,
+                  size: 48,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  _uploadFailed
+                      ? L10n.of(context).videoSendFailed
+                      : L10n.of(context).videoStillUploading,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   /// Error overlay: постер + кнопка «Повторить» (без «Скачать» — 2026-08-31).
   Widget _buildErrorOverlay(double width, double height, String blurHash) {
     final l10n = L10n.of(context);
@@ -1981,7 +2060,11 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.error_outline, color: Colors.white70, size: 48),
+                const Icon(
+                  Icons.error_outline,
+                  color: Colors.white70,
+                  size: 48,
+                ),
                 const SizedBox(height: 12),
                 Text(
                   l10n.videoPlaybackFailed,

@@ -409,11 +409,16 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                         notif_id = str(uuid4())
                         # XXX: shouldn't we use the same notif_id for each retry?
 
+                        # Второе поле — device.pushkey (токен устройства, константа), а не
+                        # APNs-ID запроса: старый лейбл «APNs-ID:» выдавал одинаковый токен
+                        # у всех отправок за коалесцирование (разбор 2026-09-28). Токен
+                        # позволяет слать пуши на устройство — в лог только префикс
+                        # (security-secrets.md), его хватает для сверки с pushers.
                         log.info(
-                            "Sending (attempt %i) => %s APNs-ID:%s room:%s, event:%s%s",
+                            "Sending (attempt %i) => %s pushkey:%s… room:%s, event:%s%s",
                             retry_number,
                             notif_id,
-                            device.pushkey,
+                            device.pushkey[:8],
                             n.room_id,
                             n.event_id,
                             " (clearing)" if push_type is PushType.BACKGROUND else "",

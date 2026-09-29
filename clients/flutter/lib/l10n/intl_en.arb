@@ -4207,6 +4207,8 @@
     }
   },
   "videoPlaybackFailed": "Unable to play video",
+  "videoStillUploading": "The video is still being sent. You can watch it once the upload finishes.",
+  "videoSendFailed": "The video could not be sent. Attach it to a message again.",
   "@videoPlaybackFailed": {},
   "retry": "Retry",
   "@retry": {},

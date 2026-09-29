@@ -79,8 +79,9 @@ extension LocalNotificationsExtension on MatrixState {
       );
       return;
     }
-    // APNs уже обогнал sync и баннер нарисовал натив (или натив осознанно
-    // решил его не показывать) — второй, локальный, не нужен.
+    // APNs уже обогнал sync: баннер нарисовал натив — система у неактивной
+    // Лизы, `willPresent` (`NativeBannerGate.banner`) у активной — либо натив
+    // осознанно решил его не показывать. Второй, локальный, не нужен.
     if (backgroundPush?.isNativelyReceived(event.eventId) ?? false) {
       Logs().v(
         '[Push] Skip local notification: APNs already handled',
@@ -251,35 +252,44 @@ extension LocalNotificationsExtension on MatrixState {
       final attachments = avatarPath != null
           ? [DarwinNotificationAttachment(avatarPath)]
           : <DarwinNotificationAttachment>[];
-      await plugin.show(
-        // id со скоупом аккаунта: у двух своих аккаунтов в одной комнате
-        // `roomId.hashCode` схлопнул бы уведомления в одно
-        // (RL-push-multiaccount-routing AC-6), и `cancelNotification` гасил бы
-        // не то — он ищет ровно `pushNotificationId`.
-        pushNotificationId(roomClient.clientName, roomId),
-        title,
-        body,
-        NotificationDetails(
-          macOS: DarwinNotificationDetails(
-            sound: 'liza_ding.aiff',
-            presentSound: true,
-            presentAlert: true,
-            // Бейдж на macOS пишет ТОЛЬКО клиент (AppBadge.refreshFrom) по
-            // видимым непрочитанным; уведомление его не трогает, иначе вернём
-            // расхождение с App Group (RL-app-badge-native-visible-count).
-            presentBadge: false,
-            presentBanner: true,
-            presentList: true,
-            attachments: attachments,
-            threadIdentifier: roomId,
+      // Строка в liza.log — единственный след показа: без неё «баннера не было»
+      // у пользователя не отличить от «был, но снят при открытии чата»
+      // (разбор 2026-09-28, `pushes.md` §22). Метод async-void: необработанная
+      // ошибка plugin.show раньше не попадала в лог вовсе.
+      try {
+        await plugin.show(
+          // id со скоупом аккаунта: у двух своих аккаунтов в одной комнате
+          // `roomId.hashCode` схлопнул бы уведомления в одно
+          // (RL-push-multiaccount-routing AC-6), и `cancelNotification` гасил бы
+          // не то — он ищет ровно `pushNotificationId`.
+          pushNotificationId(roomClient.clientName, roomId),
+          title,
+          body,
+          NotificationDetails(
+            macOS: DarwinNotificationDetails(
+              sound: 'liza_ding.aiff',
+              presentSound: true,
+              presentAlert: true,
+              // Бейдж на macOS пишет ТОЛЬКО клиент (AppBadge.refreshFrom) по
+              // видимым непрочитанным; уведомление его не трогает, иначе вернём
+              // расхождение с App Group (RL-app-badge-native-visible-count).
+              presentBadge: false,
+              presentBanner: true,
+              presentList: true,
+              attachments: attachments,
+              threadIdentifier: roomId,
+            ),
           ),
-        ),
-        payload: LizaPushPayload(
-          roomClient.clientName,
-          event.room.id,
-          event.eventId,
-        ).toString(),
-      );
+          payload: LizaPushPayload(
+            roomClient.clientName,
+            event.room.id,
+            event.eventId,
+          ).toString(),
+        );
+        Logs().v('[Push] Local notification shown', event.eventId);
+      } catch (e, s) {
+        Logs().w('[Push] Local notification failed', e, s);
+      }
     } else if (Platform.isWindows) {
       final plugin = backgroundPush?.localNotificationsPlugin;
       if (plugin == null) {

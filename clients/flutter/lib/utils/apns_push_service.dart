@@ -26,10 +26,11 @@ class ApnsPushService {
   /// такой тап молча терялся: окно открывалось, чат — нет (заявка №18).
   ({String roomId, String eventId, String? clientName})? _pendingTap;
 
-  /// Нативный слой спрашивает ПЕРЕД показом APNs-баннера, не показывать ли его.
+  /// Нативный слой спрашивает ПЕРЕД показом APNs-баннера, как его показать.
   /// Единственный источник ответа — живой клиент (прочитанность, дубль
   /// локального баннера); натив своей копии состояния не держит.
-  Future<bool> Function(Map<String, dynamic> userInfo)? _shouldSuppressBanner;
+  Future<NativeBannerGate> Function(Map<String, dynamic> userInfo)?
+  _nativeBannerGate;
 
   ApnsPushService() {
     _channel.setMethodCallHandler(_handleMethod);
@@ -85,16 +86,18 @@ class ApnsPushService {
         ScreenLockState.update(locked);
         break;
       case 'shouldSuppressBanner':
-        // Fail-open: нет обработчика / любая ошибка → показать баннер. Потерянное
-        // уведомление хуже лишнего (тот же инвариант, что у LABA-2354).
-        final handler = _shouldSuppressBanner;
-        if (handler == null) return false;
+        // Ответ — имя [NativeBannerGate] (`MacApnsPushPlugin.swift` разбирает
+        // строку). Fail-open: нет обработчика / ошибка → `silent`, т.е. прежнее
+        // поведение без подавления. Потерянное уведомление хуже лишнего
+        // (инвариант LABA-2354).
+        final handler = _nativeBannerGate;
+        if (handler == null) return NativeBannerGate.silent.name;
         try {
           final data = Map<String, dynamic>.from(call.arguments as Map);
-          return await handler(data);
+          return (await handler(data)).name;
         } catch (e, s) {
           Logs().w('[APNs] shouldSuppressBanner failed', e, s);
-          return false;
+          return NativeBannerGate.silent.name;
         }
     }
   }
@@ -228,15 +231,29 @@ class ApnsPushService {
     required void Function(Map<dynamic, dynamic> message) onMessage,
     void Function(String roomId, String eventId, String? clientName)?
     onNotificationTap,
-    Future<bool> Function(Map<String, dynamic> userInfo)? shouldSuppressBanner,
+    Future<NativeBannerGate> Function(Map<String, dynamic> userInfo)?
+    nativeBannerGate,
   }) {
     _onMessage = onMessage;
     _onNotificationTap = onNotificationTap;
-    _shouldSuppressBanner = shouldSuppressBanner;
+    _nativeBannerGate = nativeBannerGate;
     final pending = _pendingTap;
     if (pending != null && onNotificationTap != null) {
       _pendingTap = null;
       onNotificationTap(pending.roomId, pending.eventId, pending.clientName);
     }
   }
+}
+
+/// Ответ нативному `willPresent` активного приложения (канал `shouldSuppressBanner`).
+/// Имена уходят в Swift строкой — менять синхронно с `MacApnsPushPlugin`.
+enum NativeBannerGate {
+  /// Не показывать: уже показан локально или прочитано.
+  suppress,
+
+  /// Показать оригинал с баннером: пуш обогнал sync, локальный путь закрыт.
+  banner,
+
+  /// Как раньше: звук и запись в Центре уведомлений, баннер — за локальным путём.
+  silent,
 }

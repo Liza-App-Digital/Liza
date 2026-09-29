@@ -283,9 +283,9 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
       // прочитано ЛИБО уже показано локальным уведомлением из /sync. Спрашиваем
       // живой Flutter — он единственный знает ресипты и свои баннеры. Fail-open:
       // молчание/ошибка → показываем (баннер не теряем, инвариант LABA-2354).
-      MacApnsPushPlugin.shouldSuppressBanner(userInfo) { [weak self] suppress in
+      MacApnsPushPlugin.shouldSuppressBanner(userInfo) { [weak self] gate in
         guard let self = self else { return completionHandler([]) }
-        if suppress {
+        if gate == .suppress {
           completionHandler([])
           return
         }
@@ -294,6 +294,7 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
           content: mutableContent,
           userInfo: userInfo,
           center: center,
+          pushAheadOfSync: gate == .banner,
           completionHandler: completionHandler
         )
       }
@@ -307,9 +308,11 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   /// вызываться уже ПОСЛЕ ответа гейта подавления).
   ///
   /// Развилка по фактическому статусу приложения:
-  /// - app active (окно ключевое): Flutter сам отрендерит сообщение в UI —
-  ///   системный баннер мешает. Подавляем баннер, но звук, запись в Notification
-  ///   Center и бейдж разрешаем.
+  /// - app active (окно ключевое): баннер по неоткрытому чату рисует локальный
+  ///   путь из /sync — системный дал бы второй. Подавляем баннер, но звук, запись
+  ///   в Notification Center и бейдж разрешаем. Исключение — [pushAheadOfSync]:
+  ///   пуш обогнал sync, Dart закрыл локальный путь по этому событию, и без
+  ///   `.banner` здесь баннера не было бы вовсе (разбор 2026-09-28, §22).
   /// - app inactive/visible (окно потеряло фокус, другое приложение поверх,
   ///   Cmd-Tab, в Dock): показываем нативный баннер с локализованным текстом.
   ///
@@ -326,6 +329,7 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
     content mutableContent: UNMutableNotificationContent,
     userInfo: [AnyHashable: Any],
     center: UNUserNotificationCenter,
+    pushAheadOfSync: Bool,
     completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
       if NSApp.isActive {
@@ -337,7 +341,9 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
           completionHandler([])
           return
         }
-        completionHandler([.sound, .list, .badge])
+        completionHandler(
+          pushAheadOfSync ? [.banner, .sound, .list, .badge] : [.sound, .list, .badge]
+        )
       } else {
         // На macOS 26 сюда не попасть: неактивному приложению `willPresent` не
         // вызывается (замер 2026-09-17, usernoted показывает оригинал с дефолтными

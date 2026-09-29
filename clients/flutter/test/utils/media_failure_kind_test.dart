@@ -208,6 +208,108 @@ void main() {
     );
   });
 
+  // GlitchTip #2081 (2026-09-27, Windows 3764): `[audio-fail]
+  // reason=playback-error` без текста — на media_kit `errorStream` несёт любую
+  // строку уровня `error` из лога mpv, включая нефатальные, и отличить «не
+  // открылся файл» от «битый кадр» было нечем.
+  group('err у сбоя плеера — класс текста PlayerException', () {
+    // AC:RL-media-failure-kind/11 AC:RL-mediadiag-no-secret/player-err
+    test('AC-11: audioPlayerErrorClass — закрытый перечень ∀ строкам mpv, '
+        'без текста/пути/URL', () {
+      final cases = <String?, String>{
+        r'Failed to open C:\Users\Иван\AppData\Local\Temp\voice.m4a.': 'open',
+        'Failed to open https://user.liza.ru/_matrix/client/v1/media/download/x.':
+            'open',
+        'Failed to recognize file format.': 'format',
+        'Error decoding audio.': 'decode',
+        'Error while decoding frame!': 'decode',
+        'Could not open codec.': 'codec',
+        'tcp: Connection to tcp://user.liza.ru:443 failed: Error number -138':
+            'network',
+        'Source error': 'other',
+        '': 'none',
+        null: 'none',
+      };
+      const allowed = {
+        'open',
+        'format',
+        'decode',
+        'codec',
+        'network',
+        'other',
+        'none',
+      };
+      cases.forEach((message, expected) {
+        final cls = audioPlayerErrorClass(message);
+        expect(cls, expected, reason: 'message="$message"');
+        expect(allowed, contains(cls));
+      });
+    });
+
+    // AC:RL-media-failure-kind/12
+    test(
+      'AC-12: реальный audioIssueContext — err плеера идёт ПЕРВЫМ и переживает '
+      'бюджет title ∀ хостам × e2ee; без playerError поля нет',
+      () async {
+        final client = await prepareTestClient();
+        final room = Room(
+          id: '!r:synapse.liza.laba.prodamus.tech',
+          client: client,
+        );
+        Event voice({bool encrypted = false}) => Event(
+          content: {
+            'msgtype': 'm.audio',
+            'body': 'voice.m4a',
+            if (!encrypted) 'url': 'mxc://user.liza.ru/AbCdEf',
+            if (encrypted)
+              'file': {'url': 'mxc://user.liza.ru/AbCdEf', 'v': 'v2'},
+            'info': {'mimetype': 'application/octet-stream', 'size': 200000},
+          },
+          type: EventTypes.Message,
+          eventId: r'$e',
+          senderId: '@a:user.liza.ru',
+          originServerTs: DateTime(2026, 9, 27),
+          room: room,
+        );
+
+        final ctx = audioIssueContext(
+          voice(),
+          playerError: 'Error decoding audio.',
+        );
+        expect(ctx.keys.first, 'err');
+        expect(ctx['err'], 'decode');
+        expect(audioIssueContext(voice()).containsKey('err'), isFalse);
+
+        for (final reason in [
+          'playback-error',
+          'source-error',
+          'autoplay-next-fail',
+        ]) {
+          for (final host in [
+            'synapse.liza.laba.prodamus.tech',
+            'user.liza.ru',
+            'liza.cyber-agro.ru',
+          ]) {
+            for (final encrypted in [false, true]) {
+              final title = Monitoring.buildAlertTitle(
+                prefix: Monitoring.audioFailurePrefix,
+                reason: reason,
+                host: host,
+                context: audioIssueContext(
+                  voice(encrypted: encrypted),
+                  playerError: 'Could not open codec.',
+                ),
+              );
+              expect(title.length, lessThanOrEqualTo(99), reason: title);
+              expect(title, contains('reason=$reason'));
+              expect(title, contains('err=codec'), reason: title);
+            }
+          }
+        }
+      },
+    );
+  });
+
   group('TranscriptionService.stageOneKindFor — честный вид ошибки', () {
     // AC:RL-media-failure-kind/6 — то самое, что соврало пользователю
     test('AC-6: сетевой сбой на стадии 1 → network (НЕ decrypt): пользователь '

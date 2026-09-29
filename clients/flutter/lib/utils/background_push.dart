@@ -189,7 +189,7 @@ class BackgroundPush {
       if (Platform.isIOS || Platform.isMacOS) {
         apns!.setListeners(
           onMessage: (message) => unawaited(handleApnsMessage(message)),
-          shouldSuppressBanner: shouldSuppressNativeBanner,
+          nativeBannerGate: nativeBannerGate,
           onNotificationTap: (Platform.isIOS || Platform.isMacOS)
               ? (roomId, eventId, clientName) => nativeNotificationTap(
                     roomId: roomId,
@@ -394,6 +394,50 @@ class BackgroundPush {
   /// федеративных и mentions-only комнатах.
   Future<bool> shouldSuppressNativeBanner(Map<String, dynamic> userInfo) async =>
       (await classifyNativeBanner(userInfo)).suppress;
+
+  /// Ответ `willPresent` (его macOS зовёт ТОЛЬКО у активного приложения).
+  /// Активная ветка натива по неоткрытому чату баннер не рисует — считает, что
+  /// его нарисует локальный путь из /sync. Но если пуш обогнал sync
+  /// (`unknownEvent`), локальный путь потом упрётся в «APNs already handled», и
+  /// баннера не будет ни одного — только звук (разбор 2026-09-28, `pushes.md` §22).
+  /// Поэтому при `unknownEvent` баннер отдаём нативу, а локальный путь по этому
+  /// событию закрываем.
+  ///
+  /// Перепроверка `isLocallyShown` и отметка идут в одном синхронном такте после
+  /// последнего `await`: sync не может вклиниться между ними и дать второй баннер.
+  /// `.banner` — ТОЛЬКО при `unknownEvent`: вердикт `show` значит, что локальный
+  /// путь событие видел и сознательно промолчал (старше 5 мин, скрытая комната,
+  /// Liza News другой платформы) — баннер там дал бы шквал старых после сна.
+  Future<NativeBannerGate> nativeBannerGate(
+    Map<String, dynamic> userInfo,
+  ) async {
+    final verdict = await classifyNativeBanner(userInfo);
+    return nativeBannerGateFor(
+      verdict.decision,
+      userInfo['event_id'] as String?,
+    );
+  }
+
+  @visibleForTesting
+  NativeBannerGate nativeBannerGateFor(
+    ApnsBannerDecision decision,
+    String? eventId,
+  ) {
+    switch (decision) {
+      case ApnsBannerDecision.suppressLocal:
+      case ApnsBannerDecision.suppressRead:
+        return NativeBannerGate.suppress;
+      case ApnsBannerDecision.unknownEvent:
+        if (eventId == null || eventId.isEmpty) return NativeBannerGate.silent;
+        if (isLocallyShown(eventId)) return NativeBannerGate.suppress;
+        markNativelyReceived(eventId);
+        Logs().v('[Push] Native banner: push ahead of sync', eventId);
+        return NativeBannerGate.banner;
+      case ApnsBannerDecision.show:
+      case ApnsBannerDecision.noEvent:
+        return NativeBannerGate.silent;
+    }
+  }
 
   /// Тот же предикат, но с именем причины и временем известного события —
   /// для решения на приходе пуша ([handleApnsMessage]) и телеметрии.

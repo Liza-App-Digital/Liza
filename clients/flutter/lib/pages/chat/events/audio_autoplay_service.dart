@@ -13,6 +13,7 @@ import 'package:opus_caf_converter_dart/opus_caf_converter_dart.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'package:liza/config/setting_keys.dart';
+import 'package:liza/utils/file_description.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
 import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/network_recovery_trigger.dart';
@@ -338,17 +339,58 @@ class MatrixFileAudioSource extends StreamAudioSource {
 /// (скачать+расшифровать); для сбоев плеера его нет — там `kind` не пишем.
 /// При `kind=other` сразу за ним идёт `err` — тип исключения
 /// ([mediaFailureErrorType]), иначе класс `other` не отвечает на «почему».
-Map<String, String> audioIssueContext(Event event, {Object? error}) {
+/// [playerError] — текст `PlayerException` сбоя самого плеера; в контекст идёт
+/// только его класс ([audioPlayerErrorClass]) — первым полем, по той же причине.
+Map<String, String> audioIssueContext(
+  Event event, {
+  Object? error,
+  String? playerError,
+}) {
+  // Оба источника пишут в `err` — вместе второй молча перезаписал бы первый.
+  assert(error == null || playerError == null);
   final info = event.content.tryGetMap<String, dynamic>('info');
   final mime = info?.tryGet<String>('mimetype');
   final kind = error == null ? null : mediaFailureKind(error);
   return {
+    if (playerError != null) 'err': audioPlayerErrorClass(playerError),
     if (kind != null) 'kind': kind,
     if (kind == 'other') 'err': mediaFailureErrorType(error!),
     if (mime != null) 'mime': mime,
     'size': audioSizeBucket(info?.tryGet<int>('size')),
     'e2ee': '${event.isAttachmentEncrypted}',
   };
+}
+
+/// Класс ошибки плеера из текста `PlayerException` — закрытый перечень.
+///
+/// На Windows/Linux (`just_audio_media_kit`) `errorStream` — это любая строка
+/// уровня `error` из лога mpv (префиксы `ad`/`vd`/`cplayer`/`stream`/`file`/
+/// `ffmpeg tcp:`), в том числе нефатальная: один битый кадр mpv пропускает и
+/// играет дальше. GlitchTip #2081 (2026-09-27, Windows 3764) пришёл как
+/// `reason=playback-error` без текста — отличить «файл не открылся» от «кадр не
+/// декодировался» было нечем. Сам текст в title не кладём: в нём путь к файлу с
+/// именем пользователя Windows и URL (пин `RL-mediadiag-no-secret`).
+String audioPlayerErrorClass(String? message) {
+  final m = (message ?? '').toLowerCase();
+  if (m.trim().isEmpty) return 'none';
+  if (m.startsWith('tcp:') ||
+      m.contains('connection') ||
+      m.contains('http error') ||
+      m.contains('network')) {
+    return 'network';
+  }
+  if (m.contains('recognize file format') || m.contains('unrecognized')) {
+    return 'format';
+  }
+  if (m.contains('codec')) return 'codec';
+  if (m.contains('decod')) return 'decode';
+  if (m.contains('failed to open') ||
+      m.contains('no such file') ||
+      m.contains('cannot open') ||
+      m.contains('could not open')) {
+    return 'open';
+  }
+  return 'other';
 }
 
 /// Грубый бакет размера — низкая кардинальность для дедупа notifier'а (сырой
@@ -502,7 +544,7 @@ class AudioAutoPlayService {
       prefix: Monitoring.audioFailurePrefix,
       reason: 'playback-error',
       host: event.room.client.homeserver?.host,
-      context: audioIssueContext(event),
+      context: audioIssueContext(event, playerError: e.message),
     );
   }
 
@@ -603,14 +645,17 @@ class AudioAutoPlayService {
           return;
         }
         Logs().w('[AudioAutoPlay] prepare next failed', e, s);
-        Monitoring.reportAudioIssue(
-          prefix: Monitoring.audioFailurePrefix,
-          reason: e is TimeoutException
-              ? 'prepare-timeout'
-              : 'autoplay-next-fail',
-          host: event.room.client.homeserver?.host,
-          context: audioIssueContext(event, error: e),
-        );
+        // Незалитая копия без байтов — не сбой (#2080), см. audio_player.
+        if (!event.isPendingMediaWithoutBytes) {
+          Monitoring.reportAudioIssue(
+            prefix: Monitoring.audioFailurePrefix,
+            reason: e is TimeoutException
+                ? 'prepare-timeout'
+                : 'autoplay-next-fail',
+            host: event.room.client.homeserver?.host,
+            context: audioIssueContext(event, error: e),
+          );
+        }
         _showError(e);
         return;
       }
@@ -650,7 +695,10 @@ class AudioAutoPlayService {
           prefix: Monitoring.audioFailurePrefix,
           reason: 'autoplay-next-fail',
           host: event.room.client.homeserver?.host,
-          context: audioIssueContext(event),
+          context: audioIssueContext(
+            event,
+            playerError: e is PlayerException ? e.message : null,
+          ),
         );
         _showError(e);
         return;

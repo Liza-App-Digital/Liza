@@ -255,7 +255,8 @@ class AudioPlayerState extends State<AudioPlayerWidget> {
       // Сбой из-за сна процесса — не авария: без алёрта и без SnackBar
       // (всплыл бы при возврате), но пузырь в тапабельное состояние вернуть надо.
       final suspended = e is AudioPrepareSuspendedException;
-      if (!suspended) {
+      // Копия ещё не залита и байтов нет — это не сбой сети/плеера (#2080/#237).
+      if (!suspended && !widget.event.isPendingMediaWithoutBytes) {
         Monitoring.reportAudioIssue(
           prefix: Monitoring.audioFailurePrefix,
           reason: e is TimeoutException ? 'prepare-timeout' : 'download-fail',
@@ -312,7 +313,10 @@ class AudioPlayerState extends State<AudioPlayerWidget> {
         prefix: Monitoring.audioFailurePrefix,
         reason: 'source-error',
         host: widget.event.room.client.homeserver?.host,
-        context: audioIssueContext(widget.event),
+        context: audioIssueContext(
+          widget.event,
+          playerError: e is PlayerException ? e.message : null,
+        ),
       );
       if (mounted) {
         setState(() {

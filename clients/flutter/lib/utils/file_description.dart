@@ -39,6 +39,18 @@ extension FileDescriptionExtension on Event {
       _fileRetryTypes.contains(messageType) &&
       room.sendingFilePlaceholders[eventId] == null;
 
+  /// Отправляемая копия медиа, у которой ещё НЕТ ничего для воспроизведения:
+  /// файл не залит (`url` нет) и байтов у SDK тоже нет. Так живёт пузырь
+  /// видео-альбома, который Liza показывает ДО передачи файла в SDK
+  /// (`preEmitBubbles` в `send_file_dialog.dart`): члены альбома заливаются по
+  /// очереди, и большой хвостовой файл ждёт часами. Открыть его нечем — это не
+  /// сбой плеера (GlitchTip #2080: 211-МБ видео ждало очереди с 08:25 до 12:17,
+  /// тап в 11:03 давал `swap-failed` и экран ошибки).
+  bool get isPendingMediaWithoutBytes =>
+      (status.isSending || status.isError) &&
+      attachmentMxcUrl == null &&
+      room.sendingFilePlaceholders[eventId] == null;
+
   String? get fileDescription {
     if (!isMediaEvent) return null;
     final filename = content.tryGet<String>('filename');
