@@ -8,15 +8,19 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_vodozemac/flutter_vodozemac.dart' as vod;
 import 'package:go_router/go_router.dart';
 import 'package:matrix/matrix.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/client_download_content_extension.dart';
 import 'package:liza/utils/client_manager.dart';
+import 'package:liza/utils/composer_draft.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_locals.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/push_client_resolver.dart';
 import 'package:liza/utils/push_helper.dart';
 import 'package:liza/utils/push_tap_navigation.dart';
+import 'package:liza/utils/reply_draft_store.dart';
+import 'package:liza/utils/update_policy.dart';
 import '../config/app_config.dart';
 import '../config/setting_keys.dart';
 
@@ -195,6 +199,22 @@ Future<void> notificationTap(
             throw Exception(
               'Selected notification with reply action but without input',
             );
+          }
+
+          // Режим чтения обязательного обновления: не отправляем, а кладём
+          // ответ в черновик комнаты — после обновления он в поле ввода.
+          // Фоновый изолят не видит состояние UI, поэтому флаг из prefs.
+          // Кнопки «Ответить» в режиме чтения не показываем (push_helper);
+          // здесь — уведомления, показанные до его наступления.
+          if (await UpdatePolicyController.readOnlyAnywhere(
+            background: router == null,
+          )) {
+            final prefs = await SharedPreferences.getInstance();
+            await writeComposerDraft(prefs, room.id, input);
+            if (payload.eventId != null) {
+              await ReplyDraftStore(prefs).save(room.id, payload.eventId);
+            }
+            return;
           }
 
           final eventId = await room.sendTextEvent(

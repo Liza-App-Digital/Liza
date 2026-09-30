@@ -10,6 +10,7 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/isrg_x1.dart';
 import 'package:liza/utils/platform_infos.dart';
+import 'package:liza/utils/update_read_only_http_client.dart';
 import 'package:liza/utils/upload_progress_http_client.dart';
 
 /// Custom Client to add an additional certificate. This is for the isrg X1
@@ -96,6 +97,8 @@ class CustomHttpClient {
     // (backpressure от `IOSink.addStream`). На Web счётчик не ставим:
     // `BrowserClient` буферизует тело перед XHR (см. UploadProgressHttpClient).
     final counted = kIsWeb ? transport : UploadProgressHttpClient(transport);
-    return retry.RetryClient(counted, retries: 2);
+    // Режим чтения обязательного обновления — снаружи всей цепочки: отказ
+    // собирается локально, ретраи и сеть не нужны.
+    return UpdateReadOnlyHttpClient(retry.RetryClient(counted, retries: 2));
   }
 }

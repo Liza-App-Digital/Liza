@@ -5184,5 +5184,39 @@
   "voiceRecordingFailed": "The voice message was not recorded. Check microphone access and try again.",
   "@voiceRecordingFailed": {
     "description": "Запись голосового завершилась без файла (напр. браузер не дал микрофон)"
-  }
+  },
+  "voiceRecordingFailedWindows": "Could not start recording. Check that microphone access is allowed: Settings → Privacy & security → Microphone.",
+  "@voiceRecordingFailedWindows": {
+    "description": "Windows: запись голосового не стартовала (чаще всего микрофон запрещён в параметрах конфиденциальности)"
+  },
+  "updateAnnounceTitle": "An important update is out",
+  "@updateAnnounceTitle": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateAnnounceBody": "From {date} this version will stop sending messages. Update in advance — it takes a couple of minutes.",
+  "@updateAnnounceBody": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)", "placeholders": {"date": {"type": "String"}}},
+  "updateSoftTitle": "Please update the app by {date}",
+  "@updateSoftTitle": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)", "placeholders": {"date": {"type": "String"}}},
+  "updateSoftBody": "The new version works faster and more reliably. All your chats and drafts will be kept.",
+  "@updateSoftBody": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateHardTitle": "Please update the app",
+  "@updateHardTitle": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateHardBody": "To send messages, install the new version. All your chats and drafts will be kept.",
+  "@updateHardBody": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateNow": "Update",
+  "@updateNow": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateLaterLeft": "Later ({count} left)",
+  "@updateLaterLeft": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)", "placeholders": {"count": {"type": "int"}}},
+  "updateViewChats": "View chats",
+  "@updateViewChats": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateCantUpdate": "Can't update?",
+  "@updateCantUpdate": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateCantUpdateBody": "Continue in the web version at web.liza.ru — all chats are synced. If you need help, message support.",
+  "@updateCantUpdateBody": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateOpenWeb": "Open web version",
+  "@updateOpenWeb": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateReadOnlyComposer": "Update the app to reply",
+  "@updateReadOnlyComposer": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateTestFlightHint": "Tip: turn on automatic updates in TestFlight and the app will update itself.",
+  "@updateTestFlightHint": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateReadOnlyAction": "Sending is unavailable in this version. Update the app to reply.",
+  "@updateReadOnlyAction": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"}
 }

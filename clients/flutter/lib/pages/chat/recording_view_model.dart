@@ -26,9 +26,13 @@ class RecordingViewModel extends StatefulWidget {
   /// Подмена рекордера в тестах.
   final AudioRecorder Function()? createRecorder;
 
+  /// Подмена платформы в тестах (на VM `Platform.isWindows` не подделать).
+  final bool? isWindows;
+
   const RecordingViewModel({
     required this.builder,
     this.createRecorder,
+    this.isWindows,
     super.key,
   });
 
@@ -57,6 +61,8 @@ class RecordingViewModelState extends State<RecordingViewModel> {
 
   bool isPaused = false;
 
+  bool get _isWindows => widget.isWindows ?? PlatformInfos.isWindows;
+
   // Дескриптор для VoiceRecordingGuard — чтобы точки навигации (PopScope чата,
   // тап по другому чату в списке) могли предупредить об обрыве записи.
   ActiveVoiceRecording? _guard;
@@ -65,7 +71,8 @@ class RecordingViewModelState extends State<RecordingViewModel> {
 
   Future<void> startRecording(
     Room room, {
-    Future<void> Function(String, int, List<int>, String?)? onMaxDurationReached,
+    Future<void> Function(String, int, List<int>, String?)?
+    onMaxDurationReached,
   }) async {
     _onAutoStopSend = onMaxDurationReached;
     room.client.getConfig(); // Preload server file configuration.
@@ -108,6 +115,7 @@ class RecordingViewModelState extends State<RecordingViewModel> {
       final codecFuture = resolveVoiceCodec(
         isWeb: kIsWeb,
         isIOS: PlatformInfos.isIOS,
+        isWindows: _isWindows,
         supports: audioRecorder.isEncoderSupported,
       );
       final pathFuture = kIsWeb
@@ -150,10 +158,15 @@ class RecordingViewModelState extends State<RecordingViewModel> {
     } catch (e, s) {
       Logs().w('Unable to start voice message recording', e, s);
       if (!mounted) return;
+      // На Windows `hasPermission` всегда true: микрофон, запрещённый в
+      // параметрах конфиденциальности, всплывает только здесь — HRESULT
+      // пользователю ничего не скажет.
       showOkAlertDialog(
         context: context,
         title: L10n.of(context).oopsSomethingWentWrong,
-        message: e.toString(),
+        message: _isWindows
+            ? L10n.of(context).voiceRecordingFailedWindows
+            : e.toString(),
       );
       setState(_reset);
     }

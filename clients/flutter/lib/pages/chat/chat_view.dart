@@ -25,6 +25,7 @@ import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/secure_screen.dart';
+import 'package:liza/utils/update_policy.dart';
 import 'package:liza/utils/voice_recording_guard.dart';
 import 'package:liza/utils/url_launcher.dart';
 import 'package:liza/widgets/chat_settings_popup_menu.dart';
@@ -32,6 +33,7 @@ import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/matrix.dart';
 import 'package:liza/widgets/mxc_image.dart';
 import 'package:liza/widgets/unread_rooms_badge.dart';
+import 'package:liza/widgets/update_read_only_bar.dart';
 import '../../utils/stream_extension.dart';
 import 'chat_emoji_picker.dart';
 import 'chat_input_row.dart';
@@ -198,7 +200,8 @@ class ChatView extends StatelessWidget {
           ),
         if (AppSettings.experimentalVoip.value &&
             Matrix.of(context).voipPlugin != null &&
-            controller.room.isDirectChat)
+            controller.room.isDirectChat &&
+            !UpdatePolicyController.readOnly)
           IconButton(
             onPressed: controller.onPhoneButtonTap,
             icon: const Icon(Icons.call_outlined),
@@ -480,6 +483,8 @@ class ChatView extends StatelessWidget {
                                   onPressed: controller.goToNewRoomAction,
                                 ),
                               )
+                            else if (showUpdateReadOnlyBar(controller.room))
+                              const UpdateReadOnlyBar()
                             else if (controller.room.canSendDefaultMessages &&
                                 controller.room.membership == Membership.join)
                               Container(

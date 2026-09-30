@@ -30,6 +30,7 @@ import 'package:liza/widgets/adaptive_dialogs/show_text_input_dialog.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/share_scaffold_dialog.dart';
+import 'package:liza/widgets/update_read_only_bar.dart';
 import '../../../utils/account_bundles.dart';
 import '../../utils/url_launcher.dart';
 import '../../widgets/matrix.dart';
@@ -539,6 +540,9 @@ class ChatListController extends State<ChatList>
         return;
       }
     }
+    // Режим чтения обязательного обновления: переслать в Liza нельзя.
+    // Ссылки Liza выше — это навигация, их пропускаем.
+    if (blockedByUpdateReadOnly(context)) return;
 
     showScaffoldDialog(
       context: context,

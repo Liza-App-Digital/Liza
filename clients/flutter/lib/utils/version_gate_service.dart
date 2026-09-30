@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 
+import 'package:liza/utils/update_policy.dart';
+
 /// Определяет платформу гостя веб-клиента по User-Agent.
 ///
 /// Порядок проверок значим: iPad/iPhone содержат "Mac OS X" в UA, поэтому
@@ -146,6 +148,44 @@ class VersionGateService {
       return VersionGateResult(needsUpdate: false, installUrl: installUrl);
     } catch (_) {
       return VersionGateResult.none;
+    }
+  }
+
+  /// Этап обязательного обновления для этой сборки (`GET /policy`).
+  ///
+  /// `null` — проверять нечего (веб, неизвестная платформа, нет build).
+  /// `policy == null` при известном build — сервер недоступен или ответ
+  /// битый: вызывающий берёт кэш, а не сбрасывает этап.
+  Future<({int build, UpdatePolicy? policy})?> fetchPolicy() async {
+    if (kIsWeb) return null;
+    final platform = _resolvePlatformKey();
+    if (platform == null) return null;
+    final int? build;
+    try {
+      build = await _currentBuild();
+    } catch (_) {
+      return null;
+    }
+    if (build == null) return null;
+    try {
+      final bundleId = await _bundleId(platform);
+      final uri = Uri.parse('$baseUrl/policy/$platform').replace(
+        queryParameters: {
+          'build': '$build',
+          if (bundleId != null) 'bundle': bundleId,
+        },
+      );
+      final resp = await _http.get(uri).timeout(_timeout);
+      // 404 — сервер явно не знает этот ключ: этапа нет, кэш не держим.
+      // 5xx и сеть — временный сбой: вызывающий берёт кэш.
+      if (resp.statusCode == 404) {
+        return (build: build, policy: UpdatePolicy.none);
+      }
+      if (resp.statusCode != 200) return (build: build, policy: null);
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      return (build: build, policy: UpdatePolicy.fromJson(data));
+    } catch (_) {
+      return (build: build, policy: null);
     }
   }
 

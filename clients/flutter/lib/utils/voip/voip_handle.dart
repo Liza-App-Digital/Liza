@@ -16,4 +16,8 @@ import 'package:matrix/matrix.dart';
 abstract class VoipHandle {
   /// Инициировать звонок в комнату.
   Future<void> inviteToCall(Room room, CallType callType);
+
+  /// Идёт звонок (1:1 или групповой). Экран обязательного обновления не
+  /// перекрывает разговор — ждёт его окончания.
+  bool get hasActiveCall;
 }

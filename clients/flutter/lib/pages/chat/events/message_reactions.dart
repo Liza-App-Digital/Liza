@@ -6,6 +6,7 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/utils/chat_topology.dart';
+import 'package:liza/utils/update_policy.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/matrix.dart';
@@ -91,9 +92,9 @@ List<Widget> _buildChips(
   // M_FORBIDDEN. Без гейта пользователь тапал уже поставленную реакцию и
   // получал диалог «Нет прав доступа» вместо снятия.
   final canRedactOwnReaction = event.room.canRedactOwnReaction;
-  final canInteract = canInteractWithReactionsAt(
-    membership: event.room.membership,
-  );
+  final canInteract =
+      canInteractWithReactionsAt(membership: event.room.membership) &&
+      !UpdatePolicyController.readOnly;
   return [
     ...reactionList.map(
       (r) => _Reaction(

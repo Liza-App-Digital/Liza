@@ -31,8 +31,12 @@ abstract class PlatformInfos {
   static bool get supportsVideoPlayer =>
       !PlatformInfos.isWindows && !PlatformInfos.isLinux;
 
-  static bool get platformCanRecord =>
-      canRecordVoice(isWeb: isWeb, isMobile: isMobile, isMacOS: isMacOS);
+  static bool get platformCanRecord => canRecordVoice(
+    isWeb: isWeb,
+    isMobile: isMobile,
+    isMacOS: isMacOS,
+    isWindows: isWindows,
+  );
 
   static String get clientName =>
       '${AppSettings.applicationName.value} ${isWeb ? 'web' : Platform.operatingSystem}${kReleaseMode ? '' : 'Debug'}';

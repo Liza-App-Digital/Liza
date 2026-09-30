@@ -29,6 +29,7 @@ import 'package:liza/utils/push_client_resolver.dart';
 import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/utils/screen_lock_state.dart';
 import 'package:liza/utils/strip_matrix_mentions.dart';
+import 'package:liza/utils/update_policy.dart';
 
 const notificationAvatarDimension = 128;
 
@@ -135,6 +136,9 @@ Future<void> _tryPushHelper(
   bool useNotificationActions = true,
 }) async {
   final isBackgroundMessage = client == null && clients == null;
+  final updateReadOnly = await UpdatePolicyController.readOnlyAnywhere(
+    background: isBackgroundMessage,
+  );
   Logs().v(
     'Push helper has been started (background=$isBackgroundMessage).',
     notification.toJson(),
@@ -481,16 +485,18 @@ Future<void> _tryPushHelper(
     actions: event.type == EventTypes.RoomMember || !useNotificationActions
         ? null
         : <AndroidNotificationAction>[
-            AndroidNotificationAction(
-              LizaNotificationActions.reply.name,
-              l10n.reply,
-              inputs: [
-                AndroidNotificationActionInput(label: l10n.writeAMessage),
-              ],
-              cancelNotification: false,
-              allowGeneratedReplies: true,
-              semanticAction: SemanticAction.reply,
-            ),
+            // Режим чтения обязательного обновления: ответить из шторки нельзя.
+            if (!updateReadOnly)
+              AndroidNotificationAction(
+                LizaNotificationActions.reply.name,
+                l10n.reply,
+                inputs: [
+                  AndroidNotificationActionInput(label: l10n.writeAMessage),
+                ],
+                cancelNotification: false,
+                allowGeneratedReplies: true,
+                semanticAction: SemanticAction.reply,
+              ),
             AndroidNotificationAction(
               LizaNotificationActions.markAsRead.name,
               l10n.markAsRead,

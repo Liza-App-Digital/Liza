@@ -74,6 +74,8 @@ import '../../utils/account_bundles.dart';
 import '../../utils/localized_exception_extension.dart';
 import '../../utils/room_status_extension.dart';
 import '../../utils/screen_lock_state.dart';
+import '../../utils/update_policy.dart';
+import '../../widgets/update_read_only_bar.dart';
 import 'send_file_dialog.dart';
 import 'send_location_dialog.dart';
 
@@ -186,6 +188,7 @@ class ChatController extends State<ChatPageWithRoom>
   void onDragExited(dynamic _) => setState(() => dragging = false);
 
   void onDragDone(DropDoneDetails details) async {
+    if (_blockedByUpdate()) return;
     setState(() => dragging = false);
     if (details.files.isEmpty) return;
 
@@ -571,6 +574,8 @@ class ChatController extends State<ChatPageWithRoom>
   void _shareItems([dynamic _]) {
     final shareItems = widget.shareItems;
     if (shareItems == null || shareItems.isEmpty) return;
+    // Проверка ПОСЛЕ пустого списка: метод зовётся на каждом входе в чат.
+    if (_blockedByUpdate()) return;
     // LABA-2242: удалённому боту не шлём и через системный share-sheet (этот путь
     // в обход скрытого композера; otherPartyCanReceiveMessages для бот-DM = true).
     final deletedBot = isDeletedBotDm(room);
@@ -715,6 +720,7 @@ class ChatController extends State<ChatPageWithRoom>
     scrollController.addListener(_updateScrollController);
     inputFocus.addListener(_inputFocusListener);
     composerPrefill.addListener(_applyComposerPrefill);
+    UpdatePolicyController.current.addListener(_onUpdatePolicy);
 
     // Автозапуск цепочки голосовых/аудио: регистрируем резолвер «следующего
     // подряд идущего аудио» — только ChatController знает activeThreadId+timeline,
@@ -1361,6 +1367,7 @@ class ChatController extends State<ChatPageWithRoom>
     _bubbleKeys.clear();
     inputFocus.removeListener(_inputFocusListener);
     composerPrefill.removeListener(_applyComposerPrefill);
+    UpdatePolicyController.current.removeListener(_onUpdatePolicy);
     // Раньше sendController и inputFocus не диспоузились — утечка усиливается с
     // FormattingTextEditingController (слушатели/спаны). INV-7 спеки формата.
     sendController.dispose();
@@ -1441,7 +1448,23 @@ class ChatController extends State<ChatPageWithRoom>
   @visibleForTesting
   static final composerCommandPattern = RegExp(r'^\/([\w-]+)');
 
+  /// Режим чтения обязательного обновления (howItWoks/lizaUpdates.md): всё,
+  /// что пользователь пишет в комнату, отбивается здесь одной проверкой.
+  /// Квитанции, typing и обмен ключами E2EE не трогаем — это не отправка.
+  bool _blockedByUpdate() => blockedByUpdateReadOnly(context);
+
+  bool _updateReadOnly = UpdatePolicyController.readOnly;
+
+  /// Ответ сервера приходит на каждый resume — перестраиваем чат только когда
+  /// режим чтения реально включился или снялся.
+  void _onUpdatePolicy() {
+    final readOnly = UpdatePolicyController.readOnly;
+    if (!mounted || readOnly == _updateReadOnly) return;
+    setState(() => _updateReadOnly = readOnly);
+  }
+
   Future<void> send() async {
+    if (_blockedByUpdate()) return;
     if (sendController.text.trim().isEmpty) return;
     _storeInputTimeoutTimer?.cancel();
     final prefs = Matrix.of(context).store;
@@ -1580,6 +1603,7 @@ class ChatController extends State<ChatPageWithRoom>
 
   /// Публикация истории от имени канала — только admin/moderator (PL>=100).
   Future<void> addChannelStory() async {
+    if (_blockedByUpdate()) return;
     final composer = await pickStoryMediaComposer(context, channelId: room.id);
     if (composer == null || !mounted) return;
     await Navigator.of(
@@ -1588,6 +1612,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void sendFileAction({FileType type = FileType.any}) async {
+    if (_blockedByUpdate()) return;
     final files = await selectFiles(context, allowMultiple: true, type: type);
     if (files.isEmpty) return;
     await showAdaptiveDialog(
@@ -1610,6 +1635,7 @@ class ChatController extends State<ChatPageWithRoom>
   /// Liza/WhatsApp). На desktop/Web галереи нет — сразу открывается
   /// выбор файла.
   void sendFileSourceAction() async {
+    if (_blockedByUpdate()) return;
     if (!PlatformInfos.isMobile) {
       sendFileAction();
       return;
@@ -1692,6 +1718,7 @@ class ChatController extends State<ChatPageWithRoom>
   /// → файлы → несколько растров → одиночный растр. Несколько файлов И несколько
   /// растров из одного буфера уходят одним альбомом через `SendFileDialog`.
   Future<bool> handleImagePaste() async {
+    if (_blockedByUpdate()) return true;
     try {
       final result = await collectPasteXFiles(const SystemPasteboardReader());
       if (!result.handledAsMedia || result.files.isEmpty) return false;
@@ -1717,6 +1744,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void openGalleryAction() async {
+    if (_blockedByUpdate()) return;
     // «Выбрать фото или видео» — и на mobile, и на desktop. Раньше desktop
     // уходил в `sendFileAction(type: FileType.image)` → выбор ТОЛЬКО фото,
     // видео в пикере было серым. Теперь оба через selectGalleryMedia
@@ -1740,6 +1768,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void openCameraAction() async {
+    if (_blockedByUpdate()) return;
     // Make sure the textfield is unfocused before opening the camera
     FocusScope.of(context).requestFocus(FocusNode());
     final mode = await showModalActionPopup<_CameraMode>(
@@ -1793,6 +1822,7 @@ class ChatController extends State<ChatPageWithRoom>
     List<int> waveform,
     String? fileName,
   ) async {
+    if (_blockedByUpdate()) return;
     final scaffoldMessenger = ScaffoldMessenger.of(context);
     final audioFile = XFile(path);
 
@@ -1807,7 +1837,11 @@ class ChatController extends State<ChatPageWithRoom>
     final file = MatrixAudioFile(
       bytes: bytes,
       name: name,
-      mimeType: voiceMimeForFileName(name, isWeb: PlatformInfos.isWeb),
+      mimeType: voiceMimeForFileName(
+        name,
+        isWeb: PlatformInfos.isWeb,
+        isWindows: PlatformInfos.isWindows,
+      ),
     );
 
     // Захватываем reply ДО обнуления — иначе inReplyTo уходил null и голосовое
@@ -1890,6 +1924,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void sendLocationAction() async {
+    if (_blockedByUpdate()) return;
     await showAdaptiveDialog(
       context: context,
       builder: (c) => SendLocationDialog(room: room),
@@ -1998,6 +2033,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void redactEventsAction() async {
+    if (_blockedByUpdate()) return;
     // Сбрасываем выделение только если удаление реально прошло — отмена диалога
     // причины должна СОХРАНИТЬ мультивыбор (как было до рефактора).
     if (!await _redactEvents(selectedEvents)) return;
@@ -2114,6 +2150,7 @@ class ChatController extends State<ChatPageWithRoom>
   void forwardEventsAction() async {
     // Гейт в самом методе, а не только на кнопке (см. copyEventsAction).
     if (room.isContentProtected) return;
+    if (_blockedByUpdate()) return;
     if (selectedEvents.isEmpty) return;
     final timeline = this.timeline;
     if (timeline == null) return;
@@ -2153,6 +2190,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void sendAgainAction() {
+    if (_blockedByUpdate()) return;
     final event = selectedEvents.first;
     if (event.status.isError) {
       if (_warnIfUnresendableMissingMedia(event)) {
@@ -2173,6 +2211,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void replyAction({Event? replyTo}) {
+    if (_blockedByUpdate()) return;
     setState(() {
       replyEvent = replyTo ?? selectedEvents.first;
       selectedEvents.clear();
@@ -2331,11 +2370,13 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void editSelectedEventAction() {
+    if (_blockedByUpdate()) return;
     editEventAction(selectedEvents.first);
     setState(() => selectedEvents.clear());
   }
 
   void editEventAction(Event event) {
+    if (_blockedByUpdate()) return;
     final client = currentRoomBundle.firstWhere(
       (cl) => event.senderId == cl!.userID,
       orElse: () => null,
@@ -2458,6 +2499,7 @@ class ChatController extends State<ChatPageWithRoom>
   }.contains(event.messageType);
 
   void replyToEvent(Event event) {
+    if (_blockedByUpdate()) return;
     setState(() => replyEvent = event);
     _persistReplyDraft();
     inputFocus.requestFocus();
@@ -2540,6 +2582,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   Future<void> forwardEvent(Event event) async {
+    if (_blockedByUpdate()) return;
     final timeline = this.timeline;
     if (timeline == null) return;
     // Помечаем как пересланное (LABA-1991) единой трубой, общей со всеми путями
@@ -2559,11 +2602,15 @@ class ChatController extends State<ChatPageWithRoom>
     );
   }
 
-  Future<void> redactEvent(Event event) => _redactEvents([event]);
+  Future<void> redactEvent(Event event) async {
+    if (_blockedByUpdate()) return;
+    await _redactEvents([event]);
+  }
 
   void deleteLocalEvent(Event event) => event.cancelSend();
 
   void resendEvent(Event event) {
+    if (_blockedByUpdate()) return;
     if (_warnIfUnresendableMissingMedia(event)) return;
     if (event.status.isError) FailedMediaResender.resend(event);
     final timeline = this.timeline;
@@ -2577,6 +2624,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void togglePinEvent(Event event) {
+    if (_blockedByUpdate()) return;
     final pinnedEventIds = room.pinnedEventIds;
     if (pinnedEventIds.contains(event.eventId)) {
       pinnedEventIds.removeWhere((id) => id == event.eventId);
@@ -2652,6 +2700,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void toggleReaction(Event event, String emoji) {
+    if (_blockedByUpdate()) return;
     final timeline = this.timeline;
     if (timeline == null) return;
     final existing = event
@@ -2778,6 +2827,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void unpinEvent(String eventId) async {
+    if (_blockedByUpdate()) return;
     final response = await showOkCancelAlertDialog(
       context: context,
       title: L10n.of(context).unpin,
@@ -2796,6 +2846,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   void pinEvent() {
+    if (_blockedByUpdate()) return;
     final pinnedEventIds = room.pinnedEventIds;
     final selectedEventIds = selectedEvents.map((e) => e.eventId).toSet();
     final unpin =
@@ -2887,6 +2938,7 @@ class ChatController extends State<ChatPageWithRoom>
       (event ?? selectedEvents.single).showInfoDialog(context);
 
   void onPhoneButtonTap() async {
+    if (_blockedByUpdate()) return;
     // VoIP required Android SDK 21
     if (PlatformInfos.isAndroid) {
       DeviceInfoPlugin().androidInfo.then((value) {

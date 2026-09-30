@@ -172,6 +172,9 @@ class VoipPlugin
       voip.currentCID == null && voip.currentGroupCID == null;
 
   @override
+  bool get hasActiveCall => !canHandleNewCall;
+
+  @override
   Future<void> handleMissedCall(CallSession session) async {
     // TODO: implement handleMissedCall
   }

@@ -42,6 +42,8 @@ import 'package:liza/utils/transcription_service.dart';
 import 'package:liza/utils/user_handle_service.dart';
 import 'package:liza/utils/user_role_service.dart';
 import 'package:liza/utils/version_gate_service.dart';
+import 'package:liza/utils/update_policy.dart';
+import 'package:liza/utils/update_read_only_http_client.dart';
 import 'package:liza/utils/web_update_checker.dart';
 import 'package:liza/utils/video_prefetch_manager.dart';
 import 'package:liza/utils/voip/voip_handle.dart';
@@ -144,6 +146,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
   DateTime? _lastVersionCheck;
 
   Future<void> checkClientVersion() async {
+    unawaited(refreshUpdatePolicy());
     final now = DateTime.now();
     if (_lastVersionCheck != null &&
         now.difference(_lastVersionCheck!) < const Duration(minutes: 15)) {
@@ -154,6 +157,51 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
       baseUrl: AppConfig.versionGateBaseUrl,
     );
     versionGateResult.value = await _versionGateService!.check();
+  }
+
+  /// Поэтапное обязательное обновление (howItWoks/lizaUpdates.md).
+  ///
+  /// Debug-сборки и локальный стек ходят в ПРОД version-gate с номером
+  /// сборки ветки — жёсткий экран там ломал бы разработку и e2e. Включить
+  /// для ручной проверки: `--dart-define=LIZA_UPDATE_POLICY=true`.
+  static const _forceUpdatePolicy = bool.fromEnvironment('LIZA_UPDATE_POLICY');
+
+  static bool get updatePolicyEnabled =>
+      !kIsWeb &&
+      (_forceUpdatePolicy || (!kDebugMode && !AppConfig.isLocal));
+
+  UpdatePolicyController? _updatePolicyController;
+
+  UpdatePolicyController get updatePolicyController =>
+      _updatePolicyController ??= UpdatePolicyController(store);
+
+  DateTime? _lastPolicyCheck;
+
+  /// Свой троттл, короче плашки (15 мин): kill-switch и смена этапа должны
+  /// доходить при каждом возврате в приложение, а не через четверть часа.
+  static const _policyThrottle = Duration(minutes: 2);
+
+  Future<void> refreshUpdatePolicy() async {
+    if (!updatePolicyEnabled) return;
+    final now = DateTime.now();
+    final last = _lastPolicyCheck;
+    if (last != null &&
+        now.isAfter(last) &&
+        now.difference(last) < _policyThrottle) {
+      return;
+    }
+    _lastPolicyCheck = now;
+    _versionGateService ??= VersionGateService(
+      baseUrl: AppConfig.versionGateBaseUrl,
+    );
+    final fetched = await _versionGateService!.fetchPolicy();
+    if (!mounted || fetched == null) return;
+    final policy = fetched.policy;
+    if (policy == null) {
+      await updatePolicyController.applyUnavailable(fetched.build);
+    } else {
+      await updatePolicyController.applyFetched(policy, fetched.build);
+    }
   }
 
   Client get client {
@@ -536,6 +584,8 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
       _syncActiveRoomToNative,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) => checkClientVersion());
+    UpdateReadOnlyHttpClient.isCallActive = () =>
+        voipPlugin?.hasActiveCall ?? false;
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => webUpdateChecker.start(),
     );

@@ -15,6 +15,7 @@ import 'package:liza/utils/invite_link_parser.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/app_lock.dart';
 import 'package:liza/widgets/theme_builder.dart';
+import 'package:liza/widgets/update_gate.dart';
 import '../utils/custom_scroll_behaviour.dart';
 import 'matrix.dart';
 
@@ -103,8 +104,10 @@ class LizaApp extends StatelessWidget {
               child: Matrix(
                 clients: clients,
                 store: store,
-                child: MiniAppOverlay(
-                  child: testWidget ?? child!,
+                child: UpdateGate(
+                  child: MiniAppOverlay(
+                    child: testWidget ?? child!,
+                  ),
                 ),
               ),
             ),

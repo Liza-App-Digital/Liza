@@ -5149,5 +5149,39 @@
   "voiceRecordingFailed": "Голосовое не записалось. Проверьте доступ к микрофону и попробуйте ещё раз.",
   "@voiceRecordingFailed": {
     "description": "Запись голосового завершилась без файла (напр. браузер не дал микрофон)"
-  }
+  },
+  "voiceRecordingFailedWindows": "Не удалось начать запись. Проверьте, что доступ к микрофону разрешён: Параметры → Конфиденциальность и защита → Микрофон.",
+  "@voiceRecordingFailedWindows": {
+    "description": "Windows: запись голосового не стартовала (чаще всего микрофон запрещён в параметрах конфиденциальности)"
+  },
+  "updateAnnounceTitle": "Вышло важное обновление",
+  "@updateAnnounceTitle": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateAnnounceBody": "С {date} эта версия перестанет отправлять сообщения. Обновитесь заранее — это займёт пару минут.",
+  "@updateAnnounceBody": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)", "placeholders": {"date": {"type": "String"}}},
+  "updateSoftTitle": "Обновите приложение до {date}",
+  "@updateSoftTitle": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)", "placeholders": {"date": {"type": "String"}}},
+  "updateSoftBody": "Новая версия работает быстрее и надёжнее. Все чаты и черновики сохранятся.",
+  "@updateSoftBody": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateHardTitle": "Нужно обновить приложение",
+  "@updateHardTitle": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateHardBody": "Чтобы отправлять сообщения, установите новую версию. Все чаты и черновики сохранятся.",
+  "@updateHardBody": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateNow": "Обновить",
+  "@updateNow": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateLaterLeft": "Позже (осталось {count})",
+  "@updateLaterLeft": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)", "placeholders": {"count": {"type": "int"}}},
+  "updateViewChats": "Посмотреть чаты",
+  "@updateViewChats": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateCantUpdate": "Не получается обновить?",
+  "@updateCantUpdate": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateCantUpdateBody": "Продолжите переписку в веб-версии web.liza.ru — все чаты синхронизируются. Если нужна помощь, напишите в поддержку.",
+  "@updateCantUpdateBody": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateOpenWeb": "Открыть веб-версию",
+  "@updateOpenWeb": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateReadOnlyComposer": "Обновите приложение, чтобы отвечать",
+  "@updateReadOnlyComposer": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateTestFlightHint": "Совет: включите автоматические обновления в TestFlight — приложение будет обновляться само.",
+  "@updateTestFlightHint": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "updateReadOnlyAction": "В этой версии отправка недоступна. Обновите приложение, чтобы отвечать.",
+  "@updateReadOnlyAction": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"}
 }
