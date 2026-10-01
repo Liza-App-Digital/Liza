@@ -328,9 +328,7 @@ Future<void> showAlbumUnsentMenu(
       await FailedMediaResender.resendSequentially(album.failed);
     case _AlbumUnsentAction.delete:
       for (final event in album.failed) {
-        try {
-          await event.cancelSend();
-        } catch (_) {}
+        await cancelPendingSend(event);
       }
     case null:
       return;

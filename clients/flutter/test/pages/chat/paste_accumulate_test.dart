@@ -110,6 +110,17 @@ void main() {
       expect(extra['body'], 'подпись');
     });
 
+    // LABA-2620: набор, не ставший альбомом, повторял подпись в каждом файле.
+    test('не-альбом (galleryId=null), i>0 → без body', () {
+      final extra = buildGalleryExtra(
+        galleryId: null,
+        index: 1,
+        total: 3,
+        caption: 'подпись',
+      );
+      expect(extra, isNull);
+    });
+
     test('одиночный файл без подписи → null (нет extraContent)', () {
       final extra = buildGalleryExtra(
         galleryId: null,

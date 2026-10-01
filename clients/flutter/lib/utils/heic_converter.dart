@@ -4,7 +4,8 @@ import 'package:flutter/foundation.dart';
 
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:matrix/matrix.dart';
-import 'package:mime/mime.dart';
+
+import 'package:liza/utils/xfile_mime.dart';
 
 /// Совпадает ли MIME с одним из вариантов HEIC/HEIF (включая sequence).
 bool isHeicMimeType(String? mimeType) {
@@ -96,7 +97,7 @@ Future<XFile?> convertHeicToJpeg(XFile xfile) async {
 Future<List<XFile>> convertHeicFiles(List<XFile> files) async {
   final result = <XFile>[];
   for (final file in files) {
-    final mimeType = file.mimeType ?? lookupMimeType(file.path);
+    final mimeType = resolveXFileMime(file);
     if (isHeicMimeType(mimeType) || isHeicFile(file.name)) {
       final converted = await convertHeicToJpeg(file);
       result.add(converted ?? file);

@@ -2184,7 +2184,7 @@
     "type": "String",
     "placeholders": {}
   },
-  "sendImages": "Send {count} image",
+  "sendImages": "{count, plural, one{Send {count} image} other{Send {count} images}}",
   "@sendImages": {
     "type": "String",
     "placeholders": {
@@ -5218,5 +5218,9 @@
   "updateTestFlightHint": "Tip: turn on automatic updates in TestFlight and the app will update itself.",
   "@updateTestFlightHint": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
   "updateReadOnlyAction": "Sending is unavailable in this version. Update the app to reply.",
-  "@updateReadOnlyAction": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"}
+  "@updateReadOnlyAction": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "attachLimitReached": "{limit, plural, one{You can send up to {limit} file at once.} other{You can send up to {limit} files at once.}}",
+  "@attachLimitReached": {"description": "Лимит вложений за одну отправку (LABA-2621)", "placeholders": {"limit": {"type": "int"}}},
+  "attachLimitDropped": "{count, plural, one{{count} extra file was not added.} other{{count} extra files were not added.}}",
+  "@attachLimitDropped": {"description": "Лимит вложений за одну отправку (LABA-2621)", "placeholders": {"count": {"type": "int"}}}
 }

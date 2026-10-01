@@ -1,6 +1,68 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
+import 'package:matrix/matrix.dart';
+
 import 'package:liza/utils/upload_error_classifier.dart';
+
+/// Отменить отправку ещё не ушедшего сообщения — ЕДИНАЯ точка для крестика на
+/// пузыре и всех «Удалить» у pending/упавших (LABA-2622).
+///
+/// Голый `cancelSend()` только снимает пузырь: серия отправки о нём не знает,
+/// заливка идёт дальше, а после паузы сети серия досылала файл — удалённое
+/// сообщение воскресало у собеседника. Флаг [UploadProgressTracker.requestCancel]
+/// видят все три стадии: серия (пропуск файла), HTTP-клиент (обрыв отдачи) и
+/// `upload()` диалога отправки (redact опоздавшей отмены).
+///
+/// Байты файла SDK снимает из `sendingFilePlaceholders` только на успешном
+/// пути — после отмены они висели бы в памяти `Room` до перезапуска.
+/// Error-статус не ставим никогда (LABA-2239).
+Future<void> cancelPendingSend(Event event) async {
+  final txid = event.eventId;
+  // Флаг читает только серия диалога отправки — и снимает его сама
+  // (`unregister`). У txid вне серии (текст, давно упавшее событие) снять его
+  // некому: `_cancelledTxids` рос бы до конца процесса.
+  if (UploadProgressTracker.instance.byId(txid) != null) {
+    UploadProgressTracker.instance.requestCancel(txid);
+  }
+  if (!event.status.isSent) {
+    try {
+      await event.cancelSend();
+    } catch (e) {
+      // Событие успело уйти или уже удалено — отменять нечего.
+      Logs().v('[cancel-send] $txid: ${e.runtimeType}');
+    }
+  }
+  event.room.sendingFilePlaceholders.remove(txid);
+  event.room.sendingFileThumbnails.remove(txid);
+}
+
+/// Отмена опоздала: файл залит, событие [eventId] уже ушло (крестик нажат,
+/// пока шёл `PUT /send`; на Web отдачу рвать нечем вовсе). Отзываем
+/// отправленное redact-ом — иначе SDK вернёт его в ленту и собеседник его
+/// получит. true — отмена была и redact запущен. Звать, пока флаг жив
+/// (`unregister` его снимает).
+bool revokeIfCancelledAfterSend(Room room, String txid, String eventId) {
+  if (!UploadProgressTracker.instance.isCancelled(txid)) return false;
+  unawaited(
+    room
+        .redactEvent(eventId)
+        .then<void>(
+          (_) {},
+          onError: (Object e) =>
+              Logs().w('[cancel-send] redact отменённого $eventId: $e'),
+        ),
+  );
+  return true;
+}
+
+/// Маркер опоздавшей отмены: файл залит и событие ушло, но пользователь уже
+/// нажал «отмена» — отправленное отозвано redact-ом. Серия ловит его веткой
+/// `isCancelled` и пишет итог `cancelled`, а не `sent`.
+class SendCancelledAfterUploadException implements Exception {
+  const SendCancelledAfterUploadException();
+}
 
 /// Глобальный реестр прогресса загрузки вложений, keyed по `txid`
 /// (он же `event.eventId` для pending-события до того, как сервер вернёт
@@ -172,7 +234,7 @@ class UploadProgressTracker {
   /// `MatrixException`-ом (терминальная ошибка для retry-цикла
   /// `room.sendFileEvent` — иначе SDK повторял бы заливку до
   /// `sendTimelineEventTimeout`). Удаление самого pending-события из ленты —
-  /// отдельно через `Event.cancelSend()` на стороне виджета-бабла.
+  /// отдельно — [cancelPendingSend] делает оба шага разом.
   void requestCancel(String txid) => _cancelledTxids.add(txid);
 
   /// Запрошена ли отмена для этого `txid`.

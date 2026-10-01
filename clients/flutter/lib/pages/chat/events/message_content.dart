@@ -227,6 +227,7 @@ class MessageContent extends StatelessWidget {
               textColor: textColor,
               linkColor: linkColor,
               timeOverlay: trailingTime,
+              longPressSelect: longPressSelect,
             );
           case BotInvoiceContent.msgType:
             return _withBelowTime(

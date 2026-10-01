@@ -9,7 +9,6 @@ import 'package:cross_file/cross_file.dart';
 import 'package:matrix/matrix.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
-import 'package:mime/mime.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'package:liza/config/app_config.dart';
@@ -32,6 +31,7 @@ import 'package:liza/utils/upload_error_classifier.dart';
 import 'package:liza/utils/upload_progress_tracker.dart';
 import 'package:liza/utils/video_poster_cache.dart';
 import 'package:liza/utils/video_thumbnail.dart';
+import 'package:liza/utils/xfile_mime.dart';
 import 'package:liza/widgets/adaptive_dialogs/adaptive_dialog_action.dart';
 import 'package:liza/widgets/adaptive_dialogs/dialog_text_field.dart';
 import '../../utils/resize_video.dart';
@@ -41,6 +41,11 @@ import '../../utils/resize_video.dart';
 /// RL-gallery-count-cap-defensive): альбом (`galleryId != null`) несёт
 /// `com.liza.gallery` с индексом `i`, фактической длиной `n`, подписью только на
 /// якоре (`i==0`); одиночный файл — подпись в `body`.
+///
+/// Подпись — ТОЛЬКО на первом событии и без альбома (LABA-2620): набор, не
+/// ставший альбомом (pdf с подписью → «Вставить ещё» картинкой), иначе
+/// повторял бы её в каждом файле — поле подписи в диалоге уже скрыто, а
+/// перенесённый `initialCaption` ушёл бы N раз.
 Map<String, dynamic>? buildGalleryExtra({
   required String? galleryId,
   required int index,
@@ -56,12 +61,43 @@ Map<String, dynamic>? buildGalleryExtra({
       if (index == 0 && caption.isNotEmpty) 'caption': caption,
     };
   }
-  // Подпись в `body`: для одиночного файла — как раньше; для альбома — только на
-  // первом событии (лента покажет под сеткой; не-Liza клиенты увидят текст здесь).
-  if (caption.isNotEmpty && (galleryId == null || index == 0)) {
+  // Подпись в `body` — только на первом событии: одиночный файл, якорь альбома
+  // (лента покажет под сеткой; не-Liza клиенты увидят текст здесь) или первый
+  // файл не-альбомного набора.
+  if (caption.isNotEmpty && index == 0) {
     extra['body'] = caption;
   }
   return extra.isEmpty ? null : extra;
+}
+
+/// Сколько альбомов нужно под медиа-набор из [total] файлов (LABA-2621).
+int albumCountFor(int total) =>
+    (total + AppConfig.albumChunkSize - 1) ~/ AppConfig.albumChunkSize;
+
+/// `extraContent` файла [index] набора из [total], нарезанного на альбомы по
+/// `AppConfig.albumChunkSize` (как в Telegram, LABA-2621). [albumIds] — id
+/// альбомов по порядку (`albumCountFor(total)` штук) или `null`, если набор
+/// не альбомный. Хвост из одного файла уходит обычным сообщением: альбом
+/// `n == 1` рисовался бы сеткой-одиночкой. Подпись — только на первом файле
+/// всего набора, иначе она повторилась бы под каждым альбомом.
+///
+/// Единственный источник `id`/`i`/`n` и для пузыря-пре-эмита, и для финальной
+/// отправки: разойдись они — `galleryExpectedCount` держал бы фантом-слоты.
+Map<String, dynamic>? buildAlbumExtra({
+  required List<String>? albumIds,
+  required int index,
+  required int total,
+  required String caption,
+}) {
+  final chunk = index ~/ AppConfig.albumChunkSize;
+  final start = chunk * AppConfig.albumChunkSize;
+  final size = math.min(AppConfig.albumChunkSize, total - start);
+  return buildGalleryExtra(
+    galleryId: albumIds == null || size < 2 ? null : albumIds[chunk],
+    index: index - start,
+    total: size,
+    caption: index == 0 ? caption : '',
+  );
 }
 
 class SendFileDialog extends StatefulWidget {
@@ -92,9 +128,17 @@ class SendFileDialog extends StatefulWidget {
   @visibleForTesting
   final PasteboardReader pasteboardReader;
 
-  const SendFileDialog({
+  /// Сколько файлов сверх `AppConfig.maxAttachmentsPerSend` отброшено — диалог
+  /// говорит об этом строкой в контенте.
+  final int overflowCount;
+
+  /// Кап — здесь, а не в каждой из точек входа (пикеры, вставка, drag&drop,
+  /// share) и не state-копией: `files` остаётся единственным списком, по
+  /// индексам которого живут превью, постеры и txid. «Вставить ещё»
+  /// пересоздаёт диалог этим же конструктором — кап действует и на неё.
+  SendFileDialog({
     required this.room,
-    required this.files,
+    required List<XFile> files,
     required this.outerContext,
     required this.threadLastEventId,
     required this.threadRootEventId,
@@ -103,7 +147,13 @@ class SendFileDialog extends StatefulWidget {
     this.scrollToEndOnOpen = false,
     this.pasteboardReader = const SystemPasteboardReader(),
     super.key,
-  });
+  }) : files = files.length > AppConfig.maxAttachmentsPerSend
+           ? files.sublist(0, AppConfig.maxAttachmentsPerSend)
+           : files,
+       overflowCount = math.max(
+         0,
+         files.length - AppConfig.maxAttachmentsPerSend,
+       );
 
   @override
   SendFileDialogState createState() => SendFileDialogState();
@@ -139,6 +189,8 @@ class SendFileDialogState extends State<SendFileDialog> {
   /// диалог поверх идущей отправки. Симметрично, «Отправить» во время
   /// `_addMore` ушла бы со СТАРЫМ списком файлов.
   bool get _busy => _sending || _addingMore;
+
+  bool get _atLimit => widget.files.length >= AppConfig.maxAttachmentsPerSend;
 
   /// Отправка уже запущена — «Отправить» больше не принимает тапов.
   ///
@@ -191,9 +243,7 @@ class SendFileDialogState extends State<SendFileDialog> {
     if (_isDesktop) {
       final allVideo =
           widget.files.isNotEmpty &&
-          widget.files.every(
-            (f) => isVideoMime(f.mimeType ?? lookupMimeType(f.path)),
-          );
+          widget.files.every((f) => isVideoMime(resolveXFileMime(f)));
       if (allVideo) {
         for (var i = 0; i < widget.files.length; i++) {
           _videoThumbnailCompleters[i] = Completer<MatrixImageFile?>();
@@ -216,7 +266,7 @@ class SendFileDialogState extends State<SendFileDialog> {
     // Тот же общий гард, что и у `_send`: две кнопки диалога взаимоисключающи
     // (см. `_busy`), иначе «Вставить ещё» во время идущей отправки открывает
     // второй диалог поверх неё.
-    if (_busy) return;
+    if (_busy || _atLimit) return;
     setState(() => _addingMore = true);
     final l10n = L10n.of(context);
     final scaffoldMessenger = ScaffoldMessenger.of(widget.outerContext);
@@ -261,9 +311,10 @@ class SendFileDialogState extends State<SendFileDialog> {
   /// Тот же приём у апстрима FluffyChat (иконка-карандаш поверх превью-тайла) и
   /// у Liza (добавление — по сетке медиа, не третьей кнопкой).
   /// Гейт `_busy` — общий с «Прислать» (см. `_busy`): пока идёт отправка или
-  /// предыдущее накопление, тап не принимается.
+  /// предыдущее накопление, тап не принимается. На лимите набора плитка гаснет,
+  /// а не исчезает: её индекс в reverse-ленте держит LABA-2631.
   Widget _addMoreTile(ThemeData theme, double height) {
-    final enabled = !_busy;
+    final enabled = !_busy && !_atLimit;
     return Padding(
       padding: const EdgeInsets.only(right: 8.0),
       child: SizedBox(
@@ -361,8 +412,7 @@ class SendFileDialogState extends State<SendFileDialog> {
   Future<void> _prepareVideoThumbnails() async {
     for (var i = 0; i < widget.files.length; i++) {
       final file = widget.files[i];
-      final mime = file.mimeType ?? lookupMimeType(file.path);
-      if (!isVideoMime(mime)) continue;
+      if (!isVideoMime(resolveXFileMime(file))) continue;
       if (kIsWeb) {
         _videoThumbnails[i] = await generateWebVideoThumbnail(file);
       } else if (_isDesktop) {
@@ -422,20 +472,20 @@ class SendFileDialogState extends State<SendFileDialog> {
       final caption = _labelTextController.text.trim();
       // Альбом: ≥2 медиа (изображения и/или видео) уходят с общим
       // `com.liza.gallery.id` — лента рисует их единой сеткой
-      // (media-v-format.md §8.5). От сжатия не зависит. Считаем по ИСХОДНОМУ
-      // списку: ни `convertHeicFiles`, ни `compressImagesForSending` не меняют
+      // (media-v-format.md §8.5); набор длиннее `albumChunkSize` режется на
+      // несколько альбомов (`buildAlbumExtra`). От сжатия не зависит.
+      // Считаем по ИСХОДНОМУ списку: ни `convertHeicFiles`, ни
+      // `compressImagesForSending` не меняют
       // ни длину, ни порядок, ни image/video-природу MIME (HEIC→JPEG остаётся
-      // image), поэтому предикат тот же, что и на сжатом списке.
+      // image), поэтому предикат тот же, что и на сжатом списке. Тот же
+      // `isMediaAlbum`, что решает в build() показ поля подписи: два разных
+      // предиката дали LABA-2620 (UI — альбом, отправка — россыпь).
       final sources = widget.files;
-      final isMediaGallery =
-          sources.length >= 2 &&
-          sources.every((f) {
-            final m = f.mimeType ?? lookupMimeType(f.path);
-            return m != null &&
-                (m.startsWith('image') || m.startsWith('video'));
-          });
-      final galleryId = isMediaGallery
-          ? client.generateUniqueTransactionId()
+      final albumIds = isMediaAlbum(sources)
+          ? [
+              for (var k = 0; k < albumCountFor(sources.length); k++)
+                client.generateUniqueTransactionId(),
+            ]
           : null;
       // Фото при compress == true уже ужато compressImagesForSending.
       // Исключение — Windows/Linux (нет flutter_image_compress): там ресайз
@@ -463,9 +513,7 @@ class SendFileDialogState extends State<SendFileDialog> {
       // сужение ничего из предмета задачи не теряет.
       final preEmitBubbles =
           sources.isNotEmpty &&
-          sources.every(
-            (f) => isVideoMime(f.mimeType ?? lookupMimeType(f.path)),
-          );
+          sources.every((f) => isVideoMime(resolveXFileMime(f)));
 
       // Не-видео (и смешанные наборы) пузыря-пре-эмита не получают — им
       // обратную связь по-прежнему даёт плашка, иначе окно getConfig + HEIC +
@@ -484,7 +532,7 @@ class SendFileDialogState extends State<SendFileDialog> {
         UploadProgressTracker.instance.register(txid);
         if (!preEmitBubbles) continue;
         notHandedToSdk.add(txid);
-        final mime = xfile.mimeType ?? lookupMimeType(xfile.path);
+        final mime = resolveXFileMime(xfile);
         await emitPendingAttachment(
           room,
           buildPendingAttachmentSync(
@@ -499,8 +547,8 @@ class SendFileDialogState extends State<SendFileDialog> {
             // транскода. Бабл до замены рисуется по фолбэку 300×300
             // (`video_player.dart`), после — по фактическим пропорциям.
             info: {'mimetype': mime, 'size': await xfile.length()},
-            extraContent: buildGalleryExtra(
-              galleryId: galleryId,
+            extraContent: buildAlbumExtra(
+              albumIds: albumIds,
               index: i,
               total: sources.length,
               caption: caption,
@@ -552,7 +600,7 @@ class SendFileDialogState extends State<SendFileDialog> {
         MatrixFile file;
         MatrixImageFile? thumbnail;
         final length = await xfile.length();
-        final mimeType = xfile.mimeType ?? lookupMimeType(xfile.path);
+        final mimeType = resolveXFileMime(xfile);
         final isVideo = mimeType != null && mimeType.startsWith('video');
         final isGif = !isVideo && isGifXFile(xfile);
         if (files.length > 1) {
@@ -622,9 +670,7 @@ class SendFileDialogState extends State<SendFileDialog> {
           // берём из исходника, как раньше. Провал в любой ветке = отправка
           // без постера (получатель увидит BlurHash), а не отказ отправки.
           banner?.update(l10n.generatingVideoThumbnail);
-          thumbnail = await xfile.getVideoThumbnail(
-            sourcePath: compressedPath,
-          );
+          thumbnail = await xfile.getVideoThumbnail(sourcePath: compressedPath);
         } else {
           // Фото (сжатое в режиме compress или оригинал из «Файла»), видео
           // desktop/Web и прочие файлы. detectFileType выбирает тип по MIME:
@@ -672,8 +718,10 @@ class SendFileDialogState extends State<SendFileDialog> {
         if (_isDesktop && file is MatrixVideoFile) {
           final fast = Mp4Faststart.process(file.bytes);
           if (fast != null) {
-            Logs().i('Faststart: moov перенесён в начало для ${file.name} '
-                '(${file.bytes.length} байт)');
+            Logs().i(
+              'Faststart: moov перенесён в начало для ${file.name} '
+              '(${file.bytes.length} байт)',
+            );
             file = MatrixFile(
               bytes: fast,
               name: file.name,
@@ -699,8 +747,8 @@ class SendFileDialogState extends State<SendFileDialog> {
           file: file,
           thumbnail: thumbnail,
           isGif: isGif,
-          extraContent: buildGalleryExtra(
-            galleryId: galleryId,
+          extraContent: buildAlbumExtra(
+            albumIds: albumIds,
             index: index,
             total: files.length,
             caption: caption,
@@ -767,6 +815,12 @@ class SendFileDialogState extends State<SendFileDialog> {
             eventId = await sendOnce();
           }
           if (eventId == null) {
+            // Отменённому возвращать байты некуда: пузыря уже нет, ↻ не будет,
+            // а `cancelPendingSend` их уже снял — вернуть = держать файл в
+            // памяти `Room` до перезапуска (LABA-2622).
+            if (UploadProgressTracker.instance.isCancelled(txid)) {
+              throw const SendCancelledAfterUploadException();
+            }
             // Файл залит, событие не ушло, а SDK уже выбросил байты — вернём
             // их, иначе ↻ этого сообщения удалил бы его (LABA-2239).
             room.sendingFilePlaceholders[txid] = p.file;
@@ -775,6 +829,11 @@ class SendFileDialogState extends State<SendFileDialog> {
               room.sendingFileThumbnails[txid] = thumbnail;
             }
             throw const SendEventDroppedException();
+          }
+          // Опоздавшая отмена (LABA-2622): флаг здесь ещё жив — `unregister`
+          // идёт позже, в onSent/finally.
+          if (revokeIfCancelledAfterSend(room, txid, eventId)) {
+            throw const SendCancelledAfterUploadException();
           }
         } finally {
           uploadProgress.complete();
@@ -786,7 +845,8 @@ class SendFileDialogState extends State<SendFileDialog> {
         prepare: prepare,
         upload: upload,
         sizeOf: (p) => p.file.bytes.length,
-        isCancelled: (i) => UploadProgressTracker.instance.isCancelled(txids[i]),
+        isCancelled: (i) =>
+            UploadProgressTracker.instance.isCancelled(txids[i]),
         waitForReconnect: () => _waitForReconnect(client),
         onSent: (i) => UploadProgressTracker.instance.unregister(txids[i]),
         onPrepareFailed: (i, e) {
@@ -923,7 +983,7 @@ class SendFileDialogState extends State<SendFileDialog> {
 
     var sendStr = L10n.of(context).sendFile;
     final uniqueFileType = widget.files
-        .map((file) => file.mimeType ?? lookupMimeType(file.name))
+        .map(resolveXFileMime)
         .map((mimeType) => mimeType?.split('/').first)
         .toSet()
         .singleOrNull;
@@ -1093,19 +1153,35 @@ class SendFileDialogState extends State<SendFileDialog> {
                         ],
                       ),
                     ),
+                  // Строкой в контенте: снекбар на `outerContext` лёг бы под
+                  // барьер диалога, а третья кнопка ломает ряд действий
+                  // (RL-send-dialog-two-actions).
+                  if (_atLimit)
+                    Padding(
+                      key: const Key('attach-limit-note'),
+                      padding: const EdgeInsets.only(bottom: 12.0),
+                      child: Text(
+                        [
+                          L10n.of(
+                            context,
+                          ).attachLimitReached(AppConfig.maxAttachmentsPerSend),
+                          if (widget.overflowCount > 0)
+                            L10n.of(
+                              context,
+                            ).attachLimitDropped(widget.overflowCount),
+                        ].join(' '),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
                   // Подпись: для одиночного файла — как раньше; для
                   // альбома медиа (изображения и/или видео) — одна общая
                   // подпись на весь альбом (media-v-format.md §8.6).
                   if (widget.files.length == 1 ||
                       uniqueFileType == 'image' ||
                       uniqueFileType == 'video' ||
-                      widget.files.every((f) {
-                        final m =
-                            f.mimeType ?? lookupMimeType(f.name);
-                        return m != null &&
-                            (m.startsWith('image') ||
-                                m.startsWith('video'));
-                      }))
+                      isMediaAlbum(widget.files))
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8.0),
                       child: DialogTextField(

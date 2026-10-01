@@ -6,7 +6,9 @@ import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/image_viewer/image_viewer.dart';
+import 'package:liza/pages/chat/events/upload_overlays.dart';
 import 'package:liza/utils/animated_gif.dart';
+import 'package:liza/utils/upload_progress_tracker.dart';
 import 'package:liza/widgets/mxc_image.dart';
 import '../../../widgets/blur_hash.dart';
 
@@ -28,6 +30,10 @@ class ImageBubble extends StatelessWidget {
   /// Плашка времени (Liza-стиль) — в правом нижнем углу поверх картинки.
   final Widget? timeOverlay;
 
+  /// Чат в режиме выделения: тап по пузырю выделяет, крестик отмены
+  /// отправки не должен его перехватывать.
+  final bool longPressSelect;
+
   const ImageBubble(
     this.event, {
     this.tapToView = true,
@@ -43,8 +49,47 @@ class ImageBubble extends StatelessWidget {
     this.textColor,
     this.linkColor,
     this.timeOverlay,
+    this.longPressSelect = false,
     super.key,
   });
+
+  /// Отмена отправки своего фото (LABA-2622): кольцо прогресса с крестиком,
+  /// пока идёт отправка. ↻ упавшего фото сюда НЕ выносим — он остаётся в
+  /// футере и меню. [UploadProgressTracker.seriesChanges] будит оверлей, когда
+  /// серия отпускает txid.
+  Widget? _uploadOverlay() {
+    if (event.status.isSent ||
+        event.messageType == MessageTypes.Sticker ||
+        event.senderId != event.room.client.userID) {
+      return null;
+    }
+    final tracker = UploadProgressTracker.instance;
+    return ValueListenableBuilder<int>(
+      valueListenable: tracker.seriesChanges,
+      builder: (context, _, _) {
+        final notifier = tracker.byId(event.eventId);
+        // Упавший член идущей серии (обрыв сети) — это «в очереди», серия
+        // дошлёт его сама: крестик нужен и ему. Серия кончилась — notifier
+        // снят, оверлея нет.
+        if (notifier == null) {
+          return const SizedBox.shrink();
+        }
+        return IgnorePointer(
+          ignoring: longPressSelect,
+          child: UploadProgressOverlay(
+            notifier: notifier,
+            event: event,
+            compact:
+                width < _fullOverlayMinSide || height < _fullOverlayMinSide,
+            buttonOnly: height < _ringOverlayMinHeight,
+          ),
+        );
+      },
+    );
+  }
+
+  static const _fullOverlayMinSide = 140.0;
+  static const _ringOverlayMinHeight = 64.0;
 
   Widget _buildPlaceholder(BuildContext context) {
     final String blurHashString =
@@ -106,6 +151,8 @@ class ImageBubble extends StatelessWidget {
         ? null
         : _buildPlaceholder;
 
+    final uploadOverlay = _uploadOverlay();
+
     return Material(
       color: Colors.transparent,
       clipBehavior: Clip.hardEdge,
@@ -139,6 +186,7 @@ class ImageBubble extends StatelessWidget {
                 placeholder: placeholder,
               ),
             ),
+            if (uploadOverlay != null) Positioned.fill(child: uploadOverlay),
             if (isGif && !animateGif)
               const Positioned(top: 6, left: 6, child: GifBadge()),
             if (timeOverlay != null)

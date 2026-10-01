@@ -5,9 +5,8 @@ import 'package:flutter/foundation.dart';
 
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:matrix/matrix.dart';
-import 'package:mime/mime.dart';
-
 import 'package:liza/utils/animated_gif.dart';
+import 'package:liza/utils/xfile_mime.dart';
 
 /// Сжатие изображений перед отправкой — уровень по стандартам Liza/WhatsApp.
 ///
@@ -51,7 +50,7 @@ bool get imageCompressionSupported {
 }
 
 bool _isImage(XFile file) {
-  final mime = file.mimeType ?? lookupMimeType(file.path);
+  final mime = resolveXFileMime(file);
   return mime != null && mime.startsWith('image/');
 }
 

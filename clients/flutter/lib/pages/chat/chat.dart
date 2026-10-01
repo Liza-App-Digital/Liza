@@ -2021,7 +2021,7 @@ class ChatController extends State<ChatPageWithRoom>
         );
       }
       for (final event in selectedEvents) {
-        await event.cancelSend();
+        await cancelPendingSend(event);
       }
       setState(selectedEvents.clear);
     } catch (e, s) {
@@ -2101,7 +2101,7 @@ class ChatController extends State<ChatPageWithRoom>
               ).redactEvent(reason: reason);
             }
           } else {
-            await event.cancelSend();
+            await cancelPendingSend(event);
           }
         }
       },
@@ -2607,7 +2607,9 @@ class ChatController extends State<ChatPageWithRoom>
     await _redactEvents([event]);
   }
 
-  void deleteLocalEvent(Event event) => event.cancelSend();
+  // Не голый `cancelSend`: без флага отмены серия отправки дошлёт файл после
+  // паузы сети, и удалённое сообщение воскреснет (LABA-2622).
+  void deleteLocalEvent(Event event) => cancelPendingSend(event);
 
   void resendEvent(Event event) {
     if (_blockedByUpdate()) return;

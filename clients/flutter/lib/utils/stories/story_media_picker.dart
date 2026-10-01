@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
-import 'package:mime/mime.dart';
 
 import '../compress_image.dart';
 import '../file_selector.dart';
 import '../heic_converter.dart';
+import '../xfile_mime.dart';
 import '../../pages/stories/story_composer.dart';
 import '../../pages/stories/story_video_scrubber.dart';
 import '../../widgets/future_loading_dialog.dart';
@@ -76,7 +76,7 @@ Future<StoryComposer?> pickStoryMediaComposer(
     file: MatrixImageFile(
       bytes: bytes,
       name: prepared.name,
-      mimeType: prepared.mimeType ?? lookupMimeType(prepared.name),
+      mimeType: resolveXFileMime(prepared),
     ),
     channelId: channelId,
   );

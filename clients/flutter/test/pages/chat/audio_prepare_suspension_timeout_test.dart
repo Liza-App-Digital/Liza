@@ -16,6 +16,9 @@
 // (залипающий флаг «был в фоне», f8d9bab6) краснеет AC-14 — мимолётный фон в
 // начале глушил алёрт о честном зависании в foreground (контрпример
 // adversarial-verifier).
+//
+// AC-17/AC-18 (GlitchTip #2085, 2026-09-29): срок — простой без байтов, а не
+// бюджет всей загрузки. Red-proof: без перезапуска на чанке краснеет AC-17.
 
 import 'dart:async';
 
@@ -51,12 +54,19 @@ void main() {
   /// Запускает подготовку; [attempts] — по одной фабрике на попытку (повтор
   /// бывает только после `ClientException`). Возвращает геттеры исхода.
   ({Object? Function() error, Object? Function() value, int Function() calls})
-  start(List<Future<Object?> Function()> attempts, {bool suspendable = true}) {
+  start(
+    List<Future<Object?> Function()> attempts, {
+    bool suspendable = true,
+    void Function(void Function() onBytes)? onAttempt,
+  }) {
     Object? error;
     Object? value;
     var calls = 0;
     withForegroundDeadline<Object?>(
-      () => attempts[calls++](),
+      (onBytes) {
+        onAttempt?.call(onBytes);
+        return attempts[calls++]();
+      },
       deadline,
       suspendable: suspendable,
     ).then(
@@ -192,6 +202,48 @@ void main() {
 
       expect(run.error(), isA<StateError>());
       goTo(tester, toForeground);
+    },
+  );
+
+  testWidgets(
+    'AC:RL-audio-prepare-no-dead-window/17 — медленная, но живая загрузка '
+    'дольше срока доходит: срок считается от последних байтов',
+    (tester) async {
+      // #2085: 1,12 МБ при ~20 КБ/с — MMR отдал всё за 53 с, клиент рубил на 60-й.
+      final body = Completer<Object?>();
+      late void Function() onBytes;
+      final run = start([() => body.future], onAttempt: (cb) => onBytes = cb);
+      for (var i = 0; i < 5; i++) {
+        await tester.pump(deadline - const Duration(seconds: 10));
+        onBytes();
+      }
+      body.complete(42);
+      await tester.pump();
+
+      expect(run.error(), isNull, reason: 'чанки шли — канал жив');
+      expect(run.value(), 42);
+    },
+  );
+
+  testWidgets(
+    'AC:RL-audio-prepare-no-dead-window/18 — байты пошли и встали: полный срок '
+    'простоя с последнего чанка и честный таймаут (mobile и desktop)',
+    (tester) async {
+      for (final suspendable in const [true, false]) {
+        late void Function() onBytes;
+        final run = start(
+          [hang],
+          suspendable: suspendable,
+          onAttempt: (cb) => onBytes = cb,
+        );
+        await tester.pump(const Duration(seconds: 50));
+        onBytes();
+        await tester.pump(deadline - const Duration(seconds: 1));
+        expect(run.error(), isNull, reason: 'suspendable=$suspendable');
+        await tester.pump(const Duration(seconds: 2));
+        expect(run.error(), isA<TimeoutException>());
+        expect(run.error(), isNot(isA<AudioPrepareSuspendedException>()));
+      }
     },
   );
 

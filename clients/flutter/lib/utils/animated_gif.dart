@@ -5,9 +5,9 @@ import 'package:blurhash_dart/blurhash_dart.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image/image.dart' as img;
 import 'package:matrix/matrix.dart';
-import 'package:mime/mime.dart';
 
 import 'package:liza/utils/compress_image.dart';
+import 'package:liza/utils/xfile_mime.dart';
 
 /// GIF в Liza: отправка оригиналом и проигрывание в ленте (заявка №43,
 /// спека `docs/superpowers/specs/2026-09-25-gif-animated-send-and-inline-design.md`).
@@ -30,7 +30,7 @@ bool isGifMimeOrName(String? mimeType, String? name) =>
 
 /// У `XFile.fromData` без `path` на io пустое `name` — смотрим и `path`.
 bool isGifXFile(XFile file) =>
-    isGifMimeOrName(file.mimeType ?? lookupMimeType(file.path), file.name) ||
+    isGifMimeOrName(resolveXFileMime(file), file.name) ||
     isGifMimeOrName(null, file.path);
 
 /// SDK-shrink (Win/Linux) перекодировал бы GIF в один кадр.

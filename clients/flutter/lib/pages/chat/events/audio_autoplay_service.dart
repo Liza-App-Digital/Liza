@@ -74,20 +74,19 @@ Event? nextAudioEventInChain(
 /// слабом устройстве терминалить нельзя (та же дисциплина, что у `MxcImage`, где
 /// `_maybeTranscodeHeic` намеренно оставлен вне таймаута).
 ///
-/// Порог щедрый намеренно: прерванная закачка НЕ кэшируется (SDK делает
-/// `storeFile` только после ПОЛНОГО тела), значит повтор = полная перекачка.
+/// Это срок БЕЗ НОВЫХ БАЙТ, а не бюджет всей загрузки: каждый принятый чанк
+/// перезапускает отсчёт. Бюджет на всю загрузку рубил живую докачку на слабом
+/// канале: GlitchTip #2085 (2026-09-29, iPhone 3770) — голосовое 1,12 МБ при
+/// ~20 КБ/с, MMR отдал его целиком за 53 с, а клиент оборвал на 60-й секунде
+/// и показал ошибку. Прерванная закачка НЕ кэшируется (SDK делает `storeFile`
+/// только после ПОЛНОГО тела), так что повторный тап качал бы всё заново.
+///
 /// Собственный дедлайн нужен потому, что SDK-таймаут тут не страхует: Liza
 /// поднимает `defaultNetworkRequestTimeout` до 30 минут
-/// (`client_manager.dart`), и он МЕЖЧАНКОВЫЙ (`http_timeout.dart` вешает
-/// `.timeout` на `response.stream`) — «тлеющее» соединение живёт часами.
+/// (`client_manager.dart`) — «тлеющее» соединение без байтов живёт часами.
+/// Порог тот же, что у видео (`_downloadIdleTimeout`). После последнего чанка в
+/// то же окно укладываются декрипт и `storeFile` SDK — это секунды.
 const Duration kAudioPrepareNetworkTimeout = Duration(seconds: 60);
-
-/// Дедлайн для крупных вложений (музыка, длинные записи) — та же логика, но
-/// перекачивать больше.
-const Duration kAudioPrepareNetworkTimeoutLarge = Duration(seconds: 180);
-
-/// Граница «крупного» вложения для выбора дедлайна.
-const int kAudioPrepareLargeSizeBytes = 5 * 1024 * 1024;
 
 /// Сколько после возврата из фона сбой ещё списываем на заморозку: на `resumed`
 /// `MatrixState._refreshHttpClients` force-закрывает прежний HTTP-клиент, и
@@ -111,18 +110,23 @@ class AudioPrepareSuspendedException implements Exception {
   String toString() => 'AudioPrepareSuspendedException: $cause';
 }
 
-/// Дедлайн по времени ОТКРЫТОГО приложения + ответ «сбой объясняется сном?».
-/// Живёт на одну подготовку (обе попытки).
+/// Дедлайн простоя (перезапуск на каждом чанке) по времени ОТКРЫТОГО
+/// приложения + ответ «сбой объясняется сном?». Живёт на одну подготовку (обе
+/// попытки). Без [suspendable] (desktop) lifecycle не слушает.
 class _ForegroundDeadline {
-  _ForegroundDeadline(this._resumeGrace)
-    : _suspended = isSuspendingLifecycleState(
-        WidgetsBinding.instance.lifecycleState,
-      ) {
-    _listener = AppLifecycleListener(onStateChange: _onStateChange);
+  _ForegroundDeadline(this._resumeGrace, {required bool suspendable})
+    : _suspendable = suspendable,
+      _suspended =
+          suspendable &&
+          isSuspendingLifecycleState(WidgetsBinding.instance.lifecycleState) {
+    if (suspendable) {
+      _listener = AppLifecycleListener(onStateChange: _onStateChange);
+    }
   }
 
   final Duration _resumeGrace;
-  late final AppLifecycleListener _listener;
+  final bool _suspendable;
+  AppLifecycleListener? _listener;
   bool _suspended;
   bool _justResumed = false;
   Timer? _grace;
@@ -155,6 +159,9 @@ class _ForegroundDeadline {
     });
   }
 
+  /// Пришли байты — канал жив, срок заново.
+  void touch() => _restart();
+
   void _restart() {
     _timer?.cancel();
     final onExpire = _onExpire;
@@ -178,12 +185,13 @@ class _ForegroundDeadline {
   }
 
   bool get failureExplainedBySuspension =>
-      _suspended ||
-      _justResumed ||
-      isSuspendingLifecycleState(WidgetsBinding.instance.lifecycleState);
+      _suspendable &&
+      (_suspended ||
+          _justResumed ||
+          isSuspendingLifecycleState(WidgetsBinding.instance.lifecycleState));
 
   void dispose() {
-    _listener.dispose();
+    _listener?.dispose();
     _timer?.cancel();
     _grace?.cancel();
   }
@@ -204,25 +212,28 @@ class _ForegroundDeadline {
 /// попытки жгли бы одноразовые бюджеты самолечения в
 /// `downloadAndDecryptAttachmentHealed`.
 ///
+/// [timeout] — срок простоя: [attempt] получает `onBytes` и зовёт его на каждом
+/// принятом чанке, отсчёт начинается заново (см. [kAudioPrepareNetworkTimeout]).
+///
 /// На mobile ([suspendable] по умолчанию) дедлайн считает время открытого
 /// приложения, а итоговый сетевой/таймаут-сбой, всплывший в фоне или в первые
 /// [resumeGrace] после возврата, поднимается как
 /// [AudioPrepareSuspendedException]. HTTP-коды и декрипт так не глушатся. На
-/// desktop свёрнутое окно не замораживается — там обычный `.timeout`.
+/// desktop свёрнутое окно не замораживается — lifecycle не учитывается.
 @visibleForTesting
 Future<T> withForegroundDeadline<T>(
-  Future<T> Function() attempt,
+  Future<T> Function(void Function() onBytes) attempt,
   Duration timeout, {
   bool? suspendable,
   Duration resumeGrace = kAudioPrepareResumeGrace,
 }) async {
-  if (!(suspendable ?? PlatformInfos.isMobile)) {
-    return _withSingleTransportRetry(() => attempt().timeout(timeout));
-  }
-  final deadline = _ForegroundDeadline(resumeGrace);
+  final deadline = _ForegroundDeadline(
+    resumeGrace,
+    suspendable: suspendable ?? PlatformInfos.isMobile,
+  );
   try {
     return await _withSingleTransportRetry(
-      () => deadline.guard(attempt(), timeout),
+      () => deadline.guard(attempt(deadline.touch), timeout),
     );
   } catch (e) {
     final transport = const {
@@ -252,16 +263,16 @@ Future<MatrixFile> _downloadAudioAttachment(
   int? fileSize,
   void Function(double progress)? onProgress,
 ) {
-  final timeout = (fileSize ?? 0) > kAudioPrepareLargeSizeBytes
-      ? kAudioPrepareNetworkTimeoutLarge
-      : kAudioPrepareNetworkTimeout;
   return withForegroundDeadline(
-    () => event.downloadAndDecryptAttachmentHealed(
-      onDownloadProgress: fileSize != null && fileSize > 0 && onProgress != null
-          ? (progress) => onProgress(progress / fileSize)
-          : null,
+    (onBytes) => event.downloadAndDecryptAttachmentHealed(
+      onDownloadProgress: (received) {
+        onBytes();
+        if (fileSize != null && fileSize > 0) {
+          onProgress?.call(received / fileSize);
+        }
+      },
     ),
-    timeout,
+    kAudioPrepareNetworkTimeout,
   );
 }
 
@@ -281,7 +292,11 @@ Future<({File? file, MatrixFile matrixFile})> prepareAudioPlaybackFile(
   final fileSize = event.content
       .tryGetMap<String, dynamic>('info')
       ?.tryGet<int>('size');
-  final matrixFile = await _downloadAudioAttachment(event, fileSize, onProgress);
+  final matrixFile = await _downloadAudioAttachment(
+    event,
+    fileSize,
+    onProgress,
+  );
 
   if (kIsWeb) return (file: null, matrixFile: matrixFile);
 

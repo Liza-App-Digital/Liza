@@ -69,28 +69,56 @@ class UploadProgressOverlay extends StatelessWidget {
   /// Плитка альбома (~88 px): кольцо меньше, подпись в одну строку.
   final bool compact;
 
+  /// Только крестик, без кольца и подписи: превью ниже ~60 px (панорама
+  /// рисуется высотой до 32 px) не вмещает даже compact-вариант.
+  final bool buttonOnly;
+
   const UploadProgressOverlay({
     required this.notifier,
     required this.event,
     this.compact = false,
+    this.buttonOnly = false,
     super.key,
   });
-
-  /// Отмена: ставим флаг (его на ближайшем чанке тела читает
-  /// `UploadProgressHttpClient` и обрывает отдачу; серия отправки по нему же
-  /// пропускает файл) и сразу убираем pending-событие из ленты. `cancelSend`
-  /// может бросить, если событие уже удалено/отправлено — гасим.
-  void _cancel() {
-    UploadProgressTracker.instance.requestCancel(event.eventId);
-    // ignore: discarded_futures
-    event.cancelSend().catchError((_) {});
-  }
 
   @override
   Widget build(BuildContext context) {
     final cancelLabel = L10n.of(context).cancel;
+    final small = compact || buttonOnly;
     final ring = compact ? 40.0 : 64.0;
-    final button = compact ? 30.0 : 44.0;
+    final button = buttonOnly ? 24.0 : (compact ? 30.0 : 44.0);
+    final cancelButton = Semantics(
+      button: true,
+      label: cancelLabel,
+      child: Tooltip(
+        message: cancelLabel,
+        child: Material(
+          type: MaterialType.circle,
+          color: Colors.black54,
+          child: InkWell(
+            key: ValueKey('upload-cancel-${event.eventId}'),
+            customBorder: const CircleBorder(),
+            // ignore: discarded_futures
+            onTap: () => cancelPendingSend(event),
+            child: SizedBox(
+              width: button,
+              height: button,
+              child: Icon(
+                Icons.close,
+                color: Colors.white,
+                size: small ? 18 : 24,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (buttonOnly) {
+      return ColoredBox(
+        color: Colors.black54,
+        child: Center(child: cancelButton),
+      );
+    }
     return ColoredBox(
       color: Colors.black54,
       child: Center(
@@ -116,30 +144,7 @@ class UploadProgressOverlay extends StatelessWidget {
                       ),
                     ),
                   ),
-                  Semantics(
-                    button: true,
-                    label: cancelLabel,
-                    child: Tooltip(
-                      message: cancelLabel,
-                      child: Material(
-                        type: MaterialType.circle,
-                        color: Colors.black54,
-                        child: InkWell(
-                          customBorder: const CircleBorder(),
-                          onTap: _cancel,
-                          child: SizedBox(
-                            width: button,
-                            height: button,
-                            child: Icon(
-                              Icons.close,
-                              color: Colors.white,
-                              size: compact ? 18 : 24,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                  cancelButton,
                 ],
               ),
             ),

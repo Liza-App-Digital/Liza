@@ -37,6 +37,14 @@ abstract class AppConfig {
   static const double borderRadius = 18.0;
   static const double columnWidth = 360.0;
 
+  /// Сколько файлов уходит за одну отправку (LABA-2621): лишнее диалог
+  /// отправки отбрасывает — «Вставить ещё» и пикеры иначе набирали 120+.
+  static const int maxAttachmentsPerSend = 30;
+
+  /// Медиа-набор режется на альбомы не длиннее этого — как в Telegram;
+  /// альбом из 30 рисовался бы сеткой в 10 рядов.
+  static const int albumChunkSize = 10;
+
   static const String website = 'https://liza.laba.pro';
   static const String faqUrl = 'https://liza.laba.pro/faq';
   static const String appId = 'com.prodamus.laba.liza';

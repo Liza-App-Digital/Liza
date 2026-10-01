@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'package:liza/config/app_config.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/app_lock.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
@@ -146,7 +147,11 @@ Future<List<XFile>> selectGalleryMedia(BuildContext context) async {
   final picked = await AppLock.of(context).pauseWhile(
     showFutureLoadingDialog(
       context: context,
-      future: () => ImagePicker().pickMultipleMedia(),
+      // Только подсказка системному пикеру (Android без Photo Picker её
+      // игнорирует) — гарантию лимита даёт `SendFileDialog`.
+      future: () => ImagePicker().pickMultipleMedia(
+        limit: AppConfig.maxAttachmentsPerSend,
+      ),
     ),
   );
   return picked.result ?? const [];

@@ -3743,7 +3743,7 @@
   "@version": {},
   "website": "Сайт",
   "@website": {},
-  "sendImages": "Отправить {count} изображение",
+  "sendImages": "{count, plural, one{Отправить {count} изображение} few{Отправить {count} изображения} many{Отправить {count} изображений} other{Отправить {count} изображения}}",
   "@sendImages": {
     "type": "String",
     "placeholders": {
@@ -5183,5 +5183,9 @@
   "updateTestFlightHint": "Совет: включите автоматические обновления в TestFlight — приложение будет обновляться само.",
   "@updateTestFlightHint": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
   "updateReadOnlyAction": "В этой версии отправка недоступна. Обновите приложение, чтобы отвечать.",
-  "@updateReadOnlyAction": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"}
+  "@updateReadOnlyAction": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
+  "attachLimitReached": "{limit, plural, one{За раз можно отправить не больше {limit} файла.} few{За раз можно отправить не больше {limit} файлов.} many{За раз можно отправить не больше {limit} файлов.} other{За раз можно отправить не больше {limit} файла.}}",
+  "@attachLimitReached": {"description": "Лимит вложений за одну отправку (LABA-2621)", "placeholders": {"limit": {"type": "int"}}},
+  "attachLimitDropped": "{count, plural, one{Лишний {count} файл не добавлен.} few{Лишние {count} файла не добавлены.} many{Лишние {count} файлов не добавлены.} other{Лишние {count} файла не добавлены.}}",
+  "@attachLimitDropped": {"description": "Лимит вложений за одну отправку (LABA-2621)", "placeholders": {"count": {"type": "int"}}}
 }
