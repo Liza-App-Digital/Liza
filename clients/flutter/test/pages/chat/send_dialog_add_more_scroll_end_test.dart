@@ -1,4 +1,4 @@
-// Страж LABA-2631: после «+» («Вставить ещё») диалог пересоздаётся, и его лента
+// Страж LABA-2631: после «+» (добор изображений, LABA-2619) диалог пересоздаётся, и его лента
 // превью обязана открыться у КОНЦА — видны только что вставленное и плитка «+»,
 // следующую вставку можно сделать без листания.
 //
@@ -21,7 +21,6 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/send_file_dialog.dart';
-import 'package:liza/utils/clipboard_paste.dart';
 
 import '../../utils/test_client.dart';
 
@@ -62,16 +61,12 @@ class _DelayedXFile extends XFile {
   }
 }
 
-class _FakeReader implements PasteboardReader {
-  @override
-  Future<String?> text() async => null;
-  @override
-  Future<List<XFile>> files() async => [];
-  @override
-  Future<List<Uint8List>> images() async => [];
-  @override
-  Future<Uint8List?> image() async => _png;
-}
+/// Пикер «+» (LABA-2619): каждый вызов отдаёт одно изображение — как выбор
+/// одного файла в проводнике/галерее.
+var _picked = 0;
+Future<List<XFile>> _fakePicker(BuildContext _, int _) async => [
+  _img('picked${_picked++}.png'),
+];
 
 Future<void> _decode(WidgetTester tester) async {
   for (var k = 0; k < 3; k++) {
@@ -121,7 +116,7 @@ Future<void> _openDialog(
       threadLastEventId: null,
       threadRootEventId: null,
       scrollToEndOnOpen: scrollToEndOnOpen,
-      pasteboardReader: _FakeReader(),
+      moreImagesPicker: _fakePicker,
     ),
   );
   await tester.pump();

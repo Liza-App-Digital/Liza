@@ -1889,8 +1889,7 @@
     "type": "String",
     "placeholders": {}
   },
-  "pasteMore": "Вставить ещё",
-  "clipboardHasNoImage": "В буфере нет изображения",
+  "addMoreImages": "Добавить ещё",
   "sendImage": "Отправить изображение",
   "@sendImage": {
     "type": "String",

@@ -17,6 +17,7 @@ import 'package:liza/utils/album_send_series.dart';
 import 'package:liza/utils/animated_gif.dart';
 import 'package:liza/utils/clipboard_paste.dart';
 import 'package:liza/utils/compress_image.dart';
+import 'package:liza/utils/file_selector.dart';
 import 'package:liza/utils/heic_converter.dart';
 import 'package:liza/utils/mp4_faststart.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
@@ -115,8 +116,8 @@ class SendFileDialog extends StatefulWidget {
   /// (документ-карточка). Тип определяется по MIME. См. `chat.dart`.
   final bool compress;
 
-  /// Подпись, перенесённая при накоплении («➕ Вставить ещё» пересоздаёт диалог
-  /// с уже введённым текстом — см. `_addMore`).
+  /// Подпись, перенесённая при накоплении («+» и Cmd/Ctrl+V пересоздают диалог
+  /// с уже введённым текстом — см. `_reopen`).
   final String? initialCaption;
 
   /// Открыть ленту превью у КОНЦА (плитка «+» видна) — ставит только
@@ -124,9 +125,15 @@ class SendFileDialog extends StatefulWidget {
   /// следующей вставки её приходилось листать заново (LABA-2631).
   final bool scrollToEndOnOpen;
 
-  /// Источник буфера для «➕ Вставить ещё»; подменяется только в тестах.
+  /// Источник буфера для Cmd/Ctrl+V внутри диалога; подменяется только в тестах.
   @visibleForTesting
   final PasteboardReader pasteboardReader;
+
+  /// Выбор изображений для плитки «+» (`limit` — сколько ещё влезает в кап);
+  /// подменяется только в тестах.
+  @visibleForTesting
+  final Future<List<XFile>> Function(BuildContext context, int limit)
+  moreImagesPicker;
 
   /// Сколько файлов сверх `AppConfig.maxAttachmentsPerSend` отброшено — диалог
   /// говорит об этом строкой в контенте.
@@ -134,8 +141,8 @@ class SendFileDialog extends StatefulWidget {
 
   /// Кап — здесь, а не в каждой из точек входа (пикеры, вставка, drag&drop,
   /// share) и не state-копией: `files` остаётся единственным списком, по
-  /// индексам которого живут превью, постеры и txid. «Вставить ещё»
-  /// пересоздаёт диалог этим же конструктором — кап действует и на неё.
+  /// индексам которого живут превью, постеры и txid. «+» и Cmd/Ctrl+V
+  /// пересоздают диалог этим же конструктором — кап действует и на них.
   SendFileDialog({
     required this.room,
     required List<XFile> files,
@@ -146,6 +153,7 @@ class SendFileDialog extends StatefulWidget {
     this.initialCaption,
     this.scrollToEndOnOpen = false,
     this.pasteboardReader = const SystemPasteboardReader(),
+    this.moreImagesPicker = selectMoreImages,
     super.key,
   }) : files = files.length > AppConfig.maxAttachmentsPerSend
            ? files.sublist(0, AppConfig.maxAttachmentsPerSend)
@@ -165,7 +173,8 @@ class SendFileDialogState extends State<SendFileDialog> {
 
   final TextEditingController _labelTextController = TextEditingController();
 
-  /// Идёт перечитывание буфера для «➕ Вставить ещё» — блокируем повторный тап.
+  /// Идёт добор файлов (пикер «+» или чтение буфера по Cmd/Ctrl+V) —
+  /// блокируем повторный вызов.
   bool _addingMore = false;
 
   /// Сколько раз тело `_send` реально стартовало — считает ТОЛЬКО страж
@@ -258,50 +267,97 @@ class SendFileDialogState extends State<SendFileDialog> {
     super.dispose();
   }
 
-  /// «➕ Вставить ещё»: перечитывает буфер тем же отбором, склеивает с текущим
-  /// набором и ПЕРЕСОЗДАЁТ диалог (не мутирует `widget.files` — иначе рушится
-  /// индексная схема видео-постеров; синтез комиссии A-вариант-а). Подпись
-  /// переносится через `initialCaption`.
+  /// Плитка «+»: системный выбор ИЗОБРАЖЕНИЙ (проводник/Finder, на mobile —
+  /// галерея) и добор выбранного к набору (LABA-2619; до того «+» читала буфер).
+  /// Не-изображения отсеиваются: лента с «+» живёт только у набора из одних
+  /// изображений, и видео/pdf в наборе убрали бы саму плитку.
   Future<void> _addMore() async {
     // Тот же общий гард, что и у `_send`: две кнопки диалога взаимоисключающи
-    // (см. `_busy`), иначе «Вставить ещё» во время идущей отправки открывает
-    // второй диалог поверх неё.
+    // (см. `_busy`), иначе «+» во время идущей отправки открывает второй
+    // диалог поверх неё.
     if (_busy || _atLimit) return;
     setState(() => _addingMore = true);
-    final l10n = L10n.of(context);
-    final scaffoldMessenger = ScaffoldMessenger.of(widget.outerContext);
+    try {
+      // До вызова пикера — ни одного `await`: на Web file_picker открывается
+      // только в пределах пользовательского жеста.
+      final picked = await widget.moreImagesPicker(
+        widget.outerContext,
+        AppConfig.maxAttachmentsPerSend - widget.files.length,
+      );
+      if (!mounted) return;
+      await _appendImagesOrReset(picked);
+    } catch (e, s) {
+      Logs().w('Failed to pick more images', e, s);
+      if (mounted) setState(() => _addingMore = false);
+    }
+  }
+
+  /// Cmd/Ctrl+V в открытом диалоге: изображения из буфера добираются в набор
+  /// (накопление скриншотов — RL-paste-accumulate-album; буфер Windows/Android
+  /// держит один растр за раз). Иначе — обычная вставка текста в подпись через
+  /// [textPaste] (родное действие поля; `null`, если поле не в фокусе).
+  Future<void> _pasteFromClipboard(VoidCallback? textPaste) async {
+    if (_busy || _atLimit) {
+      textPaste?.call();
+      return;
+    }
+    setState(() => _addingMore = true);
     try {
       final result = await collectPasteXFiles(widget.pasteboardReader);
       if (!mounted) return;
-      if (!result.handledAsMedia || result.files.isEmpty) {
+      final images = result.handledAsMedia
+          ? _onlyImages(result.files)
+          : const <XFile>[];
+      if (images.isEmpty) {
         setState(() => _addingMore = false);
-        scaffoldMessenger.showSnackBar(
-          SnackBar(content: Text(l10n.clipboardHasNoImage)),
-        );
+        textPaste?.call();
         return;
       }
-      final merged = await accumulate(widget.files, result.files);
-      if (!mounted) return;
-      final caption = _labelTextController.text;
-      Navigator.of(context, rootNavigator: false).pop();
-      await showAdaptiveDialog(
-        context: widget.outerContext,
-        builder: (c) => SendFileDialog(
-          files: merged,
-          room: widget.room,
-          outerContext: widget.outerContext,
-          threadRootEventId: widget.threadRootEventId,
-          threadLastEventId: widget.threadLastEventId,
-          compress: widget.compress,
-          initialCaption: caption,
-          scrollToEndOnOpen: true,
-          pasteboardReader: widget.pasteboardReader,
-        ),
-      );
+      await _appendImagesOrReset(images);
     } catch (e, s) {
       Logs().w('Failed to add more from clipboard', e, s);
       if (mounted) setState(() => _addingMore = false);
     }
+  }
+
+  static List<XFile> _onlyImages(List<XFile> files) => files
+      .where((f) => resolveXFileMime(f)?.startsWith('image/') ?? false)
+      .toList();
+
+  /// Добирает изображения из [incoming] в набор и пересоздаёт диалог; если
+  /// изображений нет (отмена пикера, пустой ответ) — диалог остаётся как был.
+  Future<void> _appendImagesOrReset(List<XFile> incoming) async {
+    final images = _onlyImages(incoming);
+    if (images.isEmpty) {
+      setState(() => _addingMore = false);
+      return;
+    }
+    final merged = await accumulate(widget.files, images);
+    if (!mounted) return;
+    await _reopen(merged);
+  }
+
+  /// Пересоздаёт диалог с набором [files] (не мутирует `widget.files` — иначе
+  /// рушится индексная схема видео-постеров). Все параметры диалога переносятся
+  /// здесь, в одном месте, — иначе пересозданный диалог молча терял бы поле.
+  Future<void> _reopen(List<XFile> files) async {
+    final caption = _labelTextController.text;
+    Navigator.of(context, rootNavigator: false).pop();
+    await showAdaptiveDialog(
+      context: widget.outerContext,
+      builder: (c) => SendFileDialog(
+        files: files,
+        room: widget.room,
+        outerContext: widget.outerContext,
+        threadRootEventId: widget.threadRootEventId,
+        threadLastEventId: widget.threadLastEventId,
+        compress: widget.compress,
+        initialCaption: caption,
+        scrollToEndOnOpen: true,
+        pasteboardReader: widget.pasteboardReader,
+        moreImagesPicker: widget.moreImagesPicker,
+      ),
+    );
   }
 
   /// Плитка «+» — аффорданс накопления, ПОСЛЕДНИЙ элемент ленты превью.
@@ -328,7 +384,7 @@ class SendFileDialogState extends State<SendFileDialog> {
           child: InkWell(
             onTap: enabled ? _addMore : null,
             child: Tooltip(
-              message: L10n.of(context).pasteMore,
+              message: L10n.of(context).addMoreImages,
               child: Center(
                 child: Icon(
                   Icons.add_photo_alternate_outlined,
@@ -979,6 +1035,18 @@ class SendFileDialogState extends State<SendFileDialog> {
 
   @override
   Widget build(BuildContext context) {
+    // Cmd/Ctrl+V перехватывается как `PasteTextIntent`, а не `onKeyEvent`:
+    // EditableText объявляет это действие переопределяемым, и родная вставка
+    // текста остаётся доступна как `callingAction` (selection/undo не
+    // переписываем руками). `Focus(autofocus)` нужен, чтобы шорткат нашёл
+    // действие, пока поле подписи не в фокусе.
+    return Actions(
+      actions: {PasteTextIntent: _DialogPasteAction(this)},
+      child: Focus(autofocus: true, child: _buildDialog(context)),
+    );
+  }
+
+  Widget _buildDialog(BuildContext context) {
     final theme = Theme.of(context);
 
     var sendStr = L10n.of(context).sendFile;
@@ -1218,6 +1286,25 @@ class SendFileDialogState extends State<SendFileDialog> {
           ],
         );
       },
+    );
+  }
+}
+
+/// Cmd/Ctrl+V внутри `SendFileDialog` — см. `_pasteFromClipboard`.
+/// Пункт «Вставить» контекстного меню поля сюда НЕ приходит: тулбар зовёт
+/// `pasteText` напрямую, мимо интента, — он вставляет только текст.
+class _DialogPasteAction extends ContextAction<PasteTextIntent> {
+  _DialogPasteAction(this.state);
+
+  final SendFileDialogState state;
+
+  @override
+  void invoke(PasteTextIntent intent, [BuildContext? context]) {
+    // `callingAction` валиден только во время `invoke` — захватываем сейчас,
+    // зовём после асинхронного чтения буфера.
+    final textPaste = callingAction;
+    state._pasteFromClipboard(
+      textPaste == null ? null : () => textPaste.invoke(intent),
     );
   }
 }

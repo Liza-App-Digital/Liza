@@ -157,6 +157,29 @@ Future<List<XFile>> selectGalleryMedia(BuildContext context) async {
   return picked.result ?? const [];
 }
 
+/// Добор изображений к уже собранному набору — плитка «+» в `SendFileDialog`
+/// (LABA-2619). Только изображения: лента превью с «+» существует лишь у
+/// набора из одних изображений, видео или pdf её бы убрали.
+///
+/// [limit] — сколько ещё влезает в кап набора. Mobile: `pickMultiImage`
+/// бросает `ArgumentError` при `limit < 2`, поэтому на последнее место —
+/// одиночный `pickImage`. Desktop/Web: у FilePicker лимита нет, лишнее срежет
+/// кап конструктора `SendFileDialog` (со строкой «Лишние N»).
+Future<List<XFile>> selectMoreImages(BuildContext context, int limit) async {
+  if (!PlatformInfos.isMobile) {
+    return selectFiles(context, type: FileType.image, allowMultiple: true);
+  }
+  final picked = await AppLock.of(context).pauseWhile(
+    showFutureLoadingDialog(
+      context: context,
+      future: () async => limit < 2
+          ? [?await ImagePicker().pickImage(source: ImageSource.gallery)]
+          : await ImagePicker().pickMultiImage(limit: limit),
+    ),
+  );
+  return picked.result ?? const [];
+}
+
 /// Выбор ОДНОГО медиа для сториса — фото ИЛИ видео.
 ///
 /// Mobile — `ImagePicker.pickMedia` (системный Photo Picker: предлагает и фото,

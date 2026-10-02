@@ -48,20 +48,29 @@ void main() {
     expect(client.myReceiptIndexIn(room, segs), -1);
   });
 
-  test('viewerReceiptIndexes: карта зрителей [ledger:RL-stories-seen-sync]', () {
-    final room = Room(id: '!s3:example.invalid', client: client);
-    final segs = [_seg(room, r'$a', 1), _seg(room, r'$b', 2)];
-    _setReceipts(room, {
-      'others': {
-        '@v1:x': {'e': r'$a', 'ts': 1},
-        '@v2:x': {'e': r'$b', 'ts': 2},
-        '@v3:x': {'e': r'$gone', 'ts': 3},
-      },
-    });
-    final map = client.viewerReceiptIndexes(room, segs);
-    expect(map['@v1:x'], 0);
-    expect(map['@v2:x'], 1);
-    // receipt на исчезнувшее (redacted/протухшее) событие - зрителя нет в карте
-    expect(map.containsKey('@v3:x'), isFalse);
-  });
+  test(
+    'viewerReceiptEventIds: последний receipt зрителя, максимум из global и main [ledger:RL-stories-seen-sync]',
+    () {
+      final room = Room(id: '!s3:example.invalid', client: client);
+      room.roomAccountData['com.famedly.receipts_state'] = BasicEvent(
+        type: 'com.famedly.receipts_state',
+        content: {
+          'global': {
+            'others': {
+              '@v1:x': {'e': r'$a', 'ts': 1},
+              '@v2:x': {'e': r'$b', 'ts': 5},
+            },
+          },
+          'main': {
+            'others': {
+              '@v1:x': {'e': r'$c', 'ts': 3},
+              '@v2:x': {'e': r'$old', 'ts': 2},
+            },
+          },
+        },
+      );
+      final map = client.viewerReceiptEventIds(room);
+      expect(map, {'@v1:x': r'$c', '@v2:x': r'$b'});
+    },
+  );
 }

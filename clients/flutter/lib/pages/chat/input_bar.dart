@@ -8,6 +8,7 @@ import 'package:slugify/slugify.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/utils/bot_commands_registry.dart';
 import 'package:liza/utils/markdown_context_builder.dart';
 import 'package:liza/utils/miniapp_room.dart';
 import 'package:liza/widgets/mxc_image.dart';
@@ -32,6 +33,24 @@ Map<String, String?>? botFatherMenuCommandSuggestion(
     return {'type': 'command', 'name': 'menu', 'highlight': 'true'};
   }
   return null;
+}
+
+/// Подсказки «/» из меню бота-собеседника DM (ledger:RL-bot-commands-composer-menu).
+/// Пусто вне DM и пока команды не загружены. Совпадение — по префиксу.
+List<Map<String, String?>> botCommandSuggestions(
+  Room room,
+  String commandSearch,
+) {
+  final botMxid = room.directChatMatrixID;
+  if (botMxid == null) return const [];
+  return [
+    for (final c in BotCommandsRegistry.instance.commandsFor(
+      room.client,
+      botMxid,
+    ))
+      if (c.command.startsWith(commandSearch))
+        {'type': 'botcommand', 'name': c.command, 'description': c.description},
+  ];
 }
 
 class InputBar extends StatefulWidget {
@@ -107,10 +126,10 @@ class _InputBarState extends State<InputBar> {
         )
         .then((_) {})
         .catchError((Object e, StackTrace st) {
-      // Снимаем флаг, чтобы следующий ввод `@` ретрайнул запрос.
-      InputBar._participantsLoad.remove(roomId);
-      Logs().w('requestParticipants failed for $roomId', e, st);
-    });
+          // Снимаем флаг, чтобы следующий ввод `@` ретрайнул запрос.
+          InputBar._participantsLoad.remove(roomId);
+          Logs().w('requestParticipants failed for $roomId', e, st);
+        });
     InputBar._participantsLoad[roomId] = future;
     return future;
   }
@@ -152,8 +171,10 @@ class _InputBarState extends State<InputBar> {
       return false;
     }
     final searchText = text.text.substring(0, text.selection.baseOffset);
-    return RegExp(r'(?:\s|^)@([-\w\p{L}]*)$', unicode: true)
-            .firstMatch(searchText) !=
+    return RegExp(
+          r'(?:\s|^)@([-\w\p{L}]*)$',
+          unicode: true,
+        ).firstMatch(searchText) !=
         null;
   }
 
@@ -173,11 +194,16 @@ class _InputBarState extends State<InputBar> {
       // первой и выделенной — очевидный способ вернуться к меню, а не искать
       // /start или скроллить в начало диалога. Не Matrix-команда: уходит боту
       // текстом (см. botCommands в chat.dart send()).
-      final menuSuggestion =
-          botFatherMenuCommandSuggestion(room, commandSearch);
+      final menuSuggestion = botFatherMenuCommandSuggestion(
+        room,
+        commandSearch,
+      );
       if (menuSuggestion != null) {
         ret.add(menuSuggestion);
       }
+      // Меню бота (setMyCommands в Liza Bot API) — первым: в чате с ботом это то,
+      // что пользователь ищет. Загружает BotCommandsRegistry при открытии чата.
+      ret.addAll(botCommandSuggestions(room, commandSearch));
       for (final command in room.client.commands.keys) {
         if (command.contains(commandSearch)) {
           ret.add({'type': 'command', 'name': command});
@@ -268,9 +294,10 @@ class _InputBarState extends State<InputBar> {
         }
       }
     }
-    final userMatch =
-        RegExp(r'(?:\s|^)@([-\w\p{L}]*)$', unicode: true)
-            .firstMatch(searchText);
+    final userMatch = RegExp(
+      r'(?:\s|^)@([-\w\p{L}]*)$',
+      unicode: true,
+    ).firstMatch(searchText);
     if (userMatch != null) {
       // Полный список участников гарантированно подгружается перед вызовом
       // getSuggestions через _ensureParticipantsLoaded в _getSuggestionsWithAiPinning.
@@ -346,6 +373,22 @@ class _InputBarState extends State<InputBar> {
   ) {
     final theme = Theme.of(context);
     const size = 30.0;
+    if (suggestion['type'] == 'botcommand') {
+      return ListTile(
+        onTap: () => onSelected(suggestion),
+        title: Text(
+          '/${suggestion['name']!}',
+          style: const TextStyle(fontFamily: 'RobotoMono'),
+        ),
+        subtitle: (suggestion['description'] ?? '').isEmpty
+            ? null
+            : Text(
+                suggestion['description']!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+      );
+    }
     if (suggestion['type'] == 'command') {
       final command = suggestion['name']!;
       final hint = commandHint(L10n.of(context), command);
@@ -446,9 +489,7 @@ class _InputBarState extends State<InputBar> {
         onTap: () => onSelected(suggestion),
         leading: Avatar(
           mxContent: url,
-          name:
-              suggestion.tryGet<String>('displayname') ??
-              mxid,
+          name: suggestion.tryGet<String>('displayname') ?? mxid,
           size: size,
           client: client,
           isHexagonal: isUser && Matrix.of(context).isAiUser(mxid),
@@ -462,10 +503,7 @@ class _InputBarState extends State<InputBar> {
               UserRoleBadge(
                 userId: mxid,
                 fontSize: 9,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 5,
-                  vertical: 1,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
               ),
           ],
         ),
@@ -486,10 +524,9 @@ class _InputBarState extends State<InputBar> {
     // Ветка исполняется только когда `replaceText != text`, а `replaceText` —
     // это `text.substring(0, cursor)`; значит здесь гарантированно
     // `cursor < text.length`, и `cursor + 1` за границу не выходит.
-    final afterText =
-        replaceText == text ? '' : text.substring(cursor + 1);
+    final afterText = replaceText == text ? '' : text.substring(cursor + 1);
     var insertText = '';
-    if (suggestion['type'] == 'command') {
+    if (suggestion['type'] == 'command' || suggestion['type'] == 'botcommand') {
       insertText = '${suggestion['name']!} ';
       startText = replaceText.replaceAllMapped(
         RegExp(r'^(/\w*)$'),

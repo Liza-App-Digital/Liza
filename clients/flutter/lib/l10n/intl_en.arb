@@ -2177,8 +2177,7 @@
     "type": "String",
     "placeholders": {}
   },
-  "pasteMore": "Paste more",
-  "clipboardHasNoImage": "No image in clipboard",
+  "addMoreImages": "Add more",
   "sendImage": "Send image",
   "@sendImage": {
     "type": "String",

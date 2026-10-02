@@ -1,8 +1,11 @@
+import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 
 import '../../widgets/story_avatar_ring.dart';
 import '../channel_stories.dart';
 import '../chat_topology.dart';
+import '../monitoring.dart';
+import 'deleted_stories_store.dart';
 import 'stories_seen_store.dart';
 import 'story_model.dart';
 import 'story_seen_logic.dart';
@@ -63,6 +66,49 @@ bool shouldRequestMoreStoryHistory({
   return oldestLoadedTs >= cutoffTs;
 }
 
+/// Показывать ли событие сегментом сторис. Удалённое отсекается ЯВНО
+/// (`redacted` + список удалённых автором, [DeletedStoriesStore]), а не только
+/// косвенно через пустой content: LABA-2618 — копия в локальной БД «ожила» с
+/// полным content, проходила фильтр, и автор удалял её снова и снова.
+bool isActiveStoryEvent(
+  Event event, {
+  required int nowMs,
+  Set<String> deletedIds = const {},
+}) {
+  if (event.type != EventTypes.Message) return false;
+  if (event.redacted || deletedIds.contains(event.eventId)) return false;
+  final story = StoryContent.fromContent(event.content);
+  return story != null && storyIsActive(story, nowMs);
+}
+
+/// Удалённая автором сторис, у которой в локальной БД НЕТ следа редакции —
+/// ровно то состояние, из-за которого она возвращалась (LABA-2618).
+bool isResurrectedStoryEvent(Event event, Set<String> deletedIds) =>
+    deletedIds.contains(event.eventId) &&
+    !event.redacted &&
+    StoryContent.fromContent(event.content) != null;
+
+/// Датчик `[stories-resurrected]`: один warning на eventId за процесс. Корень
+/// LABA-2618 не установлен — фильтр по списку удалённых лечит симптом, а этот
+/// сигнал сохраняет улику (платформа и статус события; без id — PII).
+final Set<String> _reportedResurrected = {};
+
+@visibleForTesting
+void resetResurrectedStoryReports() => _reportedResurrected.clear();
+
+@visibleForTesting
+void Function(String message) reportResurrectedStory =
+    Monitoring.captureMessage;
+
+void _reportIfResurrected(Event event, Set<String> deletedIds) {
+  if (!isResurrectedStoryEvent(event, deletedIds)) return;
+  if (!_reportedResurrected.add(event.eventId)) return;
+  Logs().w('Удалённая сторис вернулась в локальную БД: ${event.eventId}');
+  reportResurrectedStory(
+    '[stories-resurrected] web=$kIsWeb status=${event.status.name}',
+  );
+}
+
 extension StoriesExtension on Client {
   static const String storiesTag = 'com.liza.stories';
 
@@ -91,7 +137,12 @@ extension StoriesExtension on Client {
   /// Активные сторисы + Timeline комнаты (нужен для реакций/агрегации).
   /// Вызывающий обязан позвать timeline.cancelSubscriptions(), когда закончит.
   /// Null при membership != join или ошибке загрузки таймлайна.
-  Future<(Timeline, List<Event>)?> activeStoriesWithTimeline(Room room) async {
+  /// [deleted] — сторис, удалённые автором с этого устройства; отсекаются,
+  /// даже если редакция не применилась к локальной копии.
+  Future<(Timeline, List<Event>)?> activeStoriesWithTimeline(
+    Room room, {
+    DeletedStoriesStore? deleted,
+  }) async {
     // Комнаты с membership != join (invite, leave) не имеют доступного таймлайна.
     if (room.membership != Membership.join) return null;
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -154,19 +205,25 @@ extension StoriesExtension on Client {
         'active story may be missing',
       );
     }
-    final result = timeline.events.where((e) {
-      if (e.type != EventTypes.Message) return false;
-      final story = StoryContent.fromContent(e.content);
-      return story != null && storyIsActive(story, now);
-    }).toList();
+    final deletedIds = deleted?.ids ?? const <String>{};
+    final settledIds = deleted?.settledIds ?? const <String>{};
+    for (final e in timeline.events) {
+      _reportIfResurrected(e, settledIds);
+    }
+    final result = timeline.events
+        .where((e) => isActiveStoryEvent(e, nowMs: now, deletedIds: deletedIds))
+        .toList();
     result.sort((a, b) => a.originServerTs.compareTo(b.originServerTs));
     return (timeline, result);
   }
 
   /// Активные события-сторисы в комнате (не истёкшие), по возрастанию времени.
   /// Загружает таймлайн при необходимости.
-  Future<List<Event>> activeStoriesOf(Room room) async {
-    final loaded = await activeStoriesWithTimeline(room);
+  Future<List<Event>> activeStoriesOf(
+    Room room, {
+    DeletedStoriesStore? deleted,
+  }) async {
+    final loaded = await activeStoriesWithTimeline(room, deleted: deleted);
     if (loaded == null) return const [];
     loaded.$1.cancelSubscriptions();
     return loaded.$2;
@@ -386,10 +443,10 @@ extension StoriesExtension on Client {
     return indexOfEvent(segments.map((e) => e.eventId).toList(), own?.eventId);
   }
 
-  /// userId -> индекс сегмента его receipt. Зрители, чей receipt указывает
-  /// на событие вне списка сегментов (redacted/протухшее), не включаются.
-  Map<String, int> viewerReceiptIndexes(Room room, List<Event> segments) {
-    final ids = segments.map((e) => e.eventId).toList();
+  /// userId -> eventId последнего receipt зрителя (максимум по ts из
+  /// глобального и main-таймлайна). Позицию относительно сегментов считает
+  /// [viewsCountInTimeline].
+  Map<String, String> viewerReceiptEventIds(Room room) {
     final state = room.receiptState;
     final merged = <String, LatestReceiptStateData>{};
     for (final source in [
@@ -400,12 +457,7 @@ extension StoriesExtension on Client {
         merged[entry.key] = _mergedReceipt(merged[entry.key], entry.value)!;
       }
     }
-    final result = <String, int>{};
-    for (final entry in merged.entries) {
-      final idx = indexOfEvent(ids, entry.value.eventId);
-      if (idx >= 0) result[entry.key] = idx;
-    }
-    return result;
+    return merged.map((userId, data) => MapEntry(userId, data.eventId));
   }
 
   /// Состояние кольца: unseen, если есть активный сегмент и не покрытый
@@ -497,6 +549,24 @@ extension StoriesExtension on Client {
   /// серверный `$...`. redactEvent для него уходит на сервер с несуществующим
   /// id → 404 → удаление молча падает. Для несинхронизированного события
   /// правильный примитив — cancelSend (убирает локальный echo из БД/timeline).
-  Future<void> deleteStory(Event event) =>
-      event.status.isSent ? event.redactEvent() : event.cancelSend();
+  ///
+  /// Уже удалённую (redacted или в [deleted]) повторно НЕ редактируем —
+  /// LABA-2618: «ожившая» копия давала новый PUT redact на каждое удаление.
+  /// В [deleted] id попадает только после успешного PUT: упавшее удаление
+  /// должно оставаться доступным для повтора.
+  Future<void> deleteStory(Event event, {DeletedStoriesStore? deleted}) async {
+    if (!event.status.isSent) return event.cancelSend();
+    if (isStoryAlreadyDeleted(event, deleted)) return;
+    await event.redactEvent();
+    try {
+      await deleted?.add(event.eventId);
+    } catch (e, s) {
+      // На сервере сторис уже удалена — показывать «не удалось» нельзя.
+      // Без записи остаётся только косвенный фильтр (пустой content).
+      Logs().w('Не удалось запомнить удалённую сторис', e, s);
+    }
+  }
+
+  bool isStoryAlreadyDeleted(Event event, DeletedStoriesStore? deleted) =>
+      event.redacted || (deleted?.contains(event.eventId) ?? false);
 }

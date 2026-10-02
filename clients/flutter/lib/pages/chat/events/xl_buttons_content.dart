@@ -5,6 +5,7 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/pages/chat/external_link_web_view.dart';
+import 'package:liza/utils/bot_callback.dart';
 import 'package:liza/utils/url_launcher.dart';
 import 'package:liza/widgets/matrix.dart';
 import 'html_message.dart';
@@ -13,7 +14,16 @@ class _XlButton {
   final String index;
   final String title;
   final String? url;
-  const _XlButton({required this.index, required this.title, this.url});
+
+  /// Сервер принимает нажатие событием [botCallbackEventType] (флаг ставит
+  /// Liza Bot API). Без флага — номер текстом (кнопки @bo_food, старые сообщения).
+  final bool callback;
+  const _XlButton({
+    required this.index,
+    required this.title,
+    this.url,
+    this.callback = false,
+  });
 }
 
 /// Открывает url-кнопку бота ВНУТРИ мессенджера (встроенный `ExternalLinkWebView`)
@@ -44,10 +54,14 @@ Future<void> openXlButtonUrl(BuildContext context, String url) async {
 /// Кнопки XL под текстовым сообщением бота (нативный рендер Liza reply_markup).
 ///
 /// Сообщение `m.text` от бота с полем `com.liza.xl_buttons` (список
-/// `{index, title, url}`) и чистым текстом в `com.liza.xl_text_html`.
-/// Кнопка-ссылка (есть `url`) открывает URL; кнопка-действие отправляет свой
-/// номер как обычный текст — эмулятор `liza-bot-api` матчит его на `callback_query`
-/// и двигает сценарий XL (callback-суррогат).
+/// `{index, title, url, callback?}`) и чистым текстом в `com.liza.xl_text_html`.
+/// Кнопка-ссылка (есть `url`) открывает URL. Кнопка-действие с `callback: true`
+/// шлёт событие нажатия [botCallbackEventType] — бот получает `callback_query`,
+/// в ленте ничего не появляется; без флага — свой номер обычным текстом
+/// (callback-суррогат `liza-bot-api`).
+///
+/// [event] — display-событие (после правки — сама правка): кнопки и id для
+/// нажатия берутся из него, сервер хранит кнопки и под событием правки.
 ///
 /// Интерактивна (рисует кнопки) ТОЛЬКО когда отправитель — бот (роль `ai`):
 /// доверяем управляющие кнопки лишь доверенному отправителю. Иначе — обычный
@@ -81,6 +95,12 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
   /// `MiniAppChoiceContent`.
   bool _busy = false;
 
+  /// Кнопка, нажатие которой сейчас отправляется (спиннер), и последняя
+  /// успешно нажатая (галочка): событие нажатия в ленте не видно, без отметки
+  /// пользователь не понял бы, что тап сработал.
+  String? _pendingIndex;
+  String? _pickedIndex;
+
   List<_XlButton> _parseButtons() {
     final raw = widget.event.content[XlButtonsContent.contentKey];
     final out = <_XlButton>[];
@@ -95,6 +115,7 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
             index: b['index']?.toString() ?? '',
             title: title,
             url: (url != null && url.isNotEmpty) ? url : null,
+            callback: b['callback'] == true,
           ),
         );
       }
@@ -114,7 +135,22 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
         await openXlButtonUrl(context, b.url!);
         return;
       }
-      // Кнопка-действие: отправляем её номер → callback-суррогат эмулятора.
+      if (b.callback) {
+        setState(() => _pendingIndex = b.index);
+        try {
+          await widget.event.room.sendEvent(
+            botCallbackContent(index: b.index, eventId: widget.event.eventId),
+            type: botCallbackEventType,
+          );
+          if (mounted) setState(() => _pickedIndex = b.index);
+        } catch (e) {
+          Logs().e('[XlButtons] callback event send failed: $e');
+        } finally {
+          if (mounted) setState(() => _pendingIndex = null);
+        }
+        return;
+      }
+      // Кнопка-действие без флага: номер текстом → callback-суррогат эмулятора.
       try {
         await widget.event.room.sendTextEvent(b.index, parseCommands: false);
       } catch (e) {
@@ -177,9 +213,17 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
             runSpacing: 8,
             children: [
               for (final b in buttons)
-                OutlinedButton(
-                  onPressed: () => _onTap(b),
-                  child: Text(b.title),
+                OutlinedButton.icon(
+                  onPressed: _pendingIndex == null ? () => _onTap(b) : null,
+                  icon: _pendingIndex == b.index
+                      ? const SizedBox.square(
+                          dimension: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : _pickedIndex == b.index
+                      ? const Icon(Icons.check, size: 16)
+                      : null,
+                  label: Text(b.title),
                 ),
             ],
           ),

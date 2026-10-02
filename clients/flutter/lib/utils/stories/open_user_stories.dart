@@ -4,6 +4,7 @@ import '../../l10n/l10n.dart';
 import '../../pages/stories/story_viewer.dart';
 import '../../widgets/matrix.dart';
 import 'active_stories_provider.dart';
+import 'deleted_stories_store.dart';
 import 'stories_extension.dart';
 import 'story_model.dart';
 
@@ -39,7 +40,13 @@ Future<void> openStoryByRef(BuildContext context, StoryRef ref) async {
   final l10n = L10n.of(context);
   final room = client.getRoomById(ref.roomId);
   if (room != null) {
-    final active = await client.activeStoriesOf(room);
+    final active = await client.activeStoriesOf(
+      room,
+      deleted: DeletedStoriesStore(
+        Matrix.of(context).store,
+        scope: client.userID,
+      ),
+    );
     final alive = active.any((e) => e.eventId == ref.eventId);
     if (alive && context.mounted) {
       await Navigator.of(context).push(

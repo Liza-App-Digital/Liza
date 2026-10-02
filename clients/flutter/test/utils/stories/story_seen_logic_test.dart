@@ -93,8 +93,129 @@ void main() {
     );
   });
 
-  test('viewsCount: зрители с receipt на сегменте или позже [ledger:RL-stories-view-count]', () {
-    expect(viewsCount(segmentIndex: 1, viewerReceiptIndexes: [0, 1, 2, 2]), 3);
-    expect(viewsCount(segmentIndex: 0, viewerReceiptIndexes: []), 0);
+  group('viewsCountInTimeline [ledger:RL-stories-view-count]', () {
+    // newest-first, как Timeline.events. $join — вход участника после s2,
+    // $r1 — реакция зрителя @v на s1, отправленная уже после s2,
+    // $old — событие до всех сегментов.
+    const timeline = [r'$join', r'$r1', r'$s2', r'$s1', r'$s0', r'$old'];
+    final positions = timelinePositions(timeline);
+    const anchors = {r'$s0', r'$s1', r'$s2'};
+    final reactions = {r'$r1': (sender: '@v:x', target: r'$s1')};
+    bool none(String _) => false;
+
+    List<int> counts(
+      Map<String, String> receipts, {
+      bool Function(String)? excluded,
+      Map<String, int>? pos,
+    }) => [
+      for (final seg in const [r'$s0', r'$s1', r'$s2'])
+        viewsCountInTimeline(
+          positions: pos ?? positions,
+          segmentId: seg,
+          anchorIds: anchors,
+          viewerReceipts: receipts,
+          reactions: reactions,
+          isExcluded: excluded ?? none,
+        ),
+    ];
+
+    test(
+      'AC:RL-stories-view-count/1 receipt на сегменте засчитывает его и все ранние',
+      () {
+        expect(counts({'@v:x': r'$s1'}), [1, 1, 0]);
+        expect(counts({'@v:x': r'$s2'}), [1, 1, 1]);
+        expect(counts({'@v:x': r'$s0'}), [1, 0, 0]);
+      },
+    );
+
+    test(
+      'AC:RL-stories-view-count/2 удалён последний сегмент, на котором receipt (QA 07.09)',
+      () {
+        // Удалённый сегмент остаётся в таймлайне redacted-событием и якорем;
+        // счётчик показывают только оставшиеся s0/s1.
+        expect(counts({'@v:x': r'$s2'}).sublist(0, 2), [1, 1]);
+      },
+    );
+
+    test(
+      'AC:RL-stories-view-count/3 удалён средний сегмент, на котором receipt',
+      () {
+        final c = counts({'@v:x': r'$s1'});
+        expect([c[0], c[2]], [1, 0]);
+      },
+    );
+
+    test(
+      'AC:RL-stories-view-count/4 receipt на входе участника — не просмотр',
+      () {
+        expect(counts({'@v:x': r'$join'}), [0, 0, 0]);
+      },
+    );
+
+    test(
+      'AC:RL-stories-view-count/5 receipt на своей реакции засчитывает только её сегмент',
+      () {
+        expect(counts({'@v:x': r'$r1'}), [0, 1, 0]);
+        // Чужая реакция под receipt зрителя якорем не становится.
+        expect(counts({'@w:x': r'$r1'}), [0, 0, 0]);
+      },
+    );
+
+    test(
+      'AC:RL-stories-view-count/6 якоря нет в таймлайне или он старше — ноль',
+      () {
+        expect(counts({'@v:x': r'$unknown'}), [0, 0, 0]);
+        expect(counts({'@v:x': r'$old'}), [0, 0, 0]);
+      },
+    );
+
+    test(
+      'AC:RL-stories-view-count/7 без таймлайна — точное совпадение по сегментам',
+      () {
+        final segmentsOnly = timelinePositions(const [r'$s2', r'$s1', r'$s0']);
+        expect(counts({'@v:x': r'$s1'}, pos: segmentsOnly), [1, 1, 0]);
+        expect(counts({'@v:x': r'$join'}, pos: segmentsOnly), [0, 0, 0]);
+      },
+    );
+
+    test('AC:RL-stories-view-count/8 автор и AI-боты не считаются', () {
+      final excluded = {'@author:x', '@ai:x'};
+      expect(
+        counts({
+          '@author:x': r'$s2',
+          '@ai:x': r'$s2',
+          '@v:x': r'$s0',
+        }, excluded: excluded.contains),
+        [1, 0, 0],
+      );
+    });
+
+    test(
+      'AC:RL-stories-view-count/9 зрители на разных якорях считаются независимо',
+      () {
+        expect(
+          counts({
+            '@a:x': r'$s2',
+            '@b:x': r'$s0',
+            '@c:x': r'$s1',
+            '@d:x': r'$join',
+          }),
+          [3, 2, 1],
+        );
+      },
+    );
+
+    test('сегмента нет в таймлайне — ноль', () {
+      expect(
+        viewsCountInTimeline(
+          positions: positions,
+          segmentId: r'$missing',
+          anchorIds: anchors,
+          viewerReceipts: const {'@v:x': r'$s2'},
+          isExcluded: none,
+        ),
+        0,
+      );
+    });
   });
 }

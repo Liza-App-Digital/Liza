@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:liza/config/app_config.dart';
 import 'package:liza/pages/chat_list/chat_list_body.dart';
 import 'package:liza/pages/homeserver_picker/homeserver_picker.dart';
 import 'package:liza/pages/login/login_view.dart';
+import 'package:liza/widgets/matrix.dart';
 
 import 'e2e_config.dart';
 
@@ -59,6 +61,18 @@ extension LizaE2eFlows on WidgetTester {
     } while (picker.evaluate().isEmpty && chatList.evaluate().isEmpty);
 
     if (chatList.evaluate().isNotEmpty) {
+      // Debug-сборка делит хранилище с ручными запусками: найденная сессия
+      // может оказаться прод-аккаунтом владельца. Сценарий публикует, шлёт и
+      // создаёт комнаты — на проде это недопустимо (LABA-2617: прогон создал
+      // комнату у владельца на synapse.liza.laba.prodamus.tech).
+      final homeserver = Matrix.of(element(chatList.first)).client.homeserver;
+      if (homeserver == null || !AppConfig.isLocalHost(homeserver.host)) {
+        throw StateError(
+          'e2e: найдена НЕ локальная сессия ($homeserver) — тест остановлен, '
+          'чтобы не действовать от реального аккаунта. Запускай на чистом '
+          'устройстве/симуляторе или разлогинь debug-сборку.',
+        );
+      }
       log('Сессия уже есть, логин не нужен', name: 'liza-e2e');
       await _dismissPushWarning();
       return;

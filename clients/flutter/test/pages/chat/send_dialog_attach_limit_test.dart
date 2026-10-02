@@ -22,7 +22,6 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/send_file_dialog.dart';
-import 'package:liza/utils/clipboard_paste.dart';
 
 import '../../utils/test_client.dart';
 
@@ -58,29 +57,15 @@ List<XFile> _imgs(int n, [String prefix = 'p']) => [
   for (var i = 0; i < n; i++) _img('$prefix$i.png'),
 ];
 
-/// Буфер с [count] растрами — «Вставить ещё» примет их одним заходом.
-class _FakeReader implements PasteboardReader {
-  _FakeReader(this.count);
-
-  final int count;
-
-  @override
-  Future<String?> text() async => null;
-  @override
-  Future<List<XFile>> files() async => [];
-  @override
-  Future<List<Uint8List>> images() async => [
-    for (var i = 0; i < count; i++) _png,
-  ];
-  @override
-  Future<Uint8List?> image() async => _png;
-}
+/// Пикер «+» (LABA-2619), отдающий [count] изображений за один выбор.
+Future<List<XFile>> Function(BuildContext, int) _picker(int count) =>
+    (_, _) async => _imgs(count, 'new');
 
 Future<void> _openDialog(
   WidgetTester tester,
   Room room,
   List<XFile> files, {
-  PasteboardReader? reader,
+  int picked = 1,
 }) async {
   BuildContext? outer;
   await tester.pumpWidget(
@@ -115,7 +100,7 @@ Future<void> _openDialog(
       outerContext: outer!,
       threadLastEventId: null,
       threadRootEventId: null,
-      pasteboardReader: reader ?? _FakeReader(1),
+      moreImagesPicker: _picker(picked),
     ),
   );
   await tester.pump();
@@ -226,9 +211,9 @@ void main() {
       expect(_tileInk(tester).onTap, isNotNull);
     });
 
-    testWidgets('AC:RL-send-dialog-attach-limit/4 — 28 + вставка 5 → 30: '
+    testWidgets('AC:RL-send-dialog-attach-limit/4 — 28 + «+» выбрал 5 → 30: '
         'старые на месте, «лишние 3»', (tester) async {
-      await _openDialog(tester, room, _imgs(28), reader: _FakeReader(5));
+      await _openDialog(tester, room, _imgs(28), picked: 5);
       await _scrollRibbonToEnd(tester);
       await tester.tap(find.byKey(_tileKey));
       await tester.pump();

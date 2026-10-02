@@ -12,6 +12,8 @@ import 'package:matrix/matrix.dart';
 
 import '../../utils/adaptive_bottom_sheet.dart';
 import '../../utils/show_scaffold_dialog.dart';
+import '../../utils/stories/active_stories_provider.dart';
+import '../../utils/stories/deleted_stories_store.dart';
 import '../../utils/stories/stories_extension.dart';
 import '../../utils/stories/stories_seen_store.dart';
 import '../../utils/stories/story_link_service.dart';
@@ -202,7 +204,10 @@ class StoryViewerController extends State<StoryViewer>
     final r = room;
     final client = Matrix.of(context).client;
     if (r == null) return _skipAuthorForward();
-    final loaded = await client.activeStoriesWithTimeline(r);
+    final loaded = await client.activeStoriesWithTimeline(
+      r,
+      deleted: deletedStore,
+    );
     if (!mounted || seq != _loadSeq) {
       loaded?.$1.cancelSubscriptions();
       return;
@@ -377,6 +382,21 @@ class StoryViewerController extends State<StoryViewer>
     scope: Matrix.of(context).client.userID,
   );
 
+  DeletedStoriesStore? _deletedStore;
+  DeletedStoriesStore get deletedStore => _deletedStore ??= DeletedStoriesStore(
+    Matrix.of(context).store,
+    scope: Matrix.of(context).client.userID,
+  );
+
+  /// Пункт «Удалить»: своя сторис, ещё не удалённая (LABA-2618 — повторное
+  /// удаление уже удалённой недоступно).
+  bool get canDeleteCurrent =>
+      isOwnStory &&
+      segments.isNotEmpty &&
+      !Matrix.of(
+        context,
+      ).client.isStoryAlreadyDeleted(segments[index], deletedStore);
+
   /// Отметить показанный сегмент: локально мгновенно + public receipt
   /// (только вперёд и только для чужих комнат). Fire-and-forget.
   void _onSegmentShown() {
@@ -453,18 +473,50 @@ class StoryViewerController extends State<StoryViewer>
         ?.tryGet<String>('key');
   }
 
+  // Позиции и якоря таймлайна для счётчика просмотров: геттер зовётся из build
+  // на каждый sync, пересобираем только при смене таймлайна/его длины/головы.
+  ({Object? key, Map<String, int> positions, Set<String> anchors})? _viewsIndex;
+
   /// Число зрителей текущего сегмента (без автора и AI-ботов).
   int get currentViewsCount {
     final r = room;
     if (r == null || segments.isEmpty) return 0;
     final matrix = Matrix.of(context);
     final owner = matrix.client.storyOwnerOf(r);
-    final indexes = matrix.client.viewerReceiptIndexes(r, segments)
-      ..remove(owner)
-      ..removeWhere((userId, _) => matrix.isAiUser(userId));
-    return viewsCount(
-      segmentIndex: index,
-      viewerReceiptIndexes: indexes.values,
+    final tl = timeline;
+    // Без таймлайна этой комнаты — только сегменты (прежняя логика точного
+    // совпадения); порядок newest-first, как у Timeline.events.
+    final events = tl != null && tl.room.id == r.id
+        ? tl.events
+        : segments.reversed.toList();
+    final key = (tl, events.length, events.firstOrNull?.eventId);
+    final cached = _viewsIndex;
+    final views = cached != null && cached.key == key
+        ? cached
+        : _viewsIndex = (
+            key: key,
+            positions: timelinePositions([for (final e in events) e.eventId]),
+            anchors: {
+              // Все сообщения комнаты, включая удалённые: писать в сторис-
+              // комнату могут только автор/админы канала (events_default 100).
+              for (final e in events)
+                if (e.type == EventTypes.Message) e.eventId,
+            },
+          );
+    return viewsCountInTimeline(
+      positions: views.positions,
+      segmentId: segments[index].eventId,
+      anchorIds: views.anchors,
+      viewerReceipts: matrix.client.viewerReceiptEventIds(r),
+      // Реакции не мемоизируем: снятие реакции (redact) меняет событие на
+      // месте, не трогая длину и голову таймлайна.
+      reactions: {
+        for (final e in events)
+          if (e.type == EventTypes.Reaction && !e.redacted)
+            if (e.relationshipEventId case final target?)
+              e.eventId: (sender: e.senderId, target: target),
+      },
+      isExcluded: (userId) => userId == owner || matrix.isAiUser(userId),
     );
   }
 
@@ -789,11 +841,26 @@ class StoryViewerController extends State<StoryViewer>
     _deleting = true;
     _animController.stop();
     final event = segments[index];
+    final client = Matrix.of(context).client;
+    final r = room;
     try {
-      await Matrix.of(context).client.deleteStory(event);
-      if (!mounted) return;
+      await client.deleteStory(event, deleted: deletedStore);
+      // За время PUT пользователь мог свайпнуть к другому автору — тогда
+      // segments уже чужие, трогать их и кольцо этой комнаты нельзя.
+      if (!mounted || r == null || room?.id != r.id) return;
+      // По eventId, а не по index: index мог сдвинуться за время await.
+      final remaining = segments
+          .where((s) => s.eventId != event.eventId)
+          .toList();
+      // Кольцо автора (лента, аватарки) читает ActiveStoriesProvider — без
+      // этого удалённая сторис светится в нём до следующего sync-дебаунса.
+      ActiveStoriesProvider.instance.setRoomActive(
+        r.id,
+        client.storyOwnerOf(r),
+        remaining,
+      );
       setState(() {
-        segments = List.of(segments)..removeAt(index);
+        segments = remaining;
         if (index >= segments.length && index > 0) index--;
         // Диалог подтверждения удаления паузил таймлайн (см. pause()); при
         // подтверждённом удалении explicit resume() не вызывается - сбрасываем

@@ -593,7 +593,7 @@ class StoryViewerView extends StatelessWidget {
                                           ],
                                         ),
                                       ),
-                                    if (controller.isOwnStory)
+                                    if (controller.canDeleteCurrent)
                                       PopupMenuItem(
                                         value: 'delete',
                                         child: Text(

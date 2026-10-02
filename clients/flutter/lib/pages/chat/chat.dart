@@ -28,6 +28,7 @@ import 'package:liza/pages/chat/events/message_context_menu.dart';
 import 'package:liza/pages/chat/start_poll_bottom_sheet.dart';
 import 'package:liza/pages/chat_details/chat_details.dart';
 import 'package:liza/utils/adaptive_bottom_sheet.dart';
+import 'package:liza/utils/bot_commands_registry.dart';
 import 'package:liza/utils/channel_discussion.dart';
 import 'package:liza/utils/clipboard_paste.dart';
 import 'package:liza/utils/channel_peek.dart';
@@ -739,6 +740,7 @@ class ChatController extends State<ChatPageWithRoom>
     readMarkerEventId = _initialReadMarkerEventId();
     WidgetsBinding.instance.addObserver(this);
     VideoPrefetchManager.instance.setActiveRoom(room);
+    _loadBotCommands();
     // Чужие квитанции приходят ephemeral'ом m.receipt и не триггерят
     // timeline.onUpdate — без подписки галочки done/done_all и аватарки
     // «прочитал до сюда» обновлялись бы только со следующим событием в комнате.
@@ -1448,6 +1450,18 @@ class ChatController extends State<ChatPageWithRoom>
   @visibleForTesting
   static final composerCommandPattern = RegExp(r'^\/([\w-]+)');
 
+  /// Меню «/» бота-собеседника (setMyCommands): грузим при открытии чата, чтобы
+  /// подсказки были уже на первом «/». Боты Bot API живут на bots.liza.ru —
+  /// проверка домена страхует ранний вход, когда роль `ai` ещё не подтянулась.
+  void _loadBotCommands() {
+    final dmPartner = room.directChatMatrixID;
+    if (dmPartner != null &&
+        (Matrix.of(context).isAiUser(dmPartner) ||
+            dmPartner.endsWith(':bots.liza.ru'))) {
+      BotCommandsRegistry.instance.ensureLoaded(room.client, dmPartner);
+    }
+  }
+
   /// Режим чтения обязательного обновления (howItWoks/lizaUpdates.md): всё,
   /// что пользователь пишет в комнату, отбивается здесь одной проверкой.
   /// Квитанции, typing и обмен ключами E2EE не трогаем — это не отправка.
@@ -1481,9 +1495,17 @@ class ChatController extends State<ChatPageWithRoom>
     final commandMatch = composerCommandPattern.firstMatch(rawText);
     if (commandMatch != null &&
         !sendingClient.commands.keys.contains(commandMatch[1]!.toLowerCase())) {
-      if (isBotComposerCommand(commandMatch[1]!)) {
+      final dmPartner = room.directChatMatrixID;
+      if (isBotComposerCommand(commandMatch[1]!) ||
+          (dmPartner != null &&
+              BotCommandsRegistry.instance.hasCommand(
+                room.client,
+                dmPartner,
+                commandMatch[1]!,
+              ))) {
         // Команда бота-ассистента (Лиза «мои приложения» / BotFather: боты, mini
-        // App, конструктор) — не Matrix-команда, а текст для бота. Шлём как есть.
+        // App, конструктор) или из меню бота-собеседника (setMyCommands) — не
+        // Matrix-команда, а текст для бота. Шлём как есть.
         parseCommands = false;
       } else {
         final l10n = L10n.of(context);
@@ -2227,6 +2249,21 @@ class ChatController extends State<ChatPageWithRoom>
     bool highlightEvent = true,
     int retryDepth = 0,
   }) async {
+    // GlitchTip #2088: сюда приходят после долгих await (диалог закрепов на
+    // медленной сети), когда лента перезагружается или чат уже закрыт —
+    // dispose обнуляет timeline. Ждём текущую загрузку; ленты нет — выходим.
+    // Ошибку загрузки уже показал _tryLoadTimeline — здесь не пробрасываем.
+    if (timeline == null) {
+      try {
+        await loadTimelineFuture;
+      } catch (_) {
+        return;
+      }
+      if (timeline == null) return;
+    }
+    // _getTimeline присваивает ленту без проверки mounted: загрузка, дошедшая
+    // после dispose, вернула бы её мёртвому State, а ниже — setState.
+    if (!mounted) return;
     final foundEvent = timeline!.events.firstWhereOrNull(
       (event) => event.eventId == eventId,
     );

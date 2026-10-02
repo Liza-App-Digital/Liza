@@ -5,6 +5,7 @@ import 'package:matrix/matrix.dart';
 
 import '../../utils/channel_stories.dart';
 import '../../utils/stories/active_stories_provider.dart';
+import '../../utils/stories/deleted_stories_store.dart';
 import '../../utils/stories/stories_extension.dart';
 import '../../utils/stories/stories_seen_store.dart';
 import '../../utils/stories/story_media_picker.dart';
@@ -82,10 +83,14 @@ class _StoriesBarState extends State<StoriesBar> {
     if (!mounted) return;
     final client = Matrix.of(context).client;
     _seenStore?.invalidateCache();
+    final deleted = DeletedStoriesStore(
+      Matrix.of(context).store,
+      scope: client.userID,
+    );
     final rooms = client.storiesRooms;
     final result = <String, List<Event>>{};
     for (final room in rooms) {
-      final events = await client.activeStoriesOf(room);
+      final events = await client.activeStoriesOf(room, deleted: deleted);
       if (!mounted) return;
       result[room.id] = events;
       ActiveStoriesProvider.instance.setRoomActive(

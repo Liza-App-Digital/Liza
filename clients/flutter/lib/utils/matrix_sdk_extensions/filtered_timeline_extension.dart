@@ -1,6 +1,7 @@
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/setting_keys.dart';
+import 'package:liza/utils/bot_callback.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/news_audience.dart';
 import 'package:liza/utils/support_intent.dart';
@@ -74,6 +75,9 @@ extension IsStateExtension on Event {
   bool get isVisibleInGui =>
       // служебная передача ключа XL боту — не пользовательское сообщение
       !isXlCredentialsEvent &&
+      // нажатие кнопки бота — сигнал боту, не реплика (скрыто и при выключенном
+      // «скрывать неизвестные события»)
+      !isBotCallbackEvent &&
       // удалённый пост канала не показываем никогда (см. isRedactedChannelPost)
       !isRedactedChannelPost &&
       // служебный шум канала (вступления, смена аватара/имени) — не показываем
