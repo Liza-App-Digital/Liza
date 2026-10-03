@@ -11,8 +11,7 @@ bool segmentSeen({
   required int receiptIndex,
   required String segmentId,
   required bool Function(String) isLocallySeen,
-}) =>
-    index <= receiptIndex || isLocallySeen(segmentId);
+}) => index <= receiptIndex || isLocallySeen(segmentId);
 
 int firstUnseenIndex({
   required List<String> segmentIds,
@@ -53,7 +52,7 @@ Map<String, int> timelinePositions(List<String> timelineIds) => {
   for (var i = 0; i < timelineIds.length; i++) timelineIds[i]: i,
 };
 
-/// Число зрителей сегмента [segmentId] по порядку таймлайна (LABA-2617).
+/// Зрители сегмента [segmentId] по порядку таймлайна (LABA-2617, LABA-2616).
 ///
 /// Receipt — одна отметка «прочитал всё до этого события», поэтому зритель
 /// засчитан, если его receipt-событие не старше сегмента. Сравниваем позиции
@@ -66,17 +65,24 @@ Map<String, int> timelinePositions(List<String> timelineIds) => {
 /// Receipt на служебных событиях (вход участника) — не просмотр: массовые
 /// отметки старых клиентов дали бы ложных зрителей. Событие вне загруженного
 /// таймлайна — зритель не засчитан.
-int viewsCountInTimeline({
+///
+/// [reactors] — отреагировавшие на сам сегмент: реакция означает просмотр,
+/// даже если receipt не дошёл или уехал на служебное событие.
+Set<String> viewersInTimeline({
   required Map<String, int> positions,
   required String segmentId,
   required Set<String> anchorIds,
   required Map<String, String> viewerReceipts,
   Map<String, ({String sender, String target})> reactions = const {},
+  Iterable<String> reactors = const [],
   required bool Function(String userId) isExcluded,
 }) {
+  final viewers = <String>{
+    for (final userId in reactors)
+      if (!isExcluded(userId)) userId,
+  };
   final segmentPos = positions[segmentId];
-  if (segmentPos == null) return 0;
-  var count = 0;
+  if (segmentPos == null) return viewers;
   viewerReceipts.forEach((userId, eventId) {
     if (isExcluded(userId)) return;
     final reaction = reactions[eventId];
@@ -86,7 +92,9 @@ int viewsCountInTimeline({
     if (!anchorIds.contains(anchor)) return;
     final pos = positions[anchor];
     if (pos == null) return;
-    if (reaction != null ? anchor == segmentId : pos <= segmentPos) count++;
+    if (reaction != null ? anchor == segmentId : pos <= segmentPos) {
+      viewers.add(userId);
+    }
   });
-  return count;
+  return viewers;
 }

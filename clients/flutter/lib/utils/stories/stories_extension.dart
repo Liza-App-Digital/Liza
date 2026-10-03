@@ -445,7 +445,7 @@ extension StoriesExtension on Client {
 
   /// userId -> eventId последнего receipt зрителя (максимум по ts из
   /// глобального и main-таймлайна). Позицию относительно сегментов считает
-  /// [viewsCountInTimeline].
+  /// [viewersInTimeline].
   Map<String, String> viewerReceiptEventIds(Room room) {
     final state = room.receiptState;
     final merged = <String, LatestReceiptStateData>{};

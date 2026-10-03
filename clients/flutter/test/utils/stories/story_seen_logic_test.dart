@@ -93,7 +93,7 @@ void main() {
     );
   });
 
-  group('viewsCountInTimeline [ledger:RL-stories-view-count]', () {
+  group('viewersInTimeline [ledger:RL-stories-view-count]', () {
     // newest-first, как Timeline.events. $join — вход участника после s2,
     // $r1 — реакция зрителя @v на s1, отправленная уже после s2,
     // $old — событие до всех сегментов.
@@ -109,14 +109,14 @@ void main() {
       Map<String, int>? pos,
     }) => [
       for (final seg in const [r'$s0', r'$s1', r'$s2'])
-        viewsCountInTimeline(
+        viewersInTimeline(
           positions: pos ?? positions,
           segmentId: seg,
           anchorIds: anchors,
           viewerReceipts: receipts,
           reactions: reactions,
           isExcluded: excluded ?? none,
-        ),
+        ).length,
     ];
 
     test(
@@ -207,13 +207,13 @@ void main() {
 
     test('сегмента нет в таймлайне — ноль', () {
       expect(
-        viewsCountInTimeline(
+        viewersInTimeline(
           positions: positions,
           segmentId: r'$missing',
           anchorIds: anchors,
           viewerReceipts: const {'@v:x': r'$s2'},
           isExcluded: none,
-        ),
+        ).length,
         0,
       );
     });

@@ -16,13 +16,17 @@ import '../../utils/stories/active_stories_provider.dart';
 import '../../utils/stories/deleted_stories_store.dart';
 import '../../utils/stories/stories_extension.dart';
 import '../../utils/stories/stories_seen_store.dart';
+import '../../utils/stories/story_link_copier.dart';
 import '../../utils/stories/story_link_service.dart';
 import '../../utils/stories/story_model.dart';
+import '../../utils/stories/story_reactions.dart';
 import '../../utils/stories/story_seen_logic.dart';
 import '../../utils/url_launcher.dart';
 import '../../widgets/matrix.dart';
 import '../../widgets/share_scaffold_dialog.dart';
+import 'story_link_dialog.dart';
 import 'story_viewer_view.dart';
+import 'story_viewers_sheet.dart';
 
 class StoryViewer extends StatefulWidget {
   const StoryViewer({
@@ -127,7 +131,11 @@ class StoryViewerController extends State<StoryViewer>
   /// нескольких независимых "держателей" паузы (hold/caption/reactions/focus) -
   /// resume() должен звать только тот, кто снимает ПОСЛЕДНЮЮ причину.
   bool get _shouldStayPaused =>
-      holdDown || captionExpanded || reactionRowOpen || replyFocus.hasFocus;
+      holdDown ||
+      captionExpanded ||
+      reactionRowOpen ||
+      viewersSheetOpen ||
+      replyFocus.hasFocus;
 
   /// resume(), только если ни один другой держатель паузы не активен.
   /// Публичная обёртка _shouldStayPaused для колбэков во view (например,
@@ -160,8 +168,11 @@ class StoryViewerController extends State<StoryViewer>
       // Живое обновление агрегата реакций у своих сторис: чужие реакции
       // приходят по sync, без подписки статистика зависает до следующего
       // ручного setState (смена сегмента/автора).
-      _reactionSyncSub = Matrix.of(context).client.onSync.stream.listen((_) {
-        if (mounted && isOwnStory) setState(() {});
+      _reactionSyncSub = Matrix.of(context).client.onSync.stream.listen((sync) {
+        final r = room;
+        if (!mounted || r == null || !isOwnStory) return;
+        if (sync.rooms?.join?.containsKey(r.id) != true) return;
+        setState(() {});
       });
     });
   }
@@ -201,6 +212,7 @@ class StoryViewerController extends State<StoryViewer>
     _animController.stop();
     timeline?.cancelSubscriptions();
     timeline = null;
+    _serverReactions = const {};
     final r = room;
     final client = Matrix.of(context).client;
     if (r == null) return _skipAuthorForward();
@@ -234,6 +246,30 @@ class StoryViewerController extends State<StoryViewer>
     });
     _onSegmentShown();
     _startProgress(durationMs: _currentSegmentDurationMs());
+    if (isOwnStory) _loadServerReactions(seq, r, segments);
+  }
+
+  /// Реакции на свою сторис с сервера (LABA-2616): лента автора их теряет
+  /// после limited sync. Только активные сегменты (удалённые отсечены в
+  /// [Client.activeStoriesWithTimeline]); ошибка — остаются реакции из ленты.
+  Future<void> _loadServerReactions(
+    int seq,
+    Room room,
+    List<Event> forSegments,
+  ) async {
+    final results = await Future.wait([
+      for (final segment in forSegments)
+        fetchStoryReactions(room, segment.eventId)
+            .timeout(const Duration(seconds: 15))
+            .catchError((Object e, StackTrace s) {
+              Logs().w('Story reactions fetch failed', e, s);
+              return const <String, StoryReaction>{};
+            }),
+    ]);
+    if (!mounted || seq != _loadSeq) return;
+    setState(() {
+      _serverReactions = {for (final r in results) ...r};
+    });
   }
 
   /// Автор без активных сегментов (протух между баром и открытием) - дальше.
@@ -453,6 +489,15 @@ class StoryViewerController extends State<StoryViewer>
     return r != null && myRoom != null && r.id == myRoom.id;
   }
 
+  /// Может ли зритель поставить реакцию (в сторис канала — нет).
+  /// power_levels ещё не загружены — кнопку не прячем.
+  bool get canReactToCurrent {
+    final r = room;
+    if (r == null) return false;
+    if (r.getState(EventTypes.RoomPowerLevels) == null) return true;
+    return r.canSendEvent(EventTypes.Reaction);
+  }
+
   bool _reactionBusy = false;
 
   Event? _myReactionEvent(Event segment) {
@@ -477,10 +522,45 @@ class StoryViewerController extends State<StoryViewer>
   // на каждый sync, пересобираем только при смене таймлайна/его длины/головы.
   ({Object? key, Map<String, int> positions, Set<String> anchors})? _viewsIndex;
 
-  /// Число зрителей текущего сегмента (без автора и AI-ботов).
-  int get currentViewsCount {
+  /// Реакции на свою сторис, загруженные с сервера: eventId -> реакция.
+  Map<String, StoryReaction> _serverReactions = const {};
+
+  ({Object? key, Map<String, StoryReaction> value})? _reactionsCache;
+
+  /// Единый источник реакций для строки статистики, счётчика просмотров и
+  /// листа «Просмотры»: лента ∪ снимок сервера без снятых. Новая реакция и
+  /// редакция вставляются в ленту, поэтому длины и головы достаточно для ключа.
+  Map<String, StoryReaction> get _currentReactions {
+    final tl = timeline;
     final r = room;
-    if (r == null || segments.isEmpty) return 0;
+    final events = tl != null && r != null && tl.room.id == r.id
+        ? tl.events
+        : const <Event>[];
+    final key = (
+      tl,
+      events.length,
+      events.firstOrNull?.eventId,
+      _serverReactions,
+    );
+    final cached = _reactionsCache;
+    if (cached != null && cached.key == key) return cached.value;
+    final inTimeline = storyReactionsInTimeline(events);
+    final value = mergeStoryReactions(
+      live: inTimeline.live,
+      server: _serverReactions,
+      redacted: inTimeline.redacted,
+    );
+    _reactionsCache = (key: key, value: value);
+    return value;
+  }
+
+  /// Число зрителей текущего сегмента (без автора и AI-ботов).
+  int get currentViewsCount => _viewersOfCurrent(_currentReactions).length;
+
+  /// Зрители текущего сегмента (без автора и AI-ботов).
+  Set<String> _viewersOfCurrent(Map<String, StoryReaction> reactions) {
+    final r = room;
+    if (r == null || segments.isEmpty) return const {};
     final matrix = Matrix.of(context);
     final owner = matrix.client.storyOwnerOf(r);
     final tl = timeline;
@@ -503,40 +583,48 @@ class StoryViewerController extends State<StoryViewer>
                 if (e.type == EventTypes.Message) e.eventId,
             },
           );
-    return viewsCountInTimeline(
+    final segmentId = segments[index].eventId;
+    return viewersInTimeline(
       positions: views.positions,
-      segmentId: segments[index].eventId,
+      segmentId: segmentId,
       anchorIds: views.anchors,
       viewerReceipts: matrix.client.viewerReceiptEventIds(r),
       // Реакции не мемоизируем: снятие реакции (redact) меняет событие на
       // месте, не трогая длину и голову таймлайна.
       reactions: {
-        for (final e in events)
-          if (e.type == EventTypes.Reaction && !e.redacted)
-            if (e.relationshipEventId case final target?)
-              e.eventId: (sender: e.senderId, target: target),
+        for (final e in reactions.entries)
+          e.key: (sender: e.value.sender, target: e.value.target),
       },
+      reactors: storyReactorsOf(reactions, segmentId),
       isExcluded: (userId) => userId == owner || matrix.isAiUser(userId),
     );
   }
 
   /// emoji -> количество реакций по текущему сегменту.
   Map<String, int> get reactionsAggregateOnCurrent {
-    final tl = timeline;
-    if (tl == null || segments.isEmpty) return const {};
-    final result = <String, int>{};
-    for (final e in segments[index].aggregatedEvents(
-      tl,
-      RelationshipTypes.reaction,
-    )) {
-      if (e.redacted) continue;
-      final key = e.content
-          .tryGetMap<String, Object?>('m.relates_to')
-          ?.tryGet<String>('key');
-      if (key == null) continue;
-      result[key] = (result[key] ?? 0) + 1;
-    }
-    return result;
+    if (segments.isEmpty) return const {};
+    return storyReactionsAggregate(_currentReactions, segments[index].eventId);
+  }
+
+  bool viewersSheetOpen = false;
+
+  /// Лист «Просмотры» своей сторис: зрители текущего сегмента и их реакции.
+  /// Сторис на паузе, пока лист открыт.
+  Future<void> openViewersSheet() async {
+    final r = room;
+    if (r == null || segments.isEmpty || !isOwnStory || _closing) return;
+    final reactions = _currentReactions;
+    final rows = storyViewerRows(
+      viewers: _viewersOfCurrent(reactions),
+      reactions: reactions,
+      segmentId: segments[index].eventId,
+    );
+    setState(() => viewersSheetOpen = true);
+    pause();
+    await showStoryViewersSheet(context, room: r, rows: rows);
+    if (!mounted) return;
+    setState(() => viewersSheetOpen = false);
+    resumeIfIdle();
   }
 
   /// Одна активная реакция на сегмент: та же emoji - снять, другая -
@@ -623,23 +711,50 @@ class StoryViewerController extends State<StoryViewer>
     if (mounted) resumeIfIdle();
   }
 
-  /// Создаёт короткую ссылку на текущий сегмент и кладёт её в буфер обмена.
+  late final StoryLinkCopier _storyLinkCopier = StoryLinkCopier(
+    createLink: (ref) async {
+      final accessToken = Matrix.of(context).client.accessToken;
+      if (accessToken == null) throw Exception('no access token');
+      return StoryLinkService().createLink(ref: ref, accessToken: accessToken);
+    },
+  );
+
+  /// Ссылка на текущий сегмент; null — ссылку не выдать (нет ref или история
+  /// уже протухла: сервер клампит срок к now, ссылка умерла бы сразу).
+  StoryRef? _currentStoryLinkRef() {
+    if (segments.isEmpty) return null;
+    final ref = StoryRef.fromContent(currentStoryRefContent());
+    if (ref == null) return null;
+    if (ref.expiresTs <= DateTime.now().millisecondsSinceEpoch) return null;
+    return ref;
+  }
+
+  /// Запрашивает ссылку заранее, при открытии меню «⋯»: к выбору пункта она
+  /// уже готова и пишется в буфер внутри жеста тапа (LABA-2615).
+  void prefetchStoryLink() {
+    final ref = _currentStoryLinkRef();
+    if (ref != null) unawaited(_storyLinkCopier.prefetch(ref));
+  }
+
+  /// Кладёт короткую ссылку на текущий сегмент в буфер обмена. Если браузер
+  /// запись отверг — показывает ссылку в диалоге для ручного копирования.
+  /// Меню паузит таймлайн, а onCanceled при выборе пункта не вызывается —
+  /// возобновляем сами.
   Future<void> copyStoryLink() async {
     if (segments.isEmpty) return;
-    final client = Matrix.of(context).client;
     final messenger = ScaffoldMessenger.of(context);
     final l10n = L10n.of(context);
-    final accessToken = client.accessToken;
     try {
-      if (accessToken == null) throw Exception('no access token');
-      final ref = StoryRef.fromContent(currentStoryRefContent());
-      if (ref == null) throw Exception('currentStoryRefContent без ref');
-      final url = await StoryLinkService().createLink(
-        ref: ref,
-        accessToken: accessToken,
+      final ref = _currentStoryLinkRef();
+      if (ref == null) throw Exception('нет ссылки для текущего сегмента');
+      final result = await _storyLinkCopier.copy(
+        ref,
+        setClipboard: (text) => Clipboard.setData(ClipboardData(text: text)),
       );
-      await Clipboard.setData(ClipboardData(text: url));
       if (!mounted) return;
+      final copied =
+          result.copied || await StoryLinkDialog.show(context, result.url);
+      if (!mounted || !copied) return;
       messenger.showSnackBar(SnackBar(content: Text(l10n.storyLinkCopied)));
     } catch (e, s) {
       Logs().w('Story link copy failed', e, s);
@@ -647,6 +762,8 @@ class StoryViewerController extends State<StoryViewer>
       messenger.showSnackBar(
         SnackBar(content: Text(l10n.oopsSomethingWentWrong)),
       );
+    } finally {
+      if (mounted) resumeIfIdle();
     }
   }
 
@@ -666,10 +783,7 @@ class StoryViewerController extends State<StoryViewer>
   bool get isStoryNotifyEnabled {
     final name = _storyNotifyRuleName;
     if (name == null) return true;
-    final rule = Matrix.of(context)
-        .client
-        .globalPushRules
-        ?.override
+    final rule = Matrix.of(context).client.globalPushRules?.override
         ?.firstWhereOrNull((r) => r.ruleId == name);
     return rule?.enabled ?? true;
   }
@@ -679,7 +793,8 @@ class StoryViewerController extends State<StoryViewer>
     final r = room;
     final client = Matrix.of(context).client;
     if (r == null) return '';
-    final owner = client.storyOwnerOf(r) ??
+    final owner =
+        client.storyOwnerOf(r) ??
         (segments.isNotEmpty ? segments[index].senderId : '');
     return client.storyOwnerName(r, owner) ?? owner;
   }
@@ -704,11 +819,7 @@ class StoryViewerController extends State<StoryViewer>
     final newValue = !isStoryNotifyEnabled;
     try {
       try {
-        await client.setPushRuleEnabled(
-          PushRuleKind.override,
-          name,
-          newValue,
-        );
+        await client.setPushRuleEnabled(PushRuleKind.override, name, newValue);
       } on MatrixException {
         // M_NOT_FOUND: правила ещё нет — создаём (enabled), затем при
         // необходимости выключаем.
@@ -725,11 +836,7 @@ class StoryViewerController extends State<StoryViewer>
               key: 'type',
               pattern: 'm.room.message',
             ),
-            PushCondition(
-              kind: 'event_match',
-              key: 'room_id',
-              pattern: r.id,
-            ),
+            PushCondition(kind: 'event_match', key: 'room_id', pattern: r.id),
           ],
         );
         if (!newValue) {

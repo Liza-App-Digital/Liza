@@ -328,39 +328,50 @@ class StoryViewerView extends StatelessWidget {
                         alignment: Alignment.centerLeft,
                         child: SingleChildScrollView(
                           scrollDirection: Axis.horizontal,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.black45,
+                          // Тап — лист «Просмотры» (LABA-2616). InkWell
+                          // выигрывает арену у навигационного тапа вьюера.
+                          child: Material(
+                            color: Colors.black45,
+                            borderRadius: BorderRadius.circular(16),
+                            child: InkWell(
+                              key: const ValueKey('storyStatsRow'),
                               borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.remove_red_eye_outlined,
-                                  color: Colors.white,
-                                  size: 18,
+                              onTap: controller.openViewersSheet,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 6,
                                 ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  '${controller.currentViewsCount}',
-                                  style: const TextStyle(color: Colors.white),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.remove_red_eye_outlined,
+                                      color: Colors.white,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      '${controller.currentViewsCount}',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                    for (final entry
+                                        in controller
+                                            .reactionsAggregateOnCurrent
+                                            .entries) ...[
+                                      const SizedBox(width: 10),
+                                      Text(
+                                        '${entry.key} ${entry.value}',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
                                 ),
-                                for (final entry
-                                    in controller
-                                        .reactionsAggregateOnCurrent
-                                        .entries) ...[
-                                  const SizedBox(width: 10),
-                                  Text(
-                                    '${entry.key} ${entry.value}',
-                                    style: const TextStyle(color: Colors.white),
-                                  ),
-                                ],
-                              ],
+                              ),
                             ),
                           ),
                         ),
@@ -514,7 +525,10 @@ class StoryViewerView extends StatelessWidget {
                                     Icons.more_horiz,
                                     color: Colors.white,
                                   ),
-                                  onOpened: controller.pause,
+                                  onOpened: () {
+                                    controller.pause();
+                                    controller.prefetchStoryLink();
+                                  },
                                   onCanceled: controller.resumeIfIdle,
                                   onSelected: (value) async {
                                     switch (value) {
@@ -870,6 +884,9 @@ class _ReplyTrailingButton extends StatelessWidget {
         ),
       );
     }
+    // Без права на m.reaction (сторис канала, events_default 100) реакцию
+    // сервер отклонит — кнопку не показываем.
+    if (!controller.canReactToCurrent) return const SizedBox.shrink();
     return SizedBox(
       width: size,
       height: size,
