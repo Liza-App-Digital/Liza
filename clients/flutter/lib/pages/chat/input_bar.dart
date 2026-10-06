@@ -145,6 +145,15 @@ class _InputBarState extends State<InputBar> {
     if (_hasUserMatch(text)) {
       await _ensureParticipantsLoaded();
     }
+    // «/» набран, пока меню бота ещё грузится: ждём загрузку (она и бампает
+    // `BotCommandsRegistry.revision`), иначе подсказки бота появились бы
+    // только после следующего символа — Autocomplete пересчитывает варианты
+    // лишь на изменение текста.
+    final botMxid = room.directChatMatrixID;
+    if (botMxid != null && _hasCommandPrefix(text)) {
+      await BotCommandsRegistry.instance.loading(room.client, botMxid);
+    }
+    if (!context.mounted) return const [];
     final suggestions = getSuggestions(text);
     // Pin AI accounts first in mention suggestions (Liza first among AI)
     final matrix = Matrix.of(context);
@@ -163,6 +172,12 @@ class _InputBarState extends State<InputBar> {
       suggestions.insertAll(0, aiItems);
     }
     return suggestions;
+  }
+
+  bool _hasCommandPrefix(TextEditingValue text) {
+    final caret = text.selection.baseOffset;
+    if (caret < 0 || caret != text.selection.extentOffset) return false;
+    return RegExp(r'^/\w*$').hasMatch(text.text.substring(0, caret));
   }
 
   bool _hasUserMatch(TextEditingValue text) {

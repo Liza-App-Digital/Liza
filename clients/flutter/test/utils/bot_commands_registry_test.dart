@@ -122,7 +122,8 @@ void main() {
       expect(reg.hasCommand(client, _human, 'shop'), isFalse);
       // Статический набор BotFather/Лизы не потерян.
       expect(ChatController.isBotComposerCommand('newbot'), isTrue);
-      // `send()` сначала проверяет client.commands: /me у SDK, не у бота.
+      // Команда, которой нет в меню бота, остаётся за SDK (/me). Порядок
+      // «меню бота раньше client.commands» — RL-bot-commands-safety-menu.
       expect(client.commands.containsKey('me'), isTrue);
       await client.dispose(closeDatabase: true);
     },

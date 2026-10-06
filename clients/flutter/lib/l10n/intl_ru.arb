@@ -5190,5 +5190,9 @@
   "attachLimitReached": "{limit, plural, one{За раз можно отправить не больше {limit} файла.} few{За раз можно отправить не больше {limit} файлов.} many{За раз можно отправить не больше {limit} файлов.} other{За раз можно отправить не больше {limit} файла.}}",
   "@attachLimitReached": {"description": "Лимит вложений за одну отправку (LABA-2621)", "placeholders": {"limit": {"type": "int"}}},
   "attachLimitDropped": "{count, plural, one{Лишний {count} файл не добавлен.} few{Лишние {count} файла не добавлены.} many{Лишние {count} файлов не добавлены.} other{Лишние {count} файла не добавлены.}}",
-  "@attachLimitDropped": {"description": "Лимит вложений за одну отправку (LABA-2621)", "placeholders": {"count": {"type": "int"}}}
+  "@attachLimitDropped": {"description": "Лимит вложений за одну отправку (LABA-2621)", "placeholders": {"count": {"type": "int"}}},
+  "botButtonTapFailed": "Не удалось отправить нажатие кнопки. Попробуйте ещё раз.",
+  "@botButtonTapFailed": {"description": "Кнопки и меню команд бота (bot-api-compat-fixes)"},
+  "botCommandsMenu": "Команды бота",
+  "@botCommandsMenu": {"description": "Кнопки и меню команд бота (bot-api-compat-fixes)"}
 }

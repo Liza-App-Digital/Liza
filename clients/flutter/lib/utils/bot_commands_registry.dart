@@ -32,9 +32,12 @@ class BotCommandsRegistry {
 
   static const Duration _ttl = Duration(minutes: 5);
 
+  @visibleForTesting
+  DateTime Function() now = DateTime.now;
+
   final Map<String, List<BotCommand>> _commands = {};
   final Map<String, DateTime> _fetchedAt = {};
-  final Set<String> _inFlight = {};
+  final Map<String, Future<void>> _inFlight = {};
 
   String _key(Client client, String botMxid) =>
       '${client.homeserver?.host ?? ''}|$botMxid';
@@ -46,14 +49,25 @@ class BotCommandsRegistry {
   bool hasCommand(Client client, String botMxid, String name) =>
       commandsFor(client, botMxid).any((c) => c.command == name.toLowerCase());
 
+  /// Загрузка, если кэш старше TTL (5 мин): повторное открытие чата подхватит
+  /// команды, изменённые `setMyCommands`, без перезапуска приложения.
   void ensureLoaded(Client client, String botMxid) {
     final key = _key(client, botMxid);
-    if (_inFlight.contains(key)) return;
+    if (_inFlight.containsKey(key)) return;
     final last = _fetchedAt[key];
-    if (last != null && DateTime.now().difference(last) < _ttl) return;
-    _inFlight.add(key);
-    load(client, botMxid).whenComplete(() => _inFlight.remove(key));
+    if (last != null && now().difference(last) < _ttl) return;
+    // Колбэк whenComplete — блоком: `remove` вернул бы сам этот Future, и
+    // whenComplete ждал бы его же — вечное ожидание.
+    _inFlight[key] = load(client, botMxid).whenComplete(() {
+      _inFlight.remove(key);
+    });
   }
+
+  /// Идущая загрузка команд бота (null — не идёт). Подсказки «/» ждут её, чтобы
+  /// команды появились, как только приедут, без ввода следующего символа:
+  /// `Autocomplete` пересчитывает варианты только на изменение текста.
+  Future<void>? loading(Client client, String botMxid) =>
+      _inFlight[_key(client, botMxid)];
 
   @visibleForTesting
   Future<void> load(Client client, String botMxid) async {
@@ -66,7 +80,7 @@ class BotCommandsRegistry {
       final resp = await httpClient
           .get(url)
           .timeout(const Duration(seconds: 8));
-      _fetchedAt[key] = DateTime.now();
+      _fetchedAt[key] = now();
       if (resp.statusCode != 200) {
         Logs().w('[BotCommands] $url → ${resp.statusCode}');
         return;
@@ -76,13 +90,14 @@ class BotCommandsRegistry {
       );
       revision.value++;
     } catch (e) {
-      _fetchedAt[key] = DateTime.now();
+      _fetchedAt[key] = now();
       Logs().w('[BotCommands] load failed ($url): $e');
     }
   }
 
   @visibleForTesting
   void reset() {
+    now = DateTime.now;
     _commands.clear();
     _fetchedAt.clear();
     _inFlight.clear();

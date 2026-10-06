@@ -1,12 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
+import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/external_link_web_view.dart';
 import 'package:liza/utils/bot_callback.dart';
 import 'package:liza/utils/url_launcher.dart';
+import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
 import 'package:liza/widgets/matrix.dart';
 import 'html_message.dart';
 
@@ -89,17 +93,38 @@ class XlButtonsContent extends StatefulWidget {
 }
 
 class _XlButtonsContentState extends State<XlButtonsContent> {
-  /// Debounce: пока обрабатываем тап (открываем webview / шлём callback), второй
-  /// тап игнорируем — иначе двойной тап по url-кнопке кладёт ДВА webview в стек
-  /// навигации (внешний браузер так не стекался). Аналог `_pending` в
-  /// `MiniAppChoiceContent`.
+  /// Сколько кнопка ждёт ответа бота после тапа. Ответа может не быть вовсе
+  /// (бот не вызвал `answerCallbackQuery`) — тогда спиннер снимается молча.
+  static const pendingBound = Duration(seconds: 15);
+
+  /// Debounce url-кнопок и текстового суррогата: второй тап, пока обрабатываем
+  /// первый, игнорируем — иначе двойной тап по url-кнопке кладёт ДВА webview в
+  /// стек навигации. На callback-кнопки не распространяется: у них ожидание
+  /// своё у каждой кнопки ([_pending]).
   bool _busy = false;
 
-  /// Кнопка, нажатие которой сейчас отправляется (спиннер), и последняя
-  /// успешно нажатая (галочка): событие нажатия в ленте не видно, без отметки
-  /// пользователь не понял бы, что тап сработал.
-  String? _pendingIndex;
+  /// Кнопки, ждущие ответа бота (спиннер), по номеру. Остальные кнопки
+  /// сообщения нажимаются как обычно.
+  final Map<String, PendingBotTap> _pending = {};
+  final Map<String, Timer> _pendingTimers = {};
+
+  /// Последняя успешно нажатая кнопка (галочка): событие нажатия в ленте не
+  /// видно, без отметки пользователь не понял бы, что тап сработал.
   String? _pickedIndex;
+
+  BotCallbackAnswers get _answers =>
+      BotCallbackAnswers.of(widget.event.room.client);
+
+  @override
+  void dispose() {
+    for (final t in _pendingTimers.values) {
+      t.cancel();
+    }
+    for (final tap in _pending.values) {
+      _answers.unregister(tap);
+    }
+    super.dispose();
+  }
 
   List<_XlButton> _parseButtons() {
     final raw = widget.event.content[XlButtonsContent.contentKey];
@@ -123,7 +148,73 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
     return out;
   }
 
+  void _endPending(String index) {
+    _pendingTimers.remove(index)?.cancel();
+    final tap = _pending.remove(index);
+    if (tap != null) _answers.unregister(tap);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _onCallbackTap(_XlButton b) async {
+    if (_pending.containsKey(b.index)) return;
+    final room = widget.event.room;
+    final tap = PendingBotTap(
+      tapId: newBotTapId(),
+      roomId: room.id,
+      eventId: widget.event.eventId,
+      index: b.index,
+      botMxid: widget.event.senderId,
+      onAnswer: (answer) {
+        _endPending(b.index);
+        if (mounted) _showAnswer(answer);
+      },
+    );
+    // Регистрируем ДО отправки: ответ бота может прийти раньше, чем PUT вернётся.
+    _answers.register(tap);
+    setState(() => _pending[b.index] = tap);
+    _pendingTimers[b.index] = Timer(pendingBound, () => _endPending(b.index));
+
+    final sent = await sendBotCallbackTap(
+      room,
+      index: b.index,
+      eventId: widget.event.eventId,
+      tapId: tap.tapId,
+    );
+    if (!mounted) return;
+    if (sent) {
+      setState(() => _pickedIndex = b.index);
+      return;
+    }
+    if (identical(_pending[b.index], tap)) _endPending(b.index);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(L10n.of(context).botButtonTapFailed)),
+    );
+  }
+
+  /// Ответ бота показываем только нажавшему: текст — всплывающей плашкой,
+  /// `show_alert` — диалогом с OK, `url` открываем как url-кнопку.
+  Future<void> _showAnswer(BotCallbackAnswer answer) async {
+    final text = answer.text;
+    if (text != null) {
+      if (answer.showAlert) {
+        await showOkAlertDialog(
+          context: context,
+          title: widget.event.senderFromMemoryOrFallback.calcDisplayname(),
+          message: text,
+          okLabel: L10n.of(context).ok,
+        );
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(text)));
+      }
+    }
+    final url = answer.url;
+    if (url != null && mounted) await openXlButtonUrl(context, url);
+  }
+
   Future<void> _onTap(_XlButton b) async {
+    if (b.url == null && b.callback) return _onCallbackTap(b);
     if (_busy) return;
     _busy = true;
     try {
@@ -133,21 +224,6 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
         // системного браузера (Liza-паритет для inline url-кнопок; кнопки
         // видны только у доверенных ботов роли `ai`).
         await openXlButtonUrl(context, b.url!);
-        return;
-      }
-      if (b.callback) {
-        setState(() => _pendingIndex = b.index);
-        try {
-          await widget.event.room.sendEvent(
-            botCallbackContent(index: b.index, eventId: widget.event.eventId),
-            type: botCallbackEventType,
-          );
-          if (mounted) setState(() => _pickedIndex = b.index);
-        } catch (e) {
-          Logs().e('[XlButtons] callback event send failed: $e');
-        } finally {
-          if (mounted) setState(() => _pendingIndex = null);
-        }
         return;
       }
       // Кнопка-действие без флага: номер текстом → callback-суррогат эмулятора.
@@ -214,8 +290,8 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
             children: [
               for (final b in buttons)
                 OutlinedButton.icon(
-                  onPressed: _pendingIndex == null ? () => _onTap(b) : null,
-                  icon: _pendingIndex == b.index
+                  onPressed: () => _onTap(b),
+                  icon: _pending.containsKey(b.index)
                       ? const SizedBox.square(
                           dimension: 14,
                           child: CircularProgressIndicator(strokeWidth: 2),

@@ -1450,6 +1450,25 @@ class ChatController extends State<ChatPageWithRoom>
   @visibleForTesting
   static final composerCommandPattern = RegExp(r'^\/([\w-]+)');
 
+  /// Куда идёт набранная `/`-команда [name] (без `/`). Меню бота-собеседника
+  /// ([botHasCommand]) проверяется ПЕРВЫМ: бот вправе назвать команду `leave`,
+  /// `logout`, `ban`… — выбранная из его меню, она обязана уйти ему текстом, а
+  /// не выйти из чата / разлогинить. Встроенные команды, которых у бота нет,
+  /// работают как раньше; затем — статический набор BotFather/Лизы.
+  @visibleForTesting
+  static ComposerCommandRoute routeComposerCommand(
+    String name, {
+    required Iterable<String> matrixCommands,
+    required bool botHasCommand,
+  }) {
+    if (botHasCommand) return ComposerCommandRoute.bot;
+    if (matrixCommands.contains(name.toLowerCase())) {
+      return ComposerCommandRoute.matrix;
+    }
+    if (isBotComposerCommand(name)) return ComposerCommandRoute.bot;
+    return ComposerCommandRoute.unknown;
+  }
+
   /// Меню «/» бота-собеседника (setMyCommands): грузим при открытии чата, чтобы
   /// подсказки были уже на первом «/». Боты Bot API живут на bots.liza.ru —
   /// проверка домена страхует ранний вход, когда роль `ai` ещё не подтянулась.
@@ -1493,31 +1512,35 @@ class ChatController extends State<ChatPageWithRoom>
     var parseCommands = !startsWithWhitespace;
 
     final commandMatch = composerCommandPattern.firstMatch(rawText);
-    if (commandMatch != null &&
-        !sendingClient.commands.keys.contains(commandMatch[1]!.toLowerCase())) {
+    if (commandMatch != null) {
       final dmPartner = room.directChatMatrixID;
-      if (isBotComposerCommand(commandMatch[1]!) ||
-          (dmPartner != null &&
-              BotCommandsRegistry.instance.hasCommand(
-                room.client,
-                dmPartner,
-                commandMatch[1]!,
-              ))) {
-        // Команда бота-ассистента (Лиза «мои приложения» / BotFather: боты, mini
-        // App, конструктор) или из меню бота-собеседника (setMyCommands) — не
-        // Matrix-команда, а текст для бота. Шлём как есть.
-        parseCommands = false;
-      } else {
-        final l10n = L10n.of(context);
-        final dialogResult = await showOkCancelAlertDialog(
-          context: context,
-          title: l10n.commandInvalid,
-          message: l10n.commandMissing(commandMatch[0]!),
-          okLabel: l10n.sendAsText,
-          cancelLabel: l10n.cancel,
-        );
-        if (dialogResult == OkCancelResult.cancel) return;
-        parseCommands = false;
+      final route = routeComposerCommand(
+        commandMatch[1]!,
+        matrixCommands: sendingClient.commands.keys,
+        botHasCommand:
+            dmPartner != null &&
+            BotCommandsRegistry.instance.hasCommand(
+              room.client,
+              dmPartner,
+              commandMatch[1]!,
+            ),
+      );
+      switch (route) {
+        case ComposerCommandRoute.bot:
+          parseCommands = false;
+        case ComposerCommandRoute.matrix:
+          break;
+        case ComposerCommandRoute.unknown:
+          final l10n = L10n.of(context);
+          final dialogResult = await showOkCancelAlertDialog(
+            context: context,
+            title: l10n.commandInvalid,
+            message: l10n.commandMissing(commandMatch[0]!),
+            okLabel: l10n.sendAsText,
+            cancelLabel: l10n.cancel,
+          );
+          if (dialogResult == OkCancelResult.cancel) return;
+          parseCommands = false;
       }
     }
 
@@ -3102,6 +3125,10 @@ class ChatController extends State<ChatPageWithRoom>
     );
   }
 }
+
+/// Маршрут набранной `/`-команды (см. [ChatController.routeComposerCommand]):
+/// текстом боту, исполнить Matrix-командой SDK или спросить пользователя.
+enum ComposerCommandRoute { bot, matrix, unknown }
 
 enum AddPopupMenuActions {
   gallery,

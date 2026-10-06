@@ -69,11 +69,26 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
     final btn = find.text(button['title']! as String);
     expect(btn, findsOneWidget);
-    await tester.runAsync(() async {
-      await tester.tap(btn);
-      await Future<void>.delayed(const Duration(milliseconds: 300));
+    if (button['callback'] != true) {
+      // Текстовый суррогат идёт через очередь комнаты (БД) — целиком в
+      // реальной зоне.
+      await tester.runAsync(() async {
+        await tester.tap(btn);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        await tester.pump();
+      });
+      return;
+    }
+    await tester.tap(btn);
+    // Отправка ходит в БД клиента (реальный isolate): даём ей прокрутиться,
+    // фейковое время (ожидание ответа бота 15 с) двигаем pump-ом.
+    for (var i = 0; i < 3; i++) {
       await tester.pump();
-    });
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+    }
+    await tester.pump();
   }
 
   Future<Room> roomOf(WidgetTester tester) async {
@@ -83,7 +98,9 @@ void main() {
     });
     addTearDown(client.dispose);
     FakeMatrixApi.calledEndpoints.clear();
-    final room = Room(id: '!r:liza.local', client: client);
+    // У этой комнаты FakeMatrixApi отвечает на PUT /send настоящим event_id
+    // (на прочие — `{}`, что теперь честно считается сбоем отправки).
+    final room = Room(id: '!1234:fakeServer.notExisting', client: client);
     client.rooms.add(room);
     return room;
   }
@@ -102,19 +119,23 @@ void main() {
 
       final events = sentTo('/send/$botCallbackEventType/');
       expect(events, hasLength(1));
-      expect(jsonDecode(events.single), {
-        'index': '1',
-        'm.relates_to': {
-          'rel_type': botCallbackEventType,
-          'event_id': '\$card',
-        },
+      final sent = jsonDecode(events.single) as Map<String, Object?>;
+      expect(sent['index'], '1');
+      expect(sent['m.relates_to'], {
+        'rel_type': botCallbackEventType,
+        'event_id': '\$card',
       });
+      // tap_id (bot-api-compat-fixes) — по нему сервер адресует ответ бота.
+      expect(sent['tap_id'], matches(RegExp(r'^[0-9a-f]{32}$')));
+      expect(sent.keys.toSet(), {'index', 'm.relates_to', 'tap_id'});
       expect(
         sentTo('/send/m.room.message/'),
         isEmpty,
         reason: 'в ленте не должно появиться «1»',
       );
       // Нажатая кнопка отмечена галочкой — иначе тап выглядит несработавшим.
+      // Пока ждём ответа бота (≤ 15 с) на её месте спиннер.
+      await tester.pump(const Duration(seconds: 16));
       expect(find.byIcon(Icons.check), findsOneWidget);
     },
   );

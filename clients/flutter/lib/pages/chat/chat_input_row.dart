@@ -7,6 +7,7 @@ import 'package:liza/utils/news_poll.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat/bot_commands_menu_button.dart';
 import 'package:liza/pages/chat/mini_app_web_view.dart';
 import 'package:liza/pages/chat/recording_input_row.dart';
 import 'package:liza/pages/chat/recording_view_model.dart';
@@ -218,6 +219,19 @@ class ChatInputRow extends StatelessWidget {
                         icon: const Icon(Icons.menu, size: 20),
                         label: Text(L10n.of(context).chatInputMenu),
                       ),
+                    ),
+                  // Меню команд бота (setMyCommands): в DM с ботом, у которого
+                  // есть команды. У BotFather и службы поддержки своя «Меню».
+                  if (controller.sendController.text.isEmpty &&
+                      controller.room.directChatMatrixID != null &&
+                      !isBotFatherRoom(controller.room) &&
+                      !isSupportHubRoom(controller.room))
+                    BotCommandsMenuButton(
+                      room: controller.room,
+                      controller: controller.sendController,
+                      focusNode: controller.inputFocus,
+                      onChanged: controller.onInputBarChanged,
+                      height: height,
                     ),
                   // Кнопка «Миниапп» (как menu button бота в Liza): в DM с
                   // ботом, у которого закреплён mini App, слева от «+» показываем
