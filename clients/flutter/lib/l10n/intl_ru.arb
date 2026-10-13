@@ -2748,6 +2748,8 @@
       }
     }
   },
+  "fileSaveFailed": "Не удалось сохранить файл",
+  "@fileSaveFailed": {},
   "filesHaveBeenSaved": "{count, plural, one{{count} файл сохранён} few{{count} файла сохранено} many{{count} файлов сохранено} other{{count} файла сохранено}}",
   "@filesHaveBeenSaved": {
     "placeholders": {
@@ -5065,7 +5067,7 @@
   "@contactsInviteHint": {},
   "lizaTagline": "Платформа для вашего общения",
   "@lizaTagline": {},
-  "lizaTaglineDetails": "С людьми и ИИ-ассистентом Лизой — ищет, помогает, расширяется под вас.",
+  "lizaTaglineDetails": "Ставьте задачи Лизе лично или вместе с другими. Создавайте общие чаты, приглашайте людей — ИИ-ассистент поможет каждому участнику",
   "@lizaTaglineDetails": {},
   "demoAuthPhoneFieldTitle": "Введите номер телефона",
   "@demoAuthPhoneFieldTitle": {},
@@ -5194,5 +5196,7 @@
   "botButtonTapFailed": "Не удалось отправить нажатие кнопки. Попробуйте ещё раз.",
   "@botButtonTapFailed": {"description": "Кнопки и меню команд бота (bot-api-compat-fixes)"},
   "botCommandsMenu": "Команды бота",
-  "@botCommandsMenu": {"description": "Кнопки и меню команд бота (bot-api-compat-fixes)"}
+  "@botCommandsMenu": {"description": "Кнопки и меню команд бота (bot-api-compat-fixes)"},
+  "captionSentSeparately": "Подпись длиннее {limit} символов — текст уйдёт отдельным сообщением после файлов.",
+  "@captionSentSeparately": {"description": "Подпись длиннее лимита уходит отдельным сообщением (заявка №52)", "placeholders": {"limit": {"type": "int"}}}
 }

@@ -353,7 +353,8 @@ class MatrixFileAudioSource extends StreamAudioSource {
 /// последним. [error] передают вызывающие стороны сбоя ПОЛУЧЕНИЯ вложения
 /// (скачать+расшифровать); для сбоев плеера его нет — там `kind` не пишем.
 /// При `kind=other` сразу за ним идёт `err` — тип исключения
-/// ([mediaFailureErrorType]), иначе класс `other` не отвечает на «почему».
+/// ([mediaFailureErrorType]), иначе класс `other` не отвечает на «почему»;
+/// при `kind=http` — `st`, HTTP-статус ([mediaFailureHttpStatus]).
 /// [playerError] — текст `PlayerException` сбоя самого плеера; в контекст идёт
 /// только его класс ([audioPlayerErrorClass]) — первым полем, по той же причине.
 Map<String, String> audioIssueContext(
@@ -370,6 +371,7 @@ Map<String, String> audioIssueContext(
     if (playerError != null) 'err': audioPlayerErrorClass(playerError),
     if (kind != null) 'kind': kind,
     if (kind == 'other') 'err': mediaFailureErrorType(error!),
+    if (kind == 'http') 'st': mediaFailureHttpStatus(error!)!,
     if (mime != null) 'mime': mime,
     'size': audioSizeBucket(info?.tryGet<int>('size')),
     'e2ee': '${event.isAttachmentEncrypted}',

@@ -45,6 +45,14 @@ abstract class AppConfig {
   /// альбом из 30 рисовался бы сеткой в 10 рядов.
   static const int albumChunkSize = 10;
 
+  /// Длина подписи к вложению в графемах — как в Telegram. Длиннее — файлы
+  /// уходят без подписи, текст следом отдельным сообщением (заявка №52:
+  /// прежние 255 молча обрезали текст на полуслове).
+  static const int maxCaptionLength = 1024;
+
+  /// С какой длины подписи диалог показывает счётчик.
+  static const int captionCounterFrom = 900;
+
   static const String website = 'https://liza.laba.pro';
   static const String faqUrl = 'https://liza.laba.pro/faq';
   static const String appId = 'com.prodamus.laba.liza';

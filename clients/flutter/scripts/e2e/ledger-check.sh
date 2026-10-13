@@ -163,6 +163,7 @@ _rl_slug_for() {  # button_id-префикс → RL-slug пинованной ф
     myapps.attach.|myapps.attach.pick.) echo "RL-miniapp-attach-to-bot" ;;
     mybots.rename.)                      echo "RL-botfather-rename-bot" ;;
     mybots.describe.)                    echo "RL-botfather-bot-description-topic" ;;
+    mybots.visibility.)                  echo "RL-private-bots" ;;
     # конфиг кнопок быстрого доступа (вкл/выкл + label, композер и список чатов)
     mybots.buttons.|myapps.buttons.|myapps.btn.composer.label.|myapps.btn.composer.toggle.|myapps.btn.list.label.|myapps.btn.list.toggle.)
                                          echo "RL-bot-miniapp-button-config" ;;

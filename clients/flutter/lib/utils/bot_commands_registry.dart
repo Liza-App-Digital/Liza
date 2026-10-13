@@ -49,18 +49,23 @@ class BotCommandsRegistry {
   bool hasCommand(Client client, String botMxid, String name) =>
       commandsFor(client, botMxid).any((c) => c.command == name.toLowerCase());
 
-  /// Загрузка, если кэш старше TTL (5 мин): повторное открытие чата подхватит
-  /// команды, изменённые `setMyCommands`, без перезапуска приложения.
-  void ensureLoaded(Client client, String botMxid) {
+  /// Загрузить команды, если кэш устарел. Повторные вызовы во время загрузки
+  /// получают тот же Future — подсказки «/» могут его дождаться.
+  Future<void> ensureLoaded(Client client, String botMxid) {
     final key = _key(client, botMxid);
-    if (_inFlight.containsKey(key)) return;
+    final running = _inFlight[key];
+    if (running != null) return running;
     final last = _fetchedAt[key];
-    if (last != null && now().difference(last) < _ttl) return;
-    // Колбэк whenComplete — блоком: `remove` вернул бы сам этот Future, и
-    // whenComplete ждал бы его же — вечное ожидание.
-    _inFlight[key] = load(client, botMxid).whenComplete(() {
+    if (last != null && now().difference(last) < _ttl) {
+      return Future.value();
+    }
+    // Блок, а не стрелка: remove() вернул бы сам этот Future, и whenComplete
+    // ждал бы его же — вечное ожидание.
+    final future = load(client, botMxid).whenComplete(() {
       _inFlight.remove(key);
     });
+    _inFlight[key] = future;
+    return future;
   }
 
   /// Идущая загрузка команд бота (null — не идёт). Подсказки «/» ждут её, чтобы

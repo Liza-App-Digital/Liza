@@ -199,6 +199,7 @@ class ChatController extends State<ChatPageWithRoom>
         files: details.files,
         room: room,
         outerContext: context,
+        onUnsentText: restoreUnsentText,
         threadRootEventId: activeThreadId,
         threadLastEventId: threadLastEventId,
       ),
@@ -613,6 +614,7 @@ class ChatController extends State<ChatPageWithRoom>
         files: files,
         room: room,
         outerContext: context,
+        onUnsentText: restoreUnsentText,
         threadRootEventId: activeThreadId,
         threadLastEventId: threadLastEventId,
       ),
@@ -1391,6 +1393,17 @@ class ChatController extends State<ChatPageWithRoom>
   FormattingTextEditingController sendController =
       FormattingTextEditingController();
 
+  /// Длинная подпись, не ушедшая из `SendFileDialog` (не ушёл ни один файл), —
+  /// обратно в композер, к уже набранному, а не молча в никуда.
+  void restoreUnsentText(String text) {
+    if (!mounted) return;
+    final current = sendController.text;
+    final restored = current.trim().isEmpty ? text : '$current\n$text';
+    sendController.text = restored;
+    sendController.selection = TextSelection.collapsed(offset: restored.length);
+    onInputBarChanged(restored);
+  }
+
   void setSendingClient(Client c) {
     // first cancel typing with the old sending client
     if (currentlyTyping) {
@@ -1469,14 +1482,14 @@ class ChatController extends State<ChatPageWithRoom>
     return ComposerCommandRoute.unknown;
   }
 
-  /// Меню «/» бота-собеседника (setMyCommands): грузим при открытии чата, чтобы
-  /// подсказки были уже на первом «/». Боты Bot API живут на bots.liza.ru —
-  /// проверка домена страхует ранний вход, когда роль `ai` ещё не подтянулась.
+  /// Меню «/» собеседника личного чата (setMyCommands): грузим при открытии,
+  /// чтобы подсказки были уже на первом «/» (результат, пришедший после ввода,
+  /// Autocomplete показывает лишь со следующего символа). Без проверки «это
+  /// бот»: роль `ai` может ещё не подтянуться, а бот — жить не на bots.liza.ru;
+  /// для человека ответ — пустой список, кэш 5 минут.
   void _loadBotCommands() {
     final dmPartner = room.directChatMatrixID;
-    if (dmPartner != null &&
-        (Matrix.of(context).isAiUser(dmPartner) ||
-            dmPartner.endsWith(':bots.liza.ru'))) {
+    if (dmPartner != null) {
       BotCommandsRegistry.instance.ensureLoaded(room.client, dmPartner);
     }
   }
@@ -1669,6 +1682,7 @@ class ChatController extends State<ChatPageWithRoom>
         // Пункт «Файл» (FileType.any) — без сжатия, документом-карточкой.
         compress: type != FileType.any,
         outerContext: context,
+        onUnsentText: restoreUnsentText,
         threadRootEventId: activeThreadId,
         threadLastEventId: threadLastEventId,
       ),
@@ -1722,6 +1736,7 @@ class ChatController extends State<ChatPageWithRoom>
             // отдельный пункт меню вложений «Изображение» (sendFileAction).
             compress: false,
             outerContext: context,
+            onUnsentText: restoreUnsentText,
             threadRootEventId: activeThreadId,
             threadLastEventId: threadLastEventId,
           ),
@@ -1777,6 +1792,7 @@ class ChatController extends State<ChatPageWithRoom>
           files: result.files,
           room: room,
           outerContext: context,
+          onUnsentText: restoreUnsentText,
           threadRootEventId: activeThreadId,
           threadLastEventId: threadLastEventId,
         ),
@@ -1806,6 +1822,7 @@ class ChatController extends State<ChatPageWithRoom>
         room: room,
         compress: true,
         outerContext: context,
+        onUnsentText: restoreUnsentText,
         threadRootEventId: activeThreadId,
         threadLastEventId: threadLastEventId,
       ),
@@ -1855,6 +1872,7 @@ class ChatController extends State<ChatPageWithRoom>
         room: room,
         compress: true,
         outerContext: context,
+        onUnsentText: restoreUnsentText,
         threadRootEventId: activeThreadId,
         threadLastEventId: threadLastEventId,
       ),

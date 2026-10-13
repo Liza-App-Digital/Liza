@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
+import 'package:path/path.dart' as p;
 
 import 'package:liza/utils/matrix_sdk_extensions/matrix_file_extension.dart';
 
@@ -148,5 +149,41 @@ void main() {
       );
       expect(safeSaveFileName(file, now: now), 'file_20260710_153000');
     });
+  });
+
+  // ledger:RL-web-file-save-any-name
+  group('safeSaveFileName: имя пригодно на любой платформе (заявка №51)', () {
+    // На Web package:path работает в url-контексте: «:» читается как схема URL,
+    // и p.url.extension('… 09:33 … .txt') == '' — file_picker бросал
+    // «The file name should include a valid file extension». Тест на VM идёт в
+    // posix-контексте, поэтому web-условие проверяем ЯВНО через p.url.
+    const cases = {
+      '2026-10-10 09:33 (MSK) 6250126185.txt':
+          '2026-10-10 09_33 (MSK) 6250126185.txt',
+      'a:b.txt': 'a_b.txt',
+      'Отчёт: итог.pdf': 'Отчёт_ итог.pdf',
+      'archive.tar.gz': 'archive.tar.gz',
+      '../../x:y.txt': 'x_y.txt',
+      'con|tent?.docx': 'con_tent_.docx',
+      'a*b"c<d>e\\f.png': 'a_b_c_d_e_f.png',
+      'tab\tname.txt': 'tab_name.txt',
+    };
+    for (final MapEntry(key: name, value: expected) in cases.entries) {
+      test('«$name» → «$expected»', () {
+        // AC:RL-web-file-save-any-name/1
+        final file = MatrixFile(
+          bytes: bytes,
+          name: name,
+          mimeType: 'application/octet-stream',
+        );
+        final result = safeSaveFileName(file, now: now);
+        expect(result, expected);
+        expect(result, isNot(matches(RegExp(r'[:/\\*?"<>|\x00-\x1f]'))));
+        expect(p.url.extension(result), isNotEmpty);
+        expect(p.url.extension(result), p.posix.extension(result));
+        expect(p.windows.basename(result), result);
+      });
+    }
+
   });
 }

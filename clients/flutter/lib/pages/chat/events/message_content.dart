@@ -38,6 +38,37 @@ import 'mini_app_list_content.dart';
 import 'news_poll_content.dart';
 import 'story_ref_card.dart';
 
+/// Размер и вписывание пузыря одиночной картинки/стикера по `info.w/h`.
+/// Нижняя граница ШИРИНЫ высокой картинки — 160: вертикальный скриншот
+/// (576×1280) сужался до ~115 px, и рядом с длинной подписью фото принимали за
+/// неотправленное (заявка №52). Высота панорам и стикеры — прежние 32: там
+/// минимум 160 дал бы при `contain` широкие пустые поля.
+({double width, double height, BoxFit fit}) imageBubbleBox({
+  required int? w,
+  required int? h,
+  required bool isSticker,
+}) {
+  final maxSize = isSticker ? 128.0 : 256.0;
+  if (w == null || h == null) {
+    return (
+      width: maxSize,
+      height: maxSize,
+      fit: isSticker ? BoxFit.contain : BoxFit.cover,
+    );
+  }
+  return w > h
+      ? (
+          width: maxSize,
+          height: max(32, maxSize * (h / w)),
+          fit: BoxFit.contain,
+        )
+      : (
+          width: max(isSticker ? 32 : 160, maxSize * (w / h)),
+          height: maxSize,
+          fit: BoxFit.contain,
+        );
+}
+
 class MessageContent extends StatelessWidget {
   final Event event;
   final Color textColor;
@@ -193,30 +224,15 @@ class MessageContent extends StatelessWidget {
                 timeOverlay: trailingTime,
               );
             }
-            final maxSize = event.messageType == MessageTypes.Sticker
-                ? 128.0
-                : 256.0;
-            final w = event.content
-                .tryGetMap<String, Object?>('info')
-                ?.tryGet<int>('w');
-            final h = event.content
-                .tryGetMap<String, Object?>('info')
-                ?.tryGet<int>('h');
-            var width = maxSize;
-            var height = maxSize;
-            var fit = event.messageType == MessageTypes.Sticker
-                ? BoxFit.contain
-                : BoxFit.cover;
-            if (w != null && h != null) {
-              fit = BoxFit.contain;
-              if (w > h) {
-                width = maxSize;
-                height = max(32, maxSize * (h / w));
-              } else {
-                height = maxSize;
-                width = max(32, maxSize * (w / h));
-              }
-            }
+            final (:width, :height, :fit) = imageBubbleBox(
+              w: event.content
+                  .tryGetMap<String, Object?>('info')
+                  ?.tryGet<int>('w'),
+              h: event.content
+                  .tryGetMap<String, Object?>('info')
+                  ?.tryGet<int>('h'),
+              isSticker: event.messageType == MessageTypes.Sticker,
+            );
             return ImageBubble(
               event,
               width: width,

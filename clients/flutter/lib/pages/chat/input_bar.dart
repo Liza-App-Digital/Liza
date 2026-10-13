@@ -145,13 +145,15 @@ class _InputBarState extends State<InputBar> {
     if (_hasUserMatch(text)) {
       await _ensureParticipantsLoaded();
     }
-    // «/» набран, пока меню бота ещё грузится: ждём загрузку (она и бампает
-    // `BotCommandsRegistry.revision`), иначе подсказки бота появились бы
-    // только после следующего символа — Autocomplete пересчитывает варианты
-    // лишь на изменение текста.
-    final botMxid = room.directChatMatrixID;
-    if (botMxid != null && _hasCommandPrefix(text)) {
-      await BotCommandsRegistry.instance.loading(room.client, botMxid);
+    // «/» в личном чате: дождаться меню собеседника (setMyCommands), если его
+    // ещё нет в кэше (загрузка бампает `BotCommandsRegistry.revision`), иначе
+    // подсказки появились бы только после следующего символа — Autocomplete
+    // пересчитывает варианты лишь на изменение текста. Меню грузится и здесь,
+    // а не только при открытии чата: бот вне bots.liza.ru или с ещё не
+    // подтянутой ролью иначе оставался без подсказок. Для людей — пустой список.
+    final partner = room.directChatMatrixID;
+    if (partner != null && _hasCommandPrefix(text)) {
+      await BotCommandsRegistry.instance.ensureLoaded(room.client, partner);
     }
     if (!context.mounted) return const [];
     final suggestions = getSuggestions(text);

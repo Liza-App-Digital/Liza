@@ -41,7 +41,8 @@ _MAX_RESULTS = 50
 class UserSearchFederationServlet(BaseFederationServlet):
     """``GET /_matrix/federation/v1/com.liza/user_search?query=...``
 
-    Отдаёт ТОЛЬКО локальных пользователей этого homeserver-а.
+    Отдаёт ТОЛЬКО локальных пользователей этого homeserver-а, без
+    приватных ботов и аккаунтов из hidden_users.
     X-Matrix-аутентификация, ratelimit и federation_domain_whitelist
     обеспечиваются базовым классом — до on_GET доходят только запросы с
     валидной подписью разрешённого homeserver-а.
@@ -70,7 +71,13 @@ class UserSearchFederationServlet(BaseFederationServlet):
             return 200, {"results": []}
 
         try:
-            results = await self._module.search_local_users(search_term, _MAX_RESULTS)
+            # Кто ищет на той стороне, мы не знаем (origin — сервер, не
+            # пользователь), поэтому searcher=None: приватные боты не уходят
+            # наружу ни к кому, даже к владельцу — он найдёт бота в директории
+            # своего HS через общий DM.
+            results = await self._module.search_local_users(
+                search_term, _MAX_RESULTS, searcher=None,
+            )
         except Exception as e:  # noqa: BLE001 — федеративный запрос не должен ронять HS
             logger.warning("user_search_guard: локальный поиск для %s упал: %s", origin, e)
             return 200, {"results": []}

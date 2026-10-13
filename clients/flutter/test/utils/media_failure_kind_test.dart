@@ -22,6 +22,7 @@ import 'package:liza/pages/chat/events/audio_autoplay_service.dart';
 import 'package:liza/utils/matrix_sdk_extensions/event_extension.dart';
 import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/transcription_service.dart';
+import 'package:liza/widgets/mxc_image.dart';
 import 'test_client.dart';
 
 void main() {
@@ -308,6 +309,100 @@ void main() {
         }
       },
     );
+  });
+
+  // GlitchTip #2096/#2097 (2026-10-08…11, сборка 3775, Android/iOS/macOS):
+  // `[audio-fail] reason=download-fail kind=http` без кода — 404/403/5xx лечатся
+  // по-разному, а статус оставался только в `[MediaDiag]` на устройстве.
+  group('st при kind=http — HTTP-статус доезжает до дежурного', () {
+    // AC:RL-media-failure-kind/13
+    test(
+      'AC-13: реальный audioIssueContext — st идёт сразу за kind только при '
+      'http и переживает бюджет title на ∀ хостах парка',
+      () async {
+        final client = await prepareTestClient();
+        final room = Room(
+          id: '!r:synapse.liza.laba.prodamus.tech',
+          client: client,
+        );
+        Event voice({bool encrypted = false}) => Event(
+              content: {
+                'msgtype': 'm.audio',
+                'body': 'voice.m4a',
+                if (!encrypted) 'url': 'mxc://synapse.liza/AbCdEf',
+                if (encrypted)
+                  'file': {'url': 'mxc://synapse.liza/AbCdEf', 'v': 'v2'},
+                'info': {'mimetype': 'audio/mp4', 'size': 200000},
+              },
+              type: EventTypes.Message,
+              eventId: r'$e',
+              senderId: '@a:synapse.liza.laba.prodamus.tech',
+              originServerTs: DateTime(2026, 10, 8),
+              room: room,
+            );
+
+        final cases = <MediaDownloadException, String>{
+          const MediaDownloadException(statusCode: 404): '404',
+          const MediaDownloadException(statusCode: 502): '502',
+          const MediaDownloadException(
+            statusCode: 200,
+            contentType: 'text/html',
+          ): '200',
+          const MediaDownloadException(): 'none',
+        };
+        cases.forEach((error, st) {
+          final ctx = audioIssueContext(voice(), error: error);
+          expect(ctx.keys.take(2), ['kind', 'st']);
+          expect(ctx['st'], st);
+        });
+        for (final e in <Object>[
+          const SocketException('reset'),
+          TimeoutException('slow'),
+          kDecryptFailure,
+          StateError('x'),
+        ]) {
+          expect(
+            audioIssueContext(voice(), error: e).containsKey('st'),
+            isFalse,
+            reason: 'st только для http, не для ${mediaFailureKind(e)}',
+          );
+        }
+
+        for (final host in [
+          'synapse.liza.laba.prodamus.tech',
+          'liza.cyber-agro.ru',
+          'victoryeng.liza.ru',
+        ]) {
+          for (final encrypted in [false, true]) {
+            final title = Monitoring.buildAlertTitle(
+              prefix: Monitoring.audioFailurePrefix,
+              reason: 'download-fail',
+              host: host,
+              context: audioIssueContext(
+                voice(encrypted: encrypted),
+                error: const MediaDownloadException(statusCode: 404),
+              ),
+            );
+            expect(
+              title.length,
+              lessThanOrEqualTo(Monitoring.maxAlertTitleLength),
+            );
+            expect(title, contains('kind=http st=404'));
+          }
+        }
+      },
+    );
+
+    // AC:RL-media-failure-kind/14
+    test('AC-14: [media-stuck] give-up с HTTP-ошибкой несёт st=', () {
+      final msg = MediaStuckAggregator().onGiveUp(
+        'give-up',
+        'synapse.liza.laba.prodamus.tech',
+        error: const MediaDownloadException(statusCode: 403),
+      )!;
+      expect(msg, endsWith('kind=http st=403'));
+      expect(msg.length, lessThanOrEqualTo(Monitoring.maxAlertTitleLength));
+    });
   });
 
   group('TranscriptionService.stageOneKindFor — честный вид ошибки', () {

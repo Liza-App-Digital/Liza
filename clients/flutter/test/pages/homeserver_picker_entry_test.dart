@@ -117,7 +117,7 @@ void main() {
     expect(find.text('Платформа для вашего общения'), findsOneWidget);
     expect(
       find.text(
-        'С людьми и ИИ-ассистентом Лизой — ищет, помогает, расширяется под вас.',
+        'Ставьте задачи Лизе лично или вместе с другими. Создавайте общие чаты, приглашайте людей — ИИ-ассистент поможет каждому участнику',
       ),
       findsOneWidget,
     );
@@ -131,7 +131,7 @@ void main() {
     expect(en['lizaTagline'], 'A platform for your communication');
     expect(
       en['lizaTaglineDetails'],
-      'With people and Liza, your AI assistant — searches, helps, and grows with you.',
+      'Give Liza tasks on your own or together with others. Create group chats, invite people — the AI assistant will help every participant',
     );
   });
 
@@ -182,7 +182,7 @@ void main() {
 
     expect(
       find.text(
-        'С людьми и ИИ-ассистентом Лизой — ищет, помогает, расширяется под вас.',
+        'Ставьте задачи Лизе лично или вместе с другими. Создавайте общие чаты, приглашайте людей — ИИ-ассистент поможет каждому участнику',
       ),
       findsOneWidget,
     );

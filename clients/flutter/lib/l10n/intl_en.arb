@@ -3044,6 +3044,8 @@
       }
     }
   },
+  "fileSaveFailed": "Could not save the file",
+  "@fileSaveFailed": {},
   "filesHaveBeenSaved": "{count, plural, =1{File has been saved} other{{count} files have been saved}}",
   "@filesHaveBeenSaved": {
     "type": "String",
@@ -5020,7 +5022,7 @@
   "@contactsInviteHint": {},
   "lizaTagline": "A platform for your communication",
   "@lizaTagline": {},
-  "lizaTaglineDetails": "With people and Liza, your AI assistant — searches, helps, and grows with you.",
+  "lizaTaglineDetails": "Give Liza tasks on your own or together with others. Create group chats, invite people — the AI assistant will help every participant",
   "@lizaTaglineDetails": {},
   "demoAuthPhoneFieldTitle": "Enter your phone number",
   "@demoAuthPhoneFieldTitle": {},
@@ -5229,5 +5231,7 @@
   "botButtonTapFailed": "Couldn't send the button tap. Try again.",
   "@botButtonTapFailed": {"description": "Кнопки и меню команд бота (bot-api-compat-fixes)"},
   "botCommandsMenu": "Bot commands",
-  "@botCommandsMenu": {"description": "Кнопки и меню команд бота (bot-api-compat-fixes)"}
+  "@botCommandsMenu": {"description": "Кнопки и меню команд бота (bot-api-compat-fixes)"},
+  "captionSentSeparately": "Caption is longer than {limit} characters — the text will be sent as a separate message after the files.",
+  "@captionSentSeparately": {"description": "Подпись длиннее лимита уходит отдельным сообщением (заявка №52)", "placeholders": {"limit": {"type": "int"}}}
 }

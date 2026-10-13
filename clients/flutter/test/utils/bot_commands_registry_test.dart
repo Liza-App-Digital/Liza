@@ -129,6 +129,30 @@ void main() {
     },
   );
 
+  test(
+    // AC:RL-bot-commands-composer-menu/6
+    'первый «/» дожидается загрузки: параллельные ensureLoaded — один запрос, после await команды есть',
+    () async {
+      final (client, botRoom, _, _) = await rooms();
+      final reg = BotCommandsRegistry.instance;
+      final a = reg.ensureLoaded(client, _bot);
+      final b = reg.ensureLoaded(client, _bot);
+      expect(identical(a, b), isTrue);
+      expect(botCommandSuggestions(botRoom, ''), isEmpty);
+      await b;
+      expect(requested, hasLength(1));
+      expect(botCommandSuggestions(botRoom, '').map((s) => s['name']), [
+        'start',
+        'help',
+        'shop',
+      ]);
+      // Кэш свежий — повторный вызов сразу завершён и в сеть не идёт.
+      await reg.ensureLoaded(client, _bot);
+      expect(requested, hasLength(1));
+      await client.dispose(closeDatabase: true);
+    },
+  );
+
   test('сбой сети → команд нет, композер не падает; повтор по TTL', () async {
     final (client, botRoom, _, _) = await rooms();
     BotCommandsRegistry.instance.httpClient = MockClient(

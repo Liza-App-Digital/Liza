@@ -47,6 +47,12 @@ class _JsonResource(resource.Resource):
     def _json_response(self, request: server.Request, data: dict, status: int = 200) -> None:
         request.setResponseCode(status)
         request.setHeader(b"Content-Type", b"application/json")
+        # CORS на сам ответ: preflight за модуль отдаёт Synapse, а ответ пишет этот
+        # голый Twisted-ресурс. Без заголовка браузер блокировал ответ — в веб-клиенте
+        # (web.liza.ru) роли не грузились: не было бейджей и кнопок ботов, которые
+        # рисуются только у отправителя с ролью «ИИ». Авторизация — заголовком
+        # Authorization, без cookie, поэтому «*» безопасен (как у Synapse).
+        request.setHeader(b"Access-Control-Allow-Origin", b"*")
         request.write(json.dumps(data).encode())
         request.finish()
 
@@ -687,6 +693,9 @@ class CatalogResource(_JsonResource):
         status, payload = await self._handler.remove(code)
         if status == 204:
             request.setResponseCode(204)
+            # Тот же CORS, что в _json_response: тело пустое, но без заголовка браузер
+            # не отдаст веб-клиенту и статус успешного DELETE.
+            request.setHeader(b"Access-Control-Allow-Origin", b"*")
             request.finish()
         else:
             self._json_response(request, payload, status)

@@ -71,6 +71,16 @@ Map<String, dynamic>? buildGalleryExtra({
   return extra.isEmpty ? null : extra;
 }
 
+/// Делит подпись по `AppConfig.maxCaptionLength` (в графемах): влезает — идёт
+/// подписью к файлу; не влезает — подпись пустая, а весь текст уходит после
+/// файлов отдельным сообщением, как в Telegram (заявка №52). Делить сам текст
+/// не нужно: обрезок под фото и продолжение в соседнем пузыре читаются хуже
+/// цельного сообщения.
+({String caption, String? trailingText}) splitCaption(String text) =>
+    text.characters.length > AppConfig.maxCaptionLength
+    ? (caption: '', trailingText: text)
+    : (caption: text, trailingText: null);
+
 /// Сколько альбомов нужно под медиа-набор из [total] файлов (LABA-2621).
 int albumCountFor(int total) =>
     (total + AppConfig.albumChunkSize - 1) ~/ AppConfig.albumChunkSize;
@@ -120,6 +130,11 @@ class SendFileDialog extends StatefulWidget {
   /// с уже введённым текстом — см. `_reopen`).
   final String? initialCaption;
 
+  /// Куда вернуть текст, не ушедший отдельным сообщением, потому что не ушёл
+  /// ни один файл (композер чата) — иначе длинный текст пропал бы вместе с
+  /// диалогом.
+  final ValueChanged<String>? onUnsentText;
+
   /// Открыть ленту превью у КОНЦА (плитка «+» видна) — ставит только
   /// `_addMore`: пересоздание диалога иначе сбрасывало ленту в начало, и для
   /// следующей вставки её приходилось листать заново (LABA-2631).
@@ -151,6 +166,7 @@ class SendFileDialog extends StatefulWidget {
     required this.threadRootEventId,
     this.compress = true,
     this.initialCaption,
+    this.onUnsentText,
     this.scrollToEndOnOpen = false,
     this.pasteboardReader = const SystemPasteboardReader(),
     this.moreImagesPicker = selectMoreImages,
@@ -353,6 +369,7 @@ class SendFileDialogState extends State<SendFileDialog> {
         threadLastEventId: widget.threadLastEventId,
         compress: widget.compress,
         initialCaption: caption,
+        onUnsentText: widget.onUnsentText,
         scrollToEndOnOpen: true,
         pasteboardReader: widget.pasteboardReader,
         moreImagesPicker: widget.moreImagesPicker,
@@ -512,6 +529,9 @@ class SendFileDialogState extends State<SendFileDialog> {
     // Провалы серии — для итогового сообщения.
     final prepareFailures = <Object>[];
     final uploadFailures = <Object>[];
+    // Текст сверх лимита подписи (`splitCaption`). Вне try: не ушёл — его
+    // возвращает в композер и внешний catch, иначе он пропал бы с диалогом.
+    String? trailingText;
 
     try {
       // LABA-2242: удалённому боту (аккаунт деактивирован) файлы тоже не шлём —
@@ -525,7 +545,9 @@ class SendFileDialogState extends State<SendFileDialog> {
       await _prepareVideoThumbnails();
       Navigator.of(context, rootNavigator: false).pop();
 
-      final caption = _labelTextController.text.trim();
+      final split = splitCaption(_labelTextController.text.trim());
+      final caption = split.caption;
+      trailingText = split.trailingText;
       // Альбом: ≥2 медиа (изображения и/или видео) уходят с общим
       // `com.liza.gallery.id` — лента рисует их единой сеткой
       // (media-v-format.md §8.5); набор длиннее `albumChunkSize` режется на
@@ -944,6 +966,27 @@ class SendFileDialogState extends State<SendFileDialog> {
         },
       ).run();
       scaffoldMessenger.clearSnackBars();
+      // Текст, не влезший в подпись, — ПОСЛЕ всей серии (как в Telegram:
+      // сначала вложения, потом текст) и только если ушёл хоть один файл.
+      // Иначе вышло бы ровно «отправился только текст» из заявки №52.
+      final text = trailingText;
+      if (text != null) {
+        final anySent = result.outcomes.contains(SeriesItemOutcome.sent);
+        if (anySent) {
+          // Подпись — буквальный текст: ни `/команд`, ни markdown (как и
+          // `body` вложения, куда она ушла бы, влезь она в лимит).
+          await room.sendTextEvent(
+            text,
+            parseCommands: false,
+            parseMarkdown: false,
+            threadRootEventId: widget.threadRootEventId,
+            threadLastEventId: widget.threadLastEventId,
+          );
+        } else {
+          widget.onUnsentText?.call(text);
+        }
+        trailingText = null;
+      }
       if (result.notSent > 0) {
         final firstError = uploadFailures.isNotEmpty
             ? uploadFailures.first
@@ -982,6 +1025,8 @@ class SendFileDialogState extends State<SendFileDialog> {
         );
       }
     } catch (e) {
+      final text = trailingText;
+      if (text != null) widget.onUnsentText?.call(text);
       scaffoldMessenger.clearSnackBars();
       scaffoldMessenger.showSnackBar(
         SnackBar(
@@ -1252,16 +1297,23 @@ class SendFileDialogState extends State<SendFileDialog> {
                       isMediaAlbum(widget.files))
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8.0),
+                      // Без `maxLength`: он молча резал ввод и вставку (было
+                      // 255, заявка №52), а его счётчик Cupertino-ветка
+                      // `DialogTextField` не рисует вовсе. Лимит и счётчик —
+                      // свои, см. `_CaptionLimitNote`.
                       child: DialogTextField(
                         controller: _labelTextController,
                         labelText: L10n.of(context).optionalMessage,
                         minLines: 1,
+                        // 3, не больше: на iOS высота поля фиксирована от
+                        // `maxLines`, и уже 5 строк уводят поле под клавиатуру
+                        // на 375×667 (RL-send-dialog-two-actions/5). Длинная
+                        // подпись прокручивается внутри поля.
                         maxLines: 3,
-                        maxLength: 255,
-                        counterText: '',
                         textCapitalization: TextCapitalization.sentences,
                       ),
                     ),
+                  _CaptionLimitNote(controller: _labelTextController),
                 ],
               ),
             ),
@@ -1284,6 +1336,48 @@ class SendFileDialogState extends State<SendFileDialog> {
               child: Text(L10n.of(context).send),
             ),
           ],
+        );
+      },
+    );
+  }
+}
+
+/// Счётчик подписи (с `AppConfig.captionCounterFrom` графем) и, сверх
+/// `AppConfig.maxCaptionLength`, предупреждение, что текст уйдёт отдельным
+/// сообщением. Строкой в контенте, не действием: в ряду кнопок их ровно две
+/// (RL-send-dialog-two-actions).
+class _CaptionLimitNote extends StatelessWidget {
+  const _CaptionLimitNote({required this.controller});
+
+  final TextEditingController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: controller,
+      builder: (context, value, _) {
+        final length = value.text.trim().characters.length;
+        if (length < AppConfig.captionCounterFrom) {
+          return const SizedBox.shrink();
+        }
+        final theme = Theme.of(context);
+        final over = length > AppConfig.maxCaptionLength;
+        final color = over
+            ? theme.colorScheme.error
+            : theme.colorScheme.onSurfaceVariant;
+        return Padding(
+          key: const Key('caption-limit-note'),
+          padding: const EdgeInsets.only(bottom: 8.0),
+          child: Text(
+            [
+              '$length/${AppConfig.maxCaptionLength}',
+              if (over)
+                L10n.of(
+                  context,
+                ).captionSentSeparately(AppConfig.maxCaptionLength),
+            ].join(' · '),
+            style: theme.textTheme.bodySmall?.copyWith(color: color),
+          ),
         );
       },
     );

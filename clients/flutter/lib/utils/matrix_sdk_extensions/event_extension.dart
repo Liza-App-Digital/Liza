@@ -114,6 +114,16 @@ String mediaFailureErrorType(Object error) {
   return name.length > 40 ? name.substring(0, 40) : name;
 }
 
+/// HTTP-статус для класса `http` [mediaFailureKind] (`st=` в title алёрта) или
+/// `null` для прочих классов.
+///
+/// Зачем: issue GlitchTip #2096/#2097 (2026-10-08…11, сборка 3775, 4 устройства)
+/// пришли как `kind=http` без кода — 404 (файла нет / не докачан по федерации),
+/// 403/401 и 5xx лечатся по-разному, а статус оставался только в `[MediaDiag]`
+/// на устройстве. `200` здесь означает error-page (HTML/JSON вместо медиа).
+String? mediaFailureHttpStatus(Object error) =>
+    error is MediaDownloadException ? '${error.statusCode ?? 'none'}' : null;
+
 /// mxc, для которых в этой сессии уже пытались вылечить отравленный дисковый
 /// файл-кэш SDK. Живёт всю сессию: без него упорно-битый на сервере файл
 /// зациклил бы перекачку на каждый тап. Ключ — mxc с учётом `getThumbnail`

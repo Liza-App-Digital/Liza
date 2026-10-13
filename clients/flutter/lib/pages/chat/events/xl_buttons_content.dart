@@ -126,6 +126,17 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
     super.dispose();
   }
 
+  @override
+  void didUpdateWidget(XlButtonsContent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Бот отредактировал сообщение (display-событие сменилось) — это новый набор
+    // кнопок: галочка от прежнего нажатия не должна перескочить на кнопку с тем
+    // же номером.
+    if (oldWidget.event.eventId != widget.event.eventId) {
+      _pickedIndex = null;
+    }
+  }
+
   List<_XlButton> _parseButtons() {
     final raw = widget.event.content[XlButtonsContent.contentKey];
     final out = <_XlButton>[];

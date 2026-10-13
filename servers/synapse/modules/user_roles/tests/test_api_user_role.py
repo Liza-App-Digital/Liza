@@ -375,5 +375,51 @@ class RolesListTestCase(unittest.TestCase):
         self.assertEqual(ai, {"code": "ai", "label": "ИИ", "color": "#4CAF50"})
 
 
+# --- CORS для веб-клиента ---------------------------------------------------
+
+
+class _FakeRequest:
+    def __init__(self):
+        self.headers = {}
+        self.code = None
+        self.body = b""
+        self.finished = False
+
+    def setResponseCode(self, code):
+        self.code = code
+
+    def setHeader(self, name, value):
+        self.headers[name] = value
+
+    def write(self, data):
+        self.body += data
+
+    def finish(self):
+        self.finished = True
+
+
+class JsonResponseCorsTests(unittest.TestCase):
+    """Ответы модуля ролей несут Access-Control-Allow-Origin.
+
+    Инцидент 02.10: POST /roles/v1/batch отвечал без CORS → в web.liza.ru роли не
+    грузились, кнопки ботов (рисуются только у роли «ИИ») не показывались.
+    ledger:RL-user-roles-web-cors
+    """
+
+    def test_success_and_error_responses_allow_any_origin(self):
+        from synapse_modules.user_roles._api import _JsonResource
+
+        resource = _JsonResource()
+        for send in (
+            lambda r: resource._json_response(r, {"roles": {}}),
+            lambda r: resource._error(r, "unauthorized", "no token", 401),
+        ):
+            request = _FakeRequest()
+            send(request)
+            # AC:RL-user-roles-web-cors/1
+            self.assertEqual(request.headers[b"Access-Control-Allow-Origin"], b"*")
+            self.assertTrue(request.finished)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,7 +31,11 @@ void main() {
     ),
   );
 
-  Event card(Room room, List<Map<String, Object?>> buttons) => Event(
+  Event card(
+    Room room,
+    List<Map<String, Object?>> buttons, {
+    String eventId = '\$card',
+  }) => Event(
     type: EventTypes.Message,
     content: {
       'msgtype': 'm.text',
@@ -39,7 +43,7 @@ void main() {
       'com.liza.xl_buttons': buttons,
       'com.liza.xl_text_html': 'Подтвердить?',
     },
-    eventId: '\$card',
+    eventId: eventId,
     senderId: '@bot_father:liza.local',
     originServerTs: DateTime.now(),
     room: room,
@@ -182,6 +186,45 @@ void main() {
         isFalse,
       );
       await client.dispose(closeDatabase: true);
+    },
+  );
+
+  testWidgets(
+    'после правки сообщения ботом галочка нажатия не переходит на новый набор кнопок',
+    (tester) async {
+      // AC:RL-bot-api-callback-query-native/10
+      final room = await roomOf(tester);
+      const pressed = {
+        'index': '1',
+        'title': 'Каталог',
+        'url': '',
+        'callback': true,
+      };
+      await tapButton(tester, room, pressed);
+      // Бот не ответил answerCallbackQuery — спиннер снимается по pendingBound.
+      await tester.pump(const Duration(seconds: 16));
+      expect(find.byIcon(Icons.check), findsOneWidget);
+
+      // Бот ответил editMessageText: display-событие — правка с новыми кнопками.
+      await tester.pumpWidget(
+        wrap(
+          XlButtonsContent(
+            event: card(room, [
+              {
+                'index': '1',
+                'title': 'Курс «Продажи»',
+                'url': '',
+                'callback': true,
+              },
+            ], eventId: '\$edit'),
+            textColor: const Color(0xFF000000),
+            linkColor: const Color(0xFF0000FF),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('Курс «Продажи»'), findsOneWidget);
+      expect(find.byIcon(Icons.check), findsNothing);
     },
   );
 }

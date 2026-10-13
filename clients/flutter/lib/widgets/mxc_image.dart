@@ -181,7 +181,8 @@ class MediaStuckAggregator {
 
   /// Возвращает сообщение для эмита (leading-edge) либо `null` (дедуп в окне).
   /// [error] — последнее исключение ретраев: для `give-up` из него берётся класс
-  /// (`kind=`) и, при `other`, имя типа (`err=`) — без текста ошибки.
+  /// (`kind=`) и, при `other`, имя типа (`err=`), при `http` — статус (`st=`) —
+  /// без текста ошибки.
   String? onGiveUp(String reason, String? host, {Object? error}) {
     final now = _now();
     final start = _windowStart;
@@ -208,6 +209,9 @@ class MediaStuckAggregator {
       return '$head (вечный спиннер без ошибки)';
     }
     final kind = mediaFailureKind(error);
+    if (kind == 'http') {
+      return '$head kind=http st=${mediaFailureHttpStatus(error)}';
+    }
     if (kind != 'other') return '$head kind=$kind';
     final withKind = '$head kind=other err=';
     // host приходит из mxc:// — его задаёт чужой сервер федерации: два его

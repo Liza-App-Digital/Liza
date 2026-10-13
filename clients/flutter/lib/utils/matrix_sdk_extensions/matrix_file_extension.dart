@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:file_picker/file_picker.dart';
@@ -10,6 +11,7 @@ import 'package:share_plus/share_plus.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/file_download_helper.dart';
+import 'package:liza/utils/object_url.dart';
 import 'package:liza/utils/size_string.dart';
 
 /// Достоверный mime-тип скачанного вложения.
@@ -55,9 +57,18 @@ String? _sniffMissingMagic(List<int> bytes) {
 /// корректное оставляем как есть, при пустом base генерируем
 /// `<тип>_<timestamp>.<ext>`. Тип и расширение берём из [_resolveMimeType]
 /// (mime события, а при заглушке octet-stream — снифф по байтам).
+/// Символы, недопустимые в имени файла хотя бы на одной платформе, заменяем на
+/// `_` — так же поступает Chrome при скачивании. Главный из них «:» (заявка
+/// №51): на Web `package:path` работает в url-контексте и читает его как схему
+/// URL, `extension('… 09:33 … .txt')` там пустой, и file_picker отказывался
+/// сохранять; на Windows «:» в имени не допускается вовсе. Чистим ПОСЛЕ
+/// basename, иначе `../../secret` превратился бы в `.._.._secret`.
 /// [now] инъектируется в тестах ради детерминизма.
 String safeSaveFileName(MatrixFile file, {DateTime? now}) {
-  final raw = p.basename(file.name).trim();
+  final raw = p
+      .basename(file.name)
+      .trim()
+      .replaceAll(RegExp(r'[:/\\*?"<>|\x00-\x1f]'), '_');
   final lastDot = raw.lastIndexOf('.');
   final base = lastDot > 0
       ? raw.substring(0, lastDot)
@@ -117,11 +128,18 @@ extension MatrixFileExtension on MatrixFile {
         Logs().w('Direct save to ${directory.path} failed, using dialog', e);
       }
     }
+    // Web скачиваем сами: file_picker на Web отказывается сохранять файл без
+    // расширения и пустой файл, а диалога «Сохранить как» в браузере всё равно
+    // нет. Путь браузер не сообщает — возвращаем null, как и file_picker.
+    if (kIsWeb) {
+      downloadBytes(fileName, bytes, _resolveMimeType(this));
+      return null;
+    }
     // Одного `fileName` мало: с FileType.any NSSavePanel только подставляет имя
     // по умолчанию, но не удерживает расширение (сотрёшь — сохранит без него).
     // FileType.custom + allowedExtensions заставляет панель закрепить расширение.
     // allowedExtensions валиден только с FileType.custom и обязан быть непустым.
-    final ext = p.extension(fileName).replaceFirst('.', '');
+    final ext = p.posix.extension(fileName).replaceFirst('.', '');
     return FilePicker.platform.saveFile(
       dialogTitle: L10n.of(context).saveFile,
       fileName: fileName,
@@ -137,7 +155,18 @@ extension MatrixFileExtension on MatrixFile {
     // Одиночное скачивание — всегда системный диалог «Сохранить как»
     // (directory: null). Пакетное скачивание (LABA-2202) отдельно вызывает
     // saveToDisk с директорией для тихого сохранения в «Загрузки».
-    final downloadPath = await saveToDisk(context);
+    final String? downloadPath;
+    try {
+      downloadPath = await saveToDisk(context);
+    } catch (e, s) {
+      // `save` никто не ждёт (`void async`): без catch исключение ушло бы в
+      // zone, и пользователь не увидел бы ничего (заявка №51).
+      Logs().e('Failed to save file', e, s);
+      scaffoldMessenger.showSnackBar(
+        SnackBar(content: Text(l10n.fileSaveFailed)),
+      );
+      return;
+    }
     if (downloadPath == null) return;
 
     scaffoldMessenger.showSnackBar(
