@@ -30,7 +30,10 @@ import 'package:liza/widgets/matrix.dart';
 /// синхронно через `RenderRepaintBoundary.toImageSync` (см. [bubbleRect]) —
 /// без асинхронного мигания. Поповер НЕ трогает `selectedEvents`: мультивыбор
 /// остаётся отдельным режимом, входимым пунктом «Выбрать».
-Future<void> showMessageContextMenu({
+///
+/// Возвращает маршрут поповера: он висит на корневом навигаторе и переживает
+/// закрытие чата, поэтому [ChatController] снимает его в `dispose`.
+Route<void> showMessageContextMenu({
   required ChatController controller,
   required Event event,
   required Timeline timeline,
@@ -43,28 +46,29 @@ Future<void> showMessageContextMenu({
   // открытие — новый держатель, иначе фрагмент прошлого сообщения утёк бы в
   // копию следующего.
   final selection = ValueNotifier<String?>(null);
-  return Navigator.of(controller.context, rootNavigator: true)
-      .push(
-        PageRouteBuilder<void>(
-          opaque: false,
-          barrierColor: Colors.transparent,
-          fullscreenDialog: true,
-          transitionDuration: const Duration(milliseconds: 220),
-          reverseTransitionDuration: const Duration(milliseconds: 140),
-          pageBuilder: (context, animation, secondaryAnimation) =>
-              _MessageContextMenu(
-                controller: controller,
-                event: event,
-                timeline: timeline,
-                snapshot: snapshot,
-                bubbleRect: bubbleRect,
-                ownMessage: ownMessage,
-                animation: animation,
-                selection: selection,
-              ),
+  final route = PageRouteBuilder<void>(
+    opaque: false,
+    barrierColor: Colors.transparent,
+    fullscreenDialog: true,
+    transitionDuration: const Duration(milliseconds: 220),
+    reverseTransitionDuration: const Duration(milliseconds: 140),
+    pageBuilder: (context, animation, secondaryAnimation) =>
+        _MessageContextMenu(
+          controller: controller,
+          event: event,
+          timeline: timeline,
+          snapshot: snapshot,
+          bubbleRect: bubbleRect,
+          ownMessage: ownMessage,
+          animation: animation,
+          selection: selection,
         ),
-      )
-      .whenComplete(selection.dispose);
+  );
+  Navigator.of(
+    controller.context,
+    rootNavigator: true,
+  ).push(route).whenComplete(selection.dispose);
+  return route;
 }
 
 /// Можно ли в поповере включить живой selectable-слой текста поверх снимка

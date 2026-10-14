@@ -277,6 +277,16 @@ class ChatEventList extends StatelessWidget {
         childCount: events.length + 2,
         findChildIndexCallback: (key) =>
             controller.findChildIndexCallback(key, thisEventsKeyMap),
+        // На desktop/web сообщение под SelectionArea. Keep-alive (его просит
+        // InkWell с hover/focus-подсветкой, Swipeable на анимации) держит
+        // ушедшее за экран сообщение примонтированным, но SliverList его не
+        // раскладывает. Новый Text в нём (перестройка по sync: квитанции,
+        // реакции) регистрируется в SelectionArea без layout, и сортировка
+        // selectables падает «RenderBox was not laid out: RenderParagraph»,
+        // оставляя делегат в рваном состоянии → следом RangeError в
+        // remove/getSelectionGeometry (GlitchTip #2067/#2101/#2068/#2009).
+        // На mobile SelectionArea нет — там keep-alive не трогаем.
+        addAutomaticKeepAlives: PlatformInfos.isMobile,
       ),
     );
   }

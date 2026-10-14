@@ -313,6 +313,9 @@ void showMemberActionsPopupMenu({
     ],
   );
   if (action == null) return;
+  // Якорь меню — строка участника или аватар в ленте: за время диалога его
+  // пересобирает список, и Navigator.of по мёртвому context бросает null check
+  // (GlitchTip #92). Поэтому mounted проверяем после КАЖДОГО await.
   if (!context.mounted) return;
 
   switch (action) {
@@ -359,6 +362,7 @@ void showMemberActionsPopupMenu({
                 : L10n.of(context).kickUserDescription,
           ) ==
           OkCancelResult.ok) {
+        if (!context.mounted) return;
         await showFutureLoadingDialog(
           context: context,
           future: () => user.kick(),
@@ -376,6 +380,7 @@ void showMemberActionsPopupMenu({
                 : L10n.of(context).banUserDescription,
           ) ==
           OkCancelResult.ok) {
+        if (!context.mounted) return;
         await showFutureLoadingDialog(
           context: context,
           future: () async {
@@ -406,6 +411,7 @@ void showMemberActionsPopupMenu({
                 : L10n.of(context).removeFromStoreDescription,
           ) ==
           OkCancelResult.ok) {
+        if (!context.mounted) return;
         await showFutureLoadingDialog(
           context: context,
           future: () async {
@@ -433,12 +439,14 @@ void showMemberActionsPopupMenu({
         hintText: L10n.of(context).reason,
       );
       if (reason == null || reason.isEmpty) return;
+      if (!context.mounted) return;
 
       final result = await showFutureLoadingDialog(
         context: context,
         future: () => user.room.client.reportUser(user.id, reason),
       );
       if (result.error != null) return;
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(L10n.of(context).contentHasBeenReported)),
       );
@@ -470,6 +478,7 @@ void showMemberActionsPopupMenu({
                 : L10n.of(context).unbanUserDescription,
           ) ==
           OkCancelResult.ok) {
+        if (!context.mounted) return;
         await showFutureLoadingDialog(
           context: context,
           future: () async {

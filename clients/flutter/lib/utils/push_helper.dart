@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
@@ -9,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:collection/collection.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_shortcuts_new/flutter_shortcuts_new.dart';
+import 'package:http/http.dart' as http;
 import 'package:matrix/matrix.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -32,6 +34,34 @@ import 'package:liza/utils/strip_matrix_mentions.dart';
 import 'package:liza/utils/update_policy.dart';
 
 const notificationAvatarDimension = 128;
+
+/// Сбой, который лечится сетью или сервером, а не кодом клиента: обрыв и
+/// таймаут сети, 5xx шлюза. Такие исходы не должны уходить в GlitchTip как
+/// error — рестарт Synapse или сон Мака иначе превращаются в десятки issue
+/// (#2040, #185, #90), и настоящие ошибки в них тонут.
+///
+/// matrix SDK 4.1.0 не даёт типа для 5xx: `MatrixApi.request` бросает голый
+/// `Exception(<тело ответа>)` (HTML nginx при 502/504, JSON Synapse при 500),
+/// сгенерированный API — `Exception('http error response')`. Поэтому
+/// распознаём по тексту и только у голого `Exception`: свои типы ошибок
+/// (`FormatException`, `StateError`, ...) сюда не попадают и репортятся.
+bool isTransientServerOrNetworkError(Object e) {
+  if (e is TimeoutException ||
+      e is SocketException ||
+      e is TlsException ||
+      e is http.ClientException) {
+    return true;
+  }
+  if (e is! Exception) return false;
+  const prefix = 'Exception: ';
+  final text = e.toString();
+  if (!text.startsWith(prefix)) return false;
+  final body = text.substring(prefix.length).trimLeft();
+  return body == 'http error response' ||
+      body.isEmpty ||
+      body.startsWith('<') ||
+      (body.startsWith('{') && body.contains('"errcode"'));
+}
 
 /// Ключ адресата в сыром payload пуша (Sygnal мержит `pusher.data.default_payload`
 /// в top-level FCM data / APNs userInfo; `PushNotification.fromJson` — whitelist и
@@ -88,7 +118,15 @@ Future<void> pushHelper(
       useNotificationActions: useNotificationActions,
     );
   } catch (e, s) {
-    Logs().e('Push Helper has crashed! Writing into temporary file', e, s);
+    // Событие не достали из-за сети/сервера (фоновый пуш на спящем Маке,
+    // рестарт Synapse) — пользователь всё равно получит общий баннер ниже, а
+    // исключение без rethrow не долетит до root zone. Ошибки кода — как раньше.
+    final transient = isTransientServerOrNetworkError(e);
+    if (transient) {
+      Logs().w('[Push] Push event unavailable (network/server)', e, s);
+    } else {
+      Logs().e('Push Helper has crashed! Writing into temporary file', e, s);
+    }
 
     l10n ??= await lookupL10n(PlatformDispatcher.instance.locale);
     flutterLocalNotificationsPlugin.show(
@@ -120,7 +158,7 @@ Future<void> pushHelper(
         ),
       ),
     );
-    rethrow;
+    if (!transient) rethrow;
   }
 }
 
@@ -367,7 +405,7 @@ Future<void> _tryPushHelper(
               )
               .timeout(const Duration(seconds: 3));
   } catch (e, s) {
-    Logs().e('Unable to get avatar picture', e, s);
+    _logAvatarFailure(e, s);
   }
   try {
     senderAvatarFile = event.room.isDirectChat
@@ -386,7 +424,7 @@ Future<void> _tryPushHelper(
               )
               .timeout(const Duration(seconds: 3));
   } catch (e, s) {
-    Logs().e('Unable to get avatar picture', e, s);
+    _logAvatarFailure(e, s);
   }
 
   final id = pushNotificationId(client.clientName, notification.roomId);
@@ -640,4 +678,14 @@ Future<void> _setShortcut(
       isImportant: event.room.isFavourite,
     ),
   );
+}
+
+/// Аватар в уведомлении — косметика с жёстким таймаутом 3 с: медленная сеть
+/// здесь штатна и не повод для error-issue (#271).
+void _logAvatarFailure(Object e, StackTrace s) {
+  if (isTransientServerOrNetworkError(e)) {
+    Logs().w('Unable to get avatar picture (network/server)', e, s);
+  } else {
+    Logs().e('Unable to get avatar picture', e, s);
+  }
 }

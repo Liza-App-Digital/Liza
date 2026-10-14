@@ -14,6 +14,13 @@ class ReplyDisplay extends StatelessWidget {
   final ChatController controller;
   const ReplyDisplay(this.controller, {super.key});
 
+  Event? get _editDisplayEvent {
+    final editEvent = controller.editEvent;
+    final timeline = controller.timeline;
+    if (editEvent == null || timeline == null) return editEvent;
+    return editEvent.getDisplayEvent(timeline);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -46,13 +53,14 @@ class ReplyDisplay extends StatelessWidget {
                     client: Matrix.of(context).client,
                   )
                 : controller.replyEvent != null
+                // timeline == null — штатное окно перезагрузки ленты
+                // (scrollDown/scrollToEventId) и dispose; reply/edit при этом
+                // остаются выбраны (GlitchTip #605).
                 ? ReplyContent(
                     controller.replyEvent!,
-                    timeline: controller.timeline!,
+                    timeline: controller.timeline,
                   )
-                : _EditContent(
-                    controller.editEvent?.getDisplayEvent(controller.timeline!),
-                  ),
+                : _EditContent(_editDisplayEvent),
           ),
         ],
       ),

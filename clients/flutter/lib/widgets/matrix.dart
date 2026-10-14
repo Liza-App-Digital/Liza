@@ -1131,6 +1131,9 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     if (authorization == AppBadge.authorizationDenied) {
       await Monitoring.reportPushConfig('os_denied');
     }
+    // Все аккаунты вышли (в т.ч. сервер отозвал токен) — `client` на пустом
+    // списке бросает StateError на каждом resume (#508).
+    if (widget.clients.isEmpty) return;
     final c = client;
     if (!c.isLogged()) return;
     final deviations = PushRuleDefaults.deviations(c.globalPushRules);

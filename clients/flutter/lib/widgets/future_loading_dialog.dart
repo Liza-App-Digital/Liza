@@ -40,6 +40,9 @@ Future<Result<T>> showFutureLoadingDialog<T>({
       await Future.delayed(const Duration(milliseconds: 100));
       i--;
     }
+    // Вызывающий виджет мог исчезнуть за время задержки (GlitchTip #92):
+    // диалог показать негде, но операция уже запущена — дожидаемся её.
+    if (!context.mounted) return Result.capture(futureExec);
   }
 
   final result = await showAdaptiveDialog<Result<T>>(

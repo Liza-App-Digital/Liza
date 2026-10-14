@@ -274,6 +274,9 @@ class BackgroundPush {
   /// Called after sync to keep badge in sync across devices.
   Future<void> updateBadgeCount() async {
     if (!Platform.isIOS && !Platform.isMacOS && !Platform.isAndroid) return;
+    // После выхода последнего аккаунта список пуст, а resume всё равно зовёт
+    // пересчёт — `client` (= clients.first) бросал StateError (#508).
+    if (clients.isEmpty) return;
     // См. AppBadge.refreshFrom: порядок квитанции досчитывается до подсчёта.
     await UnseenOrderCache.reconcile(client);
     final unreadCount =
@@ -796,6 +799,16 @@ class BackgroundPush {
     }
   }
 
+  /// Паузы между попытками `postPusher`. Суммарно ~45 с — дольше рестарта
+  /// прод-Synapse (15–45 с, carve-restart): прежние 2+4 с целиком укладывались
+  /// в простой, и пушер не регистрировался до следующего resume (#2040).
+  @visibleForTesting
+  static List<Duration> postPusherRetryDelays = const [
+    Duration(seconds: 3),
+    Duration(seconds: 12),
+    Duration(seconds: 30),
+  ];
+
   Future<void> setupPusher({
     required Client client,
     String? gatewayUrl,
@@ -941,7 +954,7 @@ class BackgroundPush {
       // Сбой регистрации = пользователь молча остаётся без пушей до
       // следующего setupPush (resume/рестарт). Поэтому: ретрай на сетевых
       // ошибках + репорт финального провала в мониторинг.
-      const maxAttempts = 3;
+      final maxAttempts = postPusherRetryDelays.length + 1;
       for (var attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           Logs().i(
@@ -954,6 +967,14 @@ class BackgroundPush {
           break;
         } on MatrixException catch (e, s) {
           // Ответ сервера (4xx и пр.) — повтор с теми же данными бессмыслен.
+          if (e.error == MatrixError.M_UNKNOWN_TOKEN) {
+            // Сессию отозвали на сервере: это не сбой пушей, а выход из
+            // аккаунта. Его штатно доводит sync-цикл SDK (`_innerSync`:
+            // soft_logout → onSoftLogout, иначе clear() → loggedOut), а
+            // capture здесь давал error-issue на каждый такой выход (#2100).
+            Logs().w('[Push] Pusher not set: access token revoked', e);
+            break;
+          }
           Logs().e('[Push] Server rejected pusher registration', e, s);
           Monitoring.capture(e, s);
           break;
@@ -961,14 +982,21 @@ class BackgroundPush {
           // Промежуточные попытки — warning: до моста в мониторинг доходят
           // только error/wtf, а сетевой сбой до исчерпания ретраев — не ошибка.
           if (attempt == maxAttempts) {
-            Logs().e('[Push] Unable to set pusher (attempt $attempt)', e, s);
+            // Сеть/5xx после всех ретраев — сигнал ТОЛЬКО маркером [push-fail]
+            // ниже: Logs().e ещё и слал сырой HTML 502 отдельным error-issue
+            // (#2040). Неизвестный тип ошибки — дефект кода, его репортим.
+            if (isTransientServerOrNetworkError(e)) {
+              Logs().w('[Push] Unable to set pusher (attempt $attempt)', e, s);
+            } else {
+              Logs().e('[Push] Unable to set pusher (attempt $attempt)', e, s);
+            }
             // Стабильный маркер [push-fail] (роутинг notifier + дедуп), вместо
             // прежнего свободного captureMessage — чтобы этот класс сбоя пушей
             // попадал в мониторинг-комнату наравне с серверным детектором.
             Monitoring.reportPushIssue('post_pusher_exhausted');
           } else {
             Logs().w('[Push] Unable to set pusher (attempt $attempt)', e, s);
-            await Future.delayed(Duration(seconds: 2 * attempt));
+            await Future.delayed(postPusherRetryDelays[attempt - 1]);
           }
         }
       }

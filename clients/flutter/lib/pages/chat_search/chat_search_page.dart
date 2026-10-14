@@ -40,10 +40,12 @@ class ChatSearchController extends State<ChatSearchPage>
       messagesEndReached = imagesEndReached = filesEndReached = false;
     });
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
-      startSearch();
+      if (mounted) startSearch();
     });
   }
 
+  // Поиск по файлам/медиа листает всю историю и идёт долго: экран успевают
+  // закрыть, а setState после dispose бросает null check (GlitchTip #1845).
   void startSearch() async {
     switch (tabController.index) {
       case 0:
@@ -56,6 +58,7 @@ class ChatSearchController extends State<ChatSearchPage>
           searchTerm: searchController.text.trim(),
           nextBatch: messagesNextBatch,
         );
+        if (!mounted) return;
         setState(() {
           isLoading = false;
           messages.addAll(result.events);
@@ -75,6 +78,7 @@ class ChatSearchController extends State<ChatSearchPage>
           }.contains(event.messageType),
           nextBatch: imagesNextBatch,
         );
+        if (!mounted) return;
         setState(() {
           isLoading = false;
           images.addAll(result.events);
@@ -94,6 +98,7 @@ class ChatSearchController extends State<ChatSearchPage>
                   !event.content.containsKey('org.matrix.msc3245.voice')),
           nextBatch: filesNextBatch,
         );
+        if (!mounted) return;
         setState(() {
           isLoading = false;
           files.addAll(result.events);

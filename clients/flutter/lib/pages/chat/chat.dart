@@ -885,6 +885,7 @@ class ChatController extends State<ChatPageWithRoom>
     loadTimelineFuture = _getTimeline();
     try {
       await loadTimelineFuture;
+      if (!mounted) return;
       // Восстанавливаем reply-черновик: событие уже в памяти таймлайна.
       await _restoreReplyDraft();
       // We launched the chat with a given initial event ID:
@@ -1003,7 +1004,10 @@ class ChatController extends State<ChatPageWithRoom>
       // флага теперь в importantStateEvents.
       setState(() {});
     } catch (e, s) {
-      ErrorReporter(context, 'Unable to load timeline').onErrorCallback(e, s);
+      // Показать ошибку закрытому чату негде — только пробросить в отчёт.
+      if (mounted) {
+        ErrorReporter(context, 'Unable to load timeline').onErrorCallback(e, s);
+      }
       rethrow;
     } finally {
       // Backstop для исключения и ранних return: залипший флаг глушил бы
@@ -1135,27 +1139,42 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   Future<void> _getTimeline({String? eventContextId}) async {
-    await Matrix.of(context).client.roomsLoading;
-    await Matrix.of(context).client.accountDataLoading;
+    // Клиента берём ДО await: загрузка переживает уход в фон и Low memory, а
+    // `context` задиспоженного State бросает null check (GlitchTip #176).
+    final client = Matrix.of(context).client;
+    await client.roomsLoading;
+    await client.accountDataLoading;
+    if (!mounted) return;
     if (eventContextId != null &&
         (!eventContextId.isValidMatrixId || eventContextId.sigil != '\$')) {
       eventContextId = null;
     }
     try {
       timeline?.cancelSubscriptions();
-      timeline = await room.getTimeline(
+      final loaded = await room.getTimeline(
         onUpdate: updateView,
         eventContextId: eventContextId,
         onInsert: onInsert,
       );
+      // dispose уже отписал прежнюю ленту и обнулил timeline: присвоение после
+      // него оставило бы подписки мёртвого State навсегда.
+      if (!mounted) {
+        loaded.cancelSubscriptions();
+        return;
+      }
+      timeline = loaded;
     } catch (e, s) {
       Logs().w('Unable to load timeline on event ID $eventContextId', e, s);
       if (!mounted) return;
-      timeline = await room.getTimeline(
+      final loaded = await room.getTimeline(
         onUpdate: updateView,
         onInsert: onInsert,
       );
-      if (!mounted) return;
+      if (!mounted) {
+        loaded.cancelSubscriptions();
+        return;
+      }
+      timeline = loaded;
       if (e is TimeoutException || e is IOException) {
         _showScrollUpMaterialBanner(eventContextId!);
       }
@@ -1369,6 +1388,7 @@ class ChatController extends State<ChatPageWithRoom>
     // только mounted-гард).
     WidgetsBinding.instance.removeObserver(this);
     _bubbleKeys.clear();
+    _closeMessageContextMenu();
     inputFocus.removeListener(_inputFocusListener);
     composerPrefill.removeListener(_applyComposerPrefill);
     UpdatePolicyController.current.removeListener(_onUpdatePolicy);
@@ -2302,8 +2322,7 @@ class ChatController extends State<ChatPageWithRoom>
       }
       if (timeline == null) return;
     }
-    // _getTimeline присваивает ленту без проверки mounted: загрузка, дошедшая
-    // после dispose, вернула бы её мёртвому State, а ниже — setState.
+    // Ниже setState: чат мог закрыться, пока вызывающий ждал.
     if (!mounted) return;
     final foundEvent = timeline!.events.firstWhereOrNull(
       (event) => event.eventId == eventId,
@@ -2515,6 +2534,21 @@ class ChatController extends State<ChatPageWithRoom>
   GlobalKey bubbleKeyOf(String eventId) =>
       _bubbleKeys.putIfAbsent(eventId, GlobalKey.new);
 
+  Route<void>? _messageContextMenuRoute;
+
+  /// Поповер живёт на корневом навигаторе и переживает закрытие чата (уход в
+  /// фон с Low memory, смена маршрута) — следующая его перестройка звала
+  /// методы задиспоженного контроллера (GlitchTip #1918). Снимаем после кадра:
+  /// во время dispose дерево заблокировано, правка Navigator здесь запрещена.
+  void _closeMessageContextMenu() {
+    final route = _messageContextMenuRoute;
+    _messageContextMenuRoute = null;
+    if (route == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (route.isActive) route.navigator?.removeRoute(route);
+    });
+  }
+
   void onMessageContextMenu(Event event) {
     if (event.redacted) return;
     final timeline = this.timeline;
@@ -2532,7 +2566,7 @@ class ChatController extends State<ChatPageWithRoom>
     );
     final bubbleRect =
         renderObject.localToGlobal(Offset.zero) & renderObject.size;
-    showMessageContextMenu(
+    _messageContextMenuRoute = showMessageContextMenu(
       controller: this,
       event: event,
       timeline: timeline,
