@@ -125,7 +125,7 @@ void main() {
             builder: (context, setState) {
               rebuild = setState;
               return SearchUsersHorizontalList(
-                userSearchResult: published,
+                profiles: published.results,
                 onItemTap: (_) {},
               );
             },
@@ -194,7 +194,7 @@ void main() {
           client,
           handles,
           SearchUsersHorizontalList(
-            userSearchResult: published,
+            profiles: published.results,
             onItemTap: (_) {},
           ),
         ),

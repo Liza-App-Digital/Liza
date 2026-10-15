@@ -1,11 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:matrix/matrix.dart';
 
+import '../../l10n/l10n.dart';
 import '../../utils/channel_stories.dart';
 import '../../utils/stories/active_stories_provider.dart';
 import '../../utils/stories/deleted_stories_store.dart';
+import '../../utils/stories/frequent_contacts.dart';
 import '../../utils/stories/stories_extension.dart';
 import '../../utils/stories/stories_seen_store.dart';
 import '../../utils/stories/story_media_picker.dart';
@@ -31,6 +34,10 @@ class _StoriesBarState extends State<StoriesBar> {
   /// Кеш активных сторисов: roomId -> список Event.
   /// Заполняется асинхронно, build читает синхронно.
   final Map<String, List<Event>> _activeByRoom = {};
+
+  /// Активность личных чатов для блока «частые собеседники». Считается в
+  /// [FrequentContactsCache] (TTL, без сети), build только ранжирует.
+  List<DmActivity> _dmActivity = const [];
 
   /// Ленивый singleton для текущего State-цикла.
   /// Инициализируется при первом вызове build, не пересоздаётся при перестройках.
@@ -100,12 +107,20 @@ class _StoriesBarState extends State<StoriesBar> {
       );
     }
     if (!mounted) return;
+    final activity = await FrequentContactsCache.instance.refreshIfStale(
+      client,
+    );
+    if (!mounted) return;
     setState(() {
       _activeByRoom
         ..clear()
         ..addAll(result);
+      _dmActivity = activity;
     });
   }
+
+  bool _isBot(MatrixState matrix, String userId) =>
+      matrix.isBotOrAiUser(userId);
 
   Future<void> _addStory() async {
     final composer = await pickStoryMediaComposer(context);
@@ -158,6 +173,20 @@ class _StoriesBarState extends State<StoriesBar> {
         .where((r) => r.id != myRoom?.id)
         .where((r) => (_activeByRoom[r.id]?.isNotEmpty) == true)
         .toList();
+
+    // Частые собеседники — после авторов сторис, без дублей с ними, без Лизы
+    // и ботов (они закреплены в списке чатов). Ранжирование — чистая функция
+    // над готовым кэшем, тяжёлого в build нет.
+    final matrix = Matrix.of(context);
+    final frequent = rankFrequentContacts(
+      _dmActivity,
+      excludedUserIds: {
+        ?client.userID,
+        MatrixState.lizaMxid,
+        for (final room in otherRooms) ?client.storyOwnerOf(room),
+      },
+      isBot: (id) => _isBot(matrix, id),
+    );
 
     return SizedBox(
       height: StoriesBar.height,
@@ -228,7 +257,47 @@ class _StoriesBarState extends State<StoriesBar> {
                 );
               },
             ),
+          for (final contact in frequent)
+            _FrequentContactTile(
+              key: ValueKey('frequentContact:${contact.userId}'),
+              contact: contact,
+            ),
         ],
+      ),
+    );
+  }
+}
+
+/// Тайл частого собеседника: аватар без кольца и без точки «в сети»
+/// (решение постановщика 14.10), тап — его личный чат. Аватар и имя — из
+/// member-стейта DM без сетевого профиля (тот же источник, что у авторов,
+/// RL-stories-bar-avatar).
+class _FrequentContactTile extends StatelessWidget {
+  const _FrequentContactTile({super.key, required this.contact});
+
+  final DmActivity contact;
+
+  @override
+  Widget build(BuildContext context) {
+    final client = Matrix.of(context).client;
+    final room = client.getRoomById(contact.roomId);
+    final name = room == null
+        ? contact.userId.localpart ?? contact.userId
+        : client.storyOwnerName(room, contact.userId) ?? contact.userId;
+    return Semantics(
+      button: true,
+      label: L10n.of(context).storiesBarOpenChatWith(name),
+      excludeSemantics: true,
+      child: _StoryTile(
+        showAdd: false,
+        avatar: Avatar(
+          mxContent: room == null
+              ? null
+              : client.storyOwnerAvatar(room, contact.userId),
+          name: name,
+          size: 76,
+        ),
+        onTap: () => context.go('/rooms/${contact.roomId}'),
       ),
     );
   }

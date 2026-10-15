@@ -29,21 +29,60 @@ def _row(user_id, name):
 class _Store:
     def __init__(self, rows):
         self.rows = rows
+        # {room_id: (is_public, has_auth_chain_index)} и {user_id: {room_id}}
+        self.rooms = {}
+        self.memberships = {}
+        self.membership_calls = []
 
     async def search_user_dir(self, user_id, term, limit, *args):
         return {"limited": False, "results": list(self.rows)}
 
+    async def get_room(self, room_id):
+        return self.rooms.get(room_id)
+
+    async def get_rooms_for_user(self, user_id):
+        self.membership_calls.append(user_id)
+        return frozenset(self.memberships.get(user_id, ()))
+
 
 class _FedClient:
-    def __init__(self, rows):
+    def __init__(self, rows, policies=None):
         self.rows = rows
+        self.policies = policies or {}
+        self.searchers = []
 
-    async def search(self, query, domains):
+    async def search(self, query, domains, searcher=None):
+        self.searchers.append(searcher)
         return list(self.rows)
+
+    async def fetch_policies(self, domains):
+        return {d: p for d, p in self.policies.items() if d in domains}
+
+
+class SingleSpaceGuardModule:
+    """Двойник класса для hs.config.modules.loaded_modules (матч по имени)."""
+
+
+class _Modules:
+    def __init__(self, loaded):
+        self.loaded_modules = loaded
+
+
+class _Federation:
+    def __init__(self, whitelist):
+        self.federation_domain_whitelist = whitelist
+
+
+class _Config:
+    def __init__(self, loaded, whitelist):
+        self.modules = _Modules(loaded)
+        self.federation = _Federation(whitelist)
 
 
 class _Hs:
-    hostname = SERVER
+    def __init__(self, hostname=SERVER, loaded=(), whitelist=None):
+        self.hostname = hostname
+        self.config = _Config(list(loaded), whitelist)
 
     def get_federation_http_client(self):
         return object()
@@ -60,8 +99,9 @@ class _HttpClient:
 
 
 class _FakeApi:
-    def __init__(self, rows=(), payload=None):
-        self._hs = _Hs()
+    def __init__(self, rows=(), payload=None, hostname=SERVER, loaded=(), main_root=None):
+        self._hs = _Hs(hostname, loaded)
+        self.main_root = main_root
         self._store = _Store(list(rows))
         self.http_client = _HttpClient(payload or {"bots": []})
         self.spam_callbacks = {}
@@ -84,6 +124,9 @@ class _FakeApi:
 
     async def sleep(self, seconds):
         pass
+
+    async def run_db_interaction(self, desc, func, *args):
+        return self.main_root
 
 
 ROWS = [
@@ -113,8 +156,9 @@ class TestInit:
     def test_регистрирует_колбэк_и_фоновое_обновление(self):
         module, api = _module()
         assert api.spam_callbacks["check_username_for_spam"] == module.check_username_for_spam
-        assert len(api.looping) == 1
-        _, msec, desc, all_instances = api.looping[0]
+        hidden_loops = [x for x in api.looping if x[2] == "user_search_guard_hidden_refresh"]
+        assert len(hidden_loops) == 1
+        _, msec, desc, all_instances = hidden_loops[0]
         assert msec == 60_000
         assert all_instances is True
         # стартовая загрузка прошла фоном — набор уже в памяти
@@ -133,7 +177,7 @@ class TestInit:
     def test_без_registry_url_только_deny_list(self):
         module, api = _module(config={"hidden_users": [ADMIN]})
         assert module.hidden_cache is None
-        assert api.looping == []
+        assert [x for x in api.looping if x[2] == "user_search_guard_hidden_refresh"] == []
         assert api.http_client.calls == []
         assert module.is_hidden(ADMIN, STRANGER) is True
         assert module.is_hidden(BOT, STRANGER) is False

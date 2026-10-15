@@ -10,70 +10,10 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/new_group/new_group_view.dart';
 import 'package:liza/utils/chat_topology.dart';
+import 'package:liza/utils/create_group_in_space.dart';
 import 'package:liza/utils/file_selector.dart';
 import 'package:liza/utils/wait_for_room_in_sync.dart';
 import 'package:liza/widgets/matrix.dart';
-
-/// power_levels нового канала.
-///
-/// `events_default: 100` — постить может только админ (это и есть канал).
-/// Порог `m.reaction: 0` обязателен явно: иначе он унаследует
-/// `events_default`, и подписчику реакции запретит сервер.
-///
-/// Порог `m.room.redaction: 0` — ПАРНЫЙ к `m.reaction`: снятие реакции это
-/// не «отмена», а отправка события `m.room.redaction`. Без явного порога оно
-/// тоже наследует `events_default: 100`, и подписчик, поставивший реакцию,
-/// получал `M_FORBIDDEN` при попытке её снять («Нет прав доступа»).
-///
-/// ⚠️ Именно `events['m.room.redaction'] = 0`, а НЕ `redact: 0`. Это разные
-/// права по auth-rules Matrix: `events['m.room.redaction']` — право ОТПРАВИТЬ
-/// событие редакции (по нему пользователь удаляет СВОЁ событие, ветка
-/// «sender редакции == sender цели»), а `redact` — право отредактировать
-/// ЧУЖОЕ событие. Опустив `redact` до 0, мы дали бы любому подписчику удалять
-/// посты канала и чужие реакции; поэтому `redact` остаётся шаблонным (50).
-///
-/// Порог `invite: moderatorPowerLevel` (50) обязателен явно: preset
-/// `private_chat`/`trusted_private_chat` Synapse выставляет `invite: 0`
-/// (`handlers/room.py`), и без явного порога ПРИВАТНЫЙ канал наследовал 0 —
-/// любой подписчик (PL 0) мог приглашать посторонних. Публичный канал (preset
-/// `public_chat`) уже получал 50 из шаблона Synapse, приватный — нет; это
-/// расхождение выравниваем, чтобы приглашать в канал мог только модератор,
-/// независимо от типа (проверено на локальном стеке 2026-08-24,
-/// [[RL-channel-permissions-enforcement]]).
-///
-/// Шаблонные пороги переносим явно — см. [synapseDefaultEventPowerLevels].
-Map<String, Object?> channelPowerLevelOverride() => {
-      'events_default': 100,
-      'invite': moderatorPowerLevel,
-      'events': {
-        ...synapseDefaultEventPowerLevels,
-        'm.reaction': 0,
-        'm.room.redaction': 0,
-      },
-    };
-
-/// power_levels нового ГРУППОВОГО чата.
-///
-/// Задаёт ТОЛЬКО `invite: moderatorPowerLevel` (50). Preset `private_chat`
-/// Synapse (`handlers/room.py`) выставляет `invite: 0`, и без явного порога
-/// приватная группа наследовала 0 — любой участник (PL 0) мог приглашать
-/// посторонних (тот же класс отклонения, что был у канала, см.
-/// [channelPowerLevelOverride] и `howItWoks/chanels/rightsInChannel.md §6`).
-/// Публичная группа (preset `public_chat`) уже получала 50 из шаблона Synapse —
-/// расхождение выравниваем, чтобы приглашать в группу мог только модератор,
-/// независимо от типа.
-///
-/// ⚠️ НАМЕРЕННО без ключа `events` и без `events_default`. Synapse применяет
-/// override shallow-merge'ем top-level ключей: `invite` перекрывает preset-ный
-/// `invite: 0`, НЕ трогая шаблонный блок `events`. Появись здесь ключ `events`
-/// — он заменил бы весь блок ЦЕЛИКОМ (как в канале, где ради этого копируется
-/// [synapseDefaultEventPowerLevels]), и неперечисленные типы упали бы на
-/// `state_default: 50` → модератор группы переписал бы `m.room.power_levels`.
-/// В отличие от канала, группе НЕЛЬЗЯ поднимать `events_default` до 100 — в
-/// группе сообщения пишут ВСЕ участники (порог остаётся дефолтным 0).
-Map<String, Object?> groupPowerLevelOverride() => {
-      'invite': moderatorPowerLevel,
-    };
 
 class NewGroup extends StatefulWidget {
   final CreateGroupType createGroupType;
@@ -105,6 +45,35 @@ class NewGroupController extends State<NewGroup> {
 
   CreateGroupType get createGroupType => widget.createGroupType;
 
+  /// Места для «Где создать» (задача 10 newInterface). Считаются один раз:
+  /// sync, убравший выбранное место, иначе молча сбросил бы выбор в
+  /// «Автоматически», и группа ушла бы не туда. Право на месте всё равно
+  /// проверит сервер на PUT `m.space.child` (провал → leave+forget и ошибка).
+  List<GroupPlace> places = const [];
+
+  /// Выбранное место; `null` — «Автоматически», поведение как до выбора.
+  GroupPlace? place;
+
+  /// Выбор показывается, только если есть из чего выбирать.
+  bool get showPlacePicker =>
+      createGroupType == CreateGroupType.group && places.length > 1;
+
+  @override
+  void initState() {
+    super.initState();
+    if (createGroupType == CreateGroupType.group) {
+      places = groupPlaces(Matrix.of(context).client.rooms);
+    }
+  }
+
+  /// Группа компании всегда приватная (`invite` + `invite:50`, задача 00), и
+  /// никаких `restricted`-правил к чужому пространству (LABA-2539): публичность
+  /// при выбранном месте сбрасывается, а свитчи скрываются.
+  void setPlace(GroupPlace? p) => setState(() {
+    place = p;
+    if (p != null) publicGroup = groupCanBeFound = false;
+  });
+
   void setPublicGroup(bool b) => setState(() {
     publicGroup = groupCanBeFound = b;
     if (b) enableEncryption = false;
@@ -130,6 +99,21 @@ class NewGroupController extends State<NewGroup> {
 
   Future<void> _createGroup() async {
     if (!mounted) return;
+    final place = this.place;
+    if (place != null) {
+      final client = Matrix.of(context).client;
+      final roomId = await createGroupInSpace(
+        space: place.space,
+        name: nameController.text.trim(),
+        avatarUrl: avatar == null ? null : avatarUrl,
+        enableEncryption: enableEncryption,
+      );
+      // createGroupInSpace не ждёт sync, а экрану /invite комната нужна в клиенте.
+      await waitForRoomInSync(client, roomId);
+      if (!mounted) return;
+      context.go('/rooms/$roomId/invite');
+      return;
+    }
     final roomId = await Matrix.of(context).client.createGroupChat(
       enableEncryption: enableEncryption,
       visibility: groupCanBeFound
@@ -211,7 +195,11 @@ class NewGroupController extends State<NewGroup> {
           ? nameController.text.trim().toLowerCase().replaceAll(' ', '_')
           : null,
       name: nameController.text.trim(),
-      powerLevelContentOverride: {'events_default': 100},
+      powerLevelContentOverride: spacePowerLevelOverride(
+        companyInstance: Matrix.of(
+          context,
+        ).singleSpaceService.isCompanyInstance,
+      ),
       initialState: [
         if (avatar != null)
           sdk.StateEvent(
@@ -230,6 +218,8 @@ class NewGroupController extends State<NewGroup> {
   }
 
   void submitAction([dynamic _]) async {
+    // Второй тап до перерисовки (кнопка ещё активна) создал бы вторую группу.
+    if (loading) return;
     final client = Matrix.of(context).client;
 
     try {

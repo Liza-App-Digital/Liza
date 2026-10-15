@@ -1,6 +1,7 @@
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/app_config.dart';
+import 'package:liza/utils/liza_dm.dart';
 import 'package:liza/utils/miniapp_start_path.dart';
 
 /// Параметры запуска подключённого mini App, прочитанные из state-event
@@ -161,8 +162,10 @@ bool isSupportHubRoom(Room room) {
 ///
 /// mini App-чаты — тоже DM с `@liza`, но у них есть кастомное имя комнаты
 /// (название приложения). Ассистент — единственный @liza-DM БЕЗ `m.room.name`,
-/// иначе свежесозданный mini App-чат отодвигал бы ассистента вниз.
+/// иначе свежесозданный mini App-чат отодвигал бы ассистента вниз. Запрос к
+/// Лизе («Новый запрос») исключаем по маркеру — его имя человек может стереть.
 bool isLizaAssistantRoom(Room room, String lizaMxid) =>
     room.directChatMatrixID == lizaMxid &&
+    !isLizaRequestRoom(room) &&
     (room.getState(EventTypes.RoomName)?.content.tryGet<String>('name') ?? '')
         .isEmpty;

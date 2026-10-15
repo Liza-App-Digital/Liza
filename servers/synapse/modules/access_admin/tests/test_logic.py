@@ -24,6 +24,11 @@ class LevelFromPowerTestCase(unittest.TestCase):
     def test_admin_at_100(self):
         self.assertEqual(level_from_power(100), LEVEL_ADMIN)
 
+    def test_admin_at_99_owner_model(self):
+        # ledger:RL-room-owner-transfer — админ 99 (владелец 100) = admin.
+        self.assertEqual(level_from_power(99), LEVEL_ADMIN)
+        self.assertEqual(level_from_power(98), LEVEL_MODERATOR)
+
     def test_admin_above_100(self):
         self.assertEqual(level_from_power(150), LEVEL_ADMIN)
 

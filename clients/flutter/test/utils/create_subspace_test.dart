@@ -8,6 +8,7 @@
 // вызова: без этого тест зеленел бы и на старом коде.
 //
 // ledger:RL-subspace-create-with-parent
+// ledger:RL-space-invite-admin-only
 
 import 'dart:convert';
 
@@ -52,15 +53,47 @@ void main() {
   /// `createSubspace` не требует, чтобы родитель был space в локальном state
   /// (это проверял бы SDK `setSpaceChild`, который здесь не используется),
   /// но собираем как настоящий — ближе к проду.
-  Room space(String id) {
+  // power_levels родителя: владелец компании (не создатель подпространства),
+  // админ, модератор, рядовой участник и федеративный админ.
+  const parentOwner = '@creator:example.invalid';
+  const parentAdmin = '@admin:example.invalid';
+  const remoteAdmin = '@admin:other.invalid';
+  const parentMod = '@mod:example.invalid';
+  const parentMember = '@member:example.invalid';
+
+  Room space(String id, {Map<String, Object?>? users}) {
     final room = Room(id: id, client: client);
     room.setState(
       Event(
         eventId: '\$create-$id',
-        senderId: '@creator:example.invalid',
+        senderId: parentOwner,
         originServerTs: DateTime.fromMillisecondsSinceEpoch(1000),
         type: EventTypes.RoomCreate,
         content: {'type': 'm.space'},
+        room: room,
+        stateKey: '',
+      ),
+    );
+    room.setState(
+      Event(
+        eventId: '\$pl-$id',
+        senderId: parentOwner,
+        originServerTs: DateTime.fromMillisecondsSinceEpoch(1001),
+        type: EventTypes.RoomPowerLevels,
+        content: {
+          'users':
+              users ??
+              {
+                parentOwner: 100,
+                parentAdmin: 99,
+                remoteAdmin: 99,
+                parentMod: 50,
+                parentMember: 0,
+              },
+          'users_default': 0,
+          'events_default': 100,
+          'invite': 99,
+        },
         room: room,
         stateKey: '',
       ),
@@ -93,68 +126,121 @@ void main() {
   };
 
   for (final parent in parents.entries) {
-    test(
-      'createRoom подпространства (${parent.key}): m.space.parent → родитель',
-      () async {
-        api.api['PUT']![childPutPath(parent.value)] = (_) => {
-          'event_id': '\$child',
-        };
+    for (final companyInstance in [true, false]) {
+      test(
+        'createRoom подпространства (${parent.key}, '
+        'companyInstance=$companyInstance): m.space.parent → родитель',
+        () async {
+          api.api['PUT']![childPutPath(parent.value)] = (_) => {
+            'event_id': '\$child',
+          };
 
-        final roomId = await createSubspace(
-          parent: space(parent.value),
-          name: 'Отдел',
-        );
+          final roomId = await createSubspace(
+            parent: space(parent.value),
+            name: 'Отдел',
+            companyInstance: companyInstance,
+          );
 
-        expect(roomId, createdId);
+          expect(roomId, createdId);
 
-        final body = createRoomBody();
-        // AC:RL-subspace-create-with-parent/1 — это space с админскими
-        // правами на state (паритет с Client.createSpace) и ровно одним
-        // m.space.parent.
-        expect(body['name'], 'Отдел');
-        expect(body['visibility'], 'private');
-        expect(body['creation_content'], {'type': 'm.space'});
-        expect(
-          (body['power_level_content_override'] as Map)['events_default'],
-          100,
-        );
-        final initialState = (body['initial_state'] as List)
-            .cast<Map<String, dynamic>>();
-        final parentEvents = initialState
-            .where((e) => e['type'] == 'm.space.parent')
-            .toList();
-        expect(parentEvents, hasLength(1));
+          final body = createRoomBody();
+          // AC:RL-subspace-create-with-parent/1 — это space с админскими
+          // правами на state (паритет с Client.createSpace) и ровно одним
+          // m.space.parent.
+          expect(body['name'], 'Отдел');
+          expect(body['visibility'], 'private');
+          expect(body['creation_content'], {'type': 'm.space'});
+          final pl = body['power_level_content_override'] as Map;
+          expect(pl['events_default'], 100);
+          // AC:RL-space-invite-admin-only/1 — подпространство компании:
+          // приглашают только админы (99); на общем инстансе порог preset-ный.
+          if (companyInstance) {
+            expect(pl['invite'], 99);
+            // AC:RL-space-invite-admin-only/8 — админы и владелец родителя
+            // переносятся уровнем 99 (владелец подпространства один —
+            // создатель, 100); модератор и рядовой участник — не переносятся.
+            expect(pl['users'], {
+              parentOwner: 99,
+              parentAdmin: 99,
+              remoteAdmin: 99,
+              client.userID!: 100,
+            });
+          } else {
+            expect(pl.containsKey('invite'), isFalse);
+            // Общий инстанс: users не передаётся — Synapse-умолчание
+            // {создатель: 100}, поведение прежнее.
+            expect(pl.containsKey('users'), isFalse);
+          }
+          final initialState = (body['initial_state'] as List)
+              .cast<Map<String, dynamic>>();
+          final parentEvents = initialState
+              .where((e) => e['type'] == 'm.space.parent')
+              .toList();
+          expect(parentEvents, hasLength(1));
 
-        // AC:RL-subspace-create-with-parent/2 — state_key = id родителя,
-        // via = домен пользователя, canonical не кладём (SDK его не читает
-        // и не пишет).
-        final parentEvent = parentEvents.single;
-        expect(parentEvent['state_key'], parent.value);
-        expect(parentEvent['content'], {
-          'via': [userDomain],
-        });
+          // AC:RL-subspace-create-with-parent/2 — state_key = id родителя,
+          // via = домен пользователя, canonical не кладём (SDK его не читает
+          // и не пишет).
+          final parentEvent = parentEvents.single;
+          expect(parentEvent['state_key'], parent.value);
+          expect(parentEvent['content'], {
+            'via': [userDomain],
+          });
 
-        // AC:RL-subspace-create-with-parent/5 — связь пишется со стороны
-        // родителя ОДНИМ m.space.child со state_key = созданная комната;
-        // m.space.parent отдельным PUT не дублируется (он уже в initial_state);
-        // createRoom идёт раньше PUT.
-        final links = spaceLinkCalls();
-        expect(links, [childPutPath(parent.value)]);
-        final childBody = jsonDecode(
-          FakeMatrixApi.calledEndpoints[childPutPath(parent.value)]!.single
-              as String,
-        );
-        expect(childBody, {
-          'via': [userDomain],
-        });
-        final order = FakeMatrixApi.calledEndpoints.keys.toList();
-        expect(
-          order.indexOf('/client/v3/createRoom'),
-          lessThan(order.indexOf(childPutPath(parent.value))),
-        );
-      },
-    );
+          // AC:RL-subspace-create-with-parent/5 — связь пишется со стороны
+          // родителя ОДНИМ m.space.child со state_key = созданная комната;
+          // m.space.parent отдельным PUT не дублируется (он уже в initial_state);
+          // createRoom идёт раньше PUT.
+          final links = spaceLinkCalls();
+          expect(links, [childPutPath(parent.value)]);
+          final childBody = jsonDecode(
+            FakeMatrixApi.calledEndpoints[childPutPath(parent.value)]!.single
+                as String,
+          );
+          expect(childBody, {
+            'via': [userDomain],
+          });
+          final order = FakeMatrixApi.calledEndpoints.keys.toList();
+          expect(
+            order.indexOf('/client/v3/createRoom'),
+            lessThan(order.indexOf(childPutPath(parent.value))),
+          );
+        },
+      );
+    }
   }
+
+  test(
+    'invite-admin-only AC-8: создатель, владеющий родителем, остаётся 100 (не 99); '
+    'родитель без power_levels-users — только создатель',
+    () async {
+      const parentId = '!company:example.invalid';
+      api.api['PUT']![childPutPath(parentId)] = (_) => {'event_id': '\$child'};
+
+      await createSubspace(
+        parent: space(parentId, users: {client.userID!: 100, parentAdmin: 99}),
+        name: 'Отдел',
+        companyInstance: true,
+      );
+      final pl =
+          createRoomBody()['power_level_content_override']
+              as Map<String, dynamic>;
+      expect(pl['users'], {client.userID!: 100, parentAdmin: 99});
+      // Вне users порог ровно один m.space.parent и events_default не тронуты.
+      expect(pl['events_default'], 100);
+
+      FakeMatrixApi.calledEndpoints.clear();
+      await createSubspace(
+        parent: space(parentId, users: {}),
+        name: 'Отдел',
+        companyInstance: true,
+      );
+      final pl2 =
+          createRoomBody()['power_level_content_override']
+              as Map<String, dynamic>;
+      expect(pl2['users'], {client.userID!: 100});
+    },
+  );
 
   test('провал m.space.child: созданный space покидается и забывается, '
       'исключение пробрасывается', () async {
@@ -167,7 +253,11 @@ void main() {
     // space без входящего m.space.child клиент показал бы как вторую
     // «свою компанию».
     await expectLater(
-      createSubspace(parent: space(parentId), name: 'Отдел'),
+      createSubspace(
+        parent: space(parentId),
+        name: 'Отдел',
+        companyInstance: true,
+      ),
       throwsA(isA<MatrixException>()),
     );
 
@@ -193,7 +283,11 @@ void main() {
     };
 
     await expectLater(
-      createSubspace(parent: space(parentId), name: 'Отдел'),
+      createSubspace(
+        parent: space(parentId),
+        name: 'Отдел',
+        companyInstance: true,
+      ),
       throwsA(
         isA<MatrixException>().having(
           (e) => e.errorMessage,

@@ -12,6 +12,7 @@ from synapse_modules.knock_notify._logic import (
     build_push_content,
     is_knock_membership,
     knock_reviewers,
+    review_threshold,
     user_power_level,
 )
 
@@ -149,6 +150,37 @@ class KnockReviewersTest(unittest.TestCase):
 
     def test_moderator_constant_is_50(self):
         self.assertEqual(MODERATOR_POWER_LEVEL, 50)
+
+    # ledger:RL-space-invite-admin-only
+    def test_review_threshold_is_max_of_moderator_and_invite(self):
+        """AC:RL-space-invite-admin-only/6 — порог max(50, invite)."""
+        self.assertEqual(review_threshold(None), 50)
+        self.assertEqual(review_threshold({}), 50)
+        self.assertEqual(review_threshold({"invite": 0}), 50)
+        self.assertEqual(review_threshold({"invite": 50}), 50)
+        self.assertEqual(review_threshold({"invite": 99}), 99)
+        self.assertEqual(review_threshold({"invite": "bad"}), 50)
+
+    def test_invite_99_moderator_not_recipient(self):
+        """AC:RL-space-invite-admin-only/6 — «приглашают только админы»:
+        модератор не может одобрить заявку и пуш не получает; админ получает."""
+        pl = {
+            "users": {
+                "@owner:local.test": 100,
+                "@admin:local.test": 99,
+                "@mod:local.test": 50,
+            },
+            "users_default": 0,
+            "invite": 99,
+        }
+        members = [
+            ("@owner:local.test", "join"),
+            ("@admin:local.test", "join"),
+            ("@mod:local.test", "join"),
+            ("@knocker:local.test", "knock"),
+        ]
+        got = knock_reviewers(members, pl, "@knocker:local.test", _local)
+        self.assertEqual(got, ["@admin:local.test", "@owner:local.test"])
 
 
 class BuildPushContentTest(unittest.TestCase):

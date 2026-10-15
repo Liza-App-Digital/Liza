@@ -36,12 +36,26 @@ class ChatPermissionsSettingsController extends State<ChatPermissionsSettings> {
       ).showSnackBar(SnackBar(content: Text(L10n.of(context).noPermission)));
       return;
     }
+    final maxLevel = permissionThresholdMaxLevel(
+      key: key,
+      category: category,
+      ownPowerLevel: room.ownPowerLevel,
+    );
     newLevel ??= await showPermissionChooser(
       context,
       currentLevel: currentLevel,
+      maxLevel: maxLevel,
       isChannel: room.isChannel,
     );
     if (newLevel == null) return;
+    // Сервер пропустил бы users_default = 99 от админа (99 <= своего PL) —
+    // граница роли только здесь, поэтому значение выше потолка не шлём.
+    if (newLevel > maxLevel) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(L10n.of(context).noPermission)));
+      return;
+    }
     final content = Map<String, dynamic>.from(
       room.getState(EventTypes.RoomPowerLevels)!.content,
     );

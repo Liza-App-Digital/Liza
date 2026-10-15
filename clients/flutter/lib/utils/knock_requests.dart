@@ -13,11 +13,26 @@ int countKnocking(Iterable<Membership> memberships) =>
 int knockRequestCount(Room room) =>
     countKnocking(room.getParticipants().map((u) => u.membership));
 
+/// Порог «может рассматривать заявки»: max(модератор, invite).
+///
+/// Не ниже модератора — у старой компании (space) invite:0, и гейт по одному
+/// invite показал бы бейдж ВСЕМ участникам (нарушение приватности заявки). Не
+/// ниже invite — при «приглашают только админы» (invite:99) модератор не
+/// может одобрить заявку, значит и видеть её незачем (задача 13). Та же формула
+/// в серверном knock_notify (`review_threshold`).
+int knockReviewThreshold(int? inviteThreshold) {
+  final invite = inviteThreshold ?? 0;
+  return invite > moderatorPowerLevel ? invite : moderatorPowerLevel;
+}
+
 /// Показывать счётчик только тем, кто реально может рассматривать заявки:
-/// ownPowerLevel >= модератора. НЕ room.canInvite — у компании (space)
-/// invite:0 по умолчанию, и canInvite вернул бы true ВСЕМ участникам, бейдж
-/// утёк бы всем (нарушение приватности заявки). moderatorPowerLevel совпадает
-/// с серверным гейтом knock_notify и с canSeeMembersAt (chat_topology.dart).
+/// PL >= [knockReviewThreshold].
 bool canReviewKnockRequests(Room room) =>
     room.membership == Membership.join &&
-    room.ownPowerLevel >= moderatorPowerLevel;
+    room.ownPowerLevel >=
+        knockReviewThreshold(
+          room
+              .getState(EventTypes.RoomPowerLevels)
+              ?.content
+              .tryGet<int>('invite'),
+        );

@@ -4,11 +4,14 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/utils/chat_topology.dart';
 
 enum PowerLevelPreset {
   user(0),
   moderator(50),
-  admin(100);
+  // 99, а не 100: порог «Администратор» включает и админов (99), и
+  // владельца (100). Старые пороги 100 показываются тем же пресетом.
+  admin(99);
 
   const PowerLevelPreset(this.level);
 
@@ -38,6 +41,10 @@ class PermissionsListTile extends StatelessWidget {
   /// сохраняет прежние формулировки для обычных чатов.
   final bool isChannel;
 
+  /// Потолок выбора ([permissionThresholdMaxLevel]): пресеты выше него в
+  /// списке не предлагаются (текущий остаётся, чтобы его было видно).
+  final int maxLevel;
+
   const PermissionsListTile({
     super.key,
     required this.permissionKey,
@@ -46,6 +53,7 @@ class PermissionsListTile extends StatelessWidget {
     required this.onChanged,
     required this.canEdit,
     this.isChannel = false,
+    this.maxLevel = ownerPowerLevel,
   });
 
   String getLocalizedPowerLevelString(BuildContext context) {
@@ -144,10 +152,11 @@ class PermissionsListTile extends StatelessWidget {
               value: preset,
               items: [
                 for (final value in PowerLevelPreset.values)
-                  DropdownMenuItem(
-                    value: value,
-                    child: Text(value.localized(L10n.of(context))),
-                  ),
+                  if (value.level <= maxLevel || value == preset)
+                    DropdownMenuItem(
+                      value: value,
+                      child: Text(value.localized(L10n.of(context))),
+                    ),
               ],
             ),
           ),

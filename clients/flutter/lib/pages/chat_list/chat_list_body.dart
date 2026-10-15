@@ -30,6 +30,7 @@ import 'package:liza/utils/version_gate_service.dart';
 import 'package:liza/widgets/adaptive_dialogs/public_room_dialog.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/horizontal_mouse_wheel.dart';
+import 'package:liza/widgets/search_people_bots_sections.dart';
 import '../../config/themes.dart';
 import '../../widgets/matrix.dart';
 import 'chat_list_header.dart';
@@ -99,15 +100,6 @@ class ChatListViewBody extends StatelessWidget {
         ?.where((room) => room.roomType != lizaChannelRoomType)
         .toList();
     final companies = controller.companySearchResult;
-    final userSearchResult = controller.userSearchResult;
-    // Право приглашать в главное пространство = админ/модератор. Тем же
-    // правом закрыты пункт «Пригласить» и кнопка «+» в space_view.
-    final mainRootSpaceId = Matrix.of(
-      context,
-    ).singleSpaceService.mainRootSpaceId;
-    final canBrowseUserDirectory = mainRootSpaceId == null
-        ? true
-        : client.getRoomById(mainRootSpaceId)?.canInvite ?? true;
     const dummyChatCount = 4;
     final filter = controller.searchController.text.toLowerCase();
     return StreamBuilder(
@@ -201,20 +193,21 @@ class ChatListViewBody extends StatelessWidget {
                         icon: const Icon(Icons.campaign_outlined),
                       ),
                       PublicRoomsHorizontalList(publicRooms: publicChannels),
-                      // База юзеров — только для тех, кто может приглашать
-                      // (админ/модератор пространства). Обычный участник не
-                      // должен видеть весь каталог пользователей сервера.
-                      if (canBrowseUserDirectory) ...[
-                        SearchTitle(
-                          title: L10n.of(context).users,
-                          icon: const Icon(Icons.group_outlined),
-                        ),
-                        SearchUsersHorizontalList(
-                          userSearchResult: userSearchResult,
+                      // Поиск людей видят ВСЕ участники (задача 13): Надежда
+                      // ограничивает приглашение, а не поиск. Прежний гейт
+                      // по canInvite главного пространства при invite:99
+                      // спрятал бы людей от рядовых.
+                      // Два раздела «Люди» / «Боты и ИИ»; пустой скрыт
+                      // вместе с заголовком (RL-search-people-vs-bots-sections).
+                      ...peopleAndBotsSections(
+                        context,
+                        controller.userSearchSections,
+                        buildBody: (profiles) => SearchUsersHorizontalList(
+                          profiles: profiles,
                           onItemTap: (userId) =>
                               _openDirectChat(context, client, userId),
                         ),
-                      ],
+                      ),
                     ],
                     if (!controller.isSearchMode &&
                         AppSettings.showPresences.value)

@@ -29,9 +29,13 @@ class NewPrivateChatController extends State<NewPrivateChat> {
   final TextEditingController controller = TextEditingController();
   final FocusNode textFieldFocus = FocusNode();
 
-  Future<List<Profile>>? searchResponse;
+  Future<PeopleAndBots>? searchResponse;
 
   Timer? _searchCoolDown;
+
+  /// Номер актуального поиска: поздние роли переразбивают выдачу, только
+  /// если за это время не начался новый поиск (RL-search-people-vs-bots-sections).
+  int _searchSeq = 0;
 
   static const Duration _coolDown = Duration(milliseconds: 500);
 
@@ -47,6 +51,7 @@ class NewPrivateChatController extends State<NewPrivateChat> {
     final searchTerm = input ?? controller.text;
     if (searchTerm.isEmpty) {
       _searchCoolDown?.cancel();
+      _searchSeq++;
       setState(() {
         searchResponse = _searchCoolDown = null;
       });
@@ -55,13 +60,14 @@ class NewPrivateChatController extends State<NewPrivateChat> {
 
     _searchCoolDown?.cancel();
     _searchCoolDown = Timer(_coolDown, () {
+      final seq = ++_searchSeq;
       setState(() {
-        searchResponse = _searchUser(searchTerm);
+        searchResponse = _searchUser(searchTerm, seq);
       });
     });
   }
 
-  Future<List<Profile>> _searchUser(String searchTerm) async {
+  Future<PeopleAndBots> _searchUser(String searchTerm, int seq) async {
     final matrix = Matrix.of(context);
     final client = matrix.client;
 
@@ -117,17 +123,29 @@ class NewPrivateChatController extends State<NewPrivateChat> {
     // дефолтными 30 с, а префиксные находки не гидратировались вовсе.
     final hydrated = await hydrateProfilesWithoutDisplayName(client, profiles);
 
-    final pinned = pinAiProfilesFirst(
+    PeopleAndBots partition() => partitionPeopleAndBots(
       hydrated,
-      isAi: (p) => matrix.isAiUser(p.userId),
+      isBotOrAi: matrix.isBotOrAiUser,
       lizaMxid: MatrixState.lizaMxid,
     );
 
-    // Префетч ролей, чтобы UserRoleBadge сразу отрисовался для пользователей
-    // вне общих комнат (которых нет в mHeroes, так что префетч matrix.dart их не покрывает).
-    await matrix.userRoleService.fetchRoles(pinned.map((p) => p.userId));
+    // Роли решают раздел («Боты и ИИ» — по роли ai) и нужны UserRoleBadge
+    // для пользователей вне общих комнат (их нет в mHeroes, префетч
+    // matrix.dart их не покрывает). Разбиваем ПОСЛЕ ролей, но ждём не дольше
+    // таймаута; поздний ответ переразбивает показанную выдачу, если поиск
+    // всё ещё актуален.
+    await waitForRolesBounded(
+      matrix.userRoleService.fetchRoles(hydrated.map((p) => p.userId)),
+      onLate: () {
+        if (!mounted || seq != _searchSeq) return;
+        // Блочное тело: стрелка вернула бы Future, а setState такое запрещает.
+        setState(() {
+          searchResponse = Future.value(partition());
+        });
+      },
+    );
 
-    return pinned;
+    return partition();
   }
 
   void inviteAction() => LizaShare.shareInviteLink(context);

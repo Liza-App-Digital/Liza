@@ -25,6 +25,8 @@ from synapse.federation.transport.server._base import (
 )
 from synapse.types import JsonDict
 
+from ._company import trusted_remote_searcher
+
 if TYPE_CHECKING:
     from synapse.federation.transport.server._base import Authenticator
     from synapse.http.server import HttpServer
@@ -70,19 +72,49 @@ class UserSearchFederationServlet(BaseFederationServlet):
             # Инстанс закрыт: своих людей наружу не отдаём, но сами искать можем.
             return 200, {"results": []}
 
+        # Ищущего называет сам сосед (searcher), и только своего: чужой MXID
+        # или его отсутствие (старый сосед) = ищущий неизвестен, люди скрытой
+        # компании не уходят никому.
+        raw_searcher = query.get(b"searcher", [b""])[0].decode("utf-8", "ignore")
+        searcher = trusted_remote_searcher(raw_searcher, origin)
         try:
-            # Кто ищет на той стороне, мы не знаем (origin — сервер, не
-            # пользователь), поэтому searcher=None: приватные боты не уходят
-            # наружу ни к кому, даже к владельцу — он найдёт бота в директории
-            # своего HS через общий DM.
+            # Приватные боты по-прежнему считают ищущего неизвестным
+            # (federated=True): они не уходят наружу ни к кому, даже к
+            # владельцу — он найдёт бота в директории своего HS через общий DM.
             results = await self._module.search_local_users(
-                search_term, _MAX_RESULTS, searcher=None,
+                search_term, _MAX_RESULTS, searcher=searcher, federated=True,
             )
         except Exception as e:  # noqa: BLE001 — федеративный запрос не должен ронять HS
             logger.warning("user_search_guard: локальный поиск для %s упал: %s", origin, e)
             return 200, {"results": []}
 
         return 200, {"results": results}
+
+
+class UserSearchPolicyFederationServlet(BaseFederationServlet):
+    """``GET /_matrix/federation/v1/com.liza/user_search_policy``
+
+    Скрыты ли люди этого сервера из поиска по имени и какое пространство
+    делает ищущего «своим»: ``{"hidden_company": bool, "room_id": str|None}``.
+    Соседи кэшируют ответ и режут по нему свою директорию, куда наши люди
+    попадают через общие комнаты.
+    """
+
+    PATH = "/com.liza/user_search_policy"
+    CATEGORY = "Liza user search"
+
+    def __init__(self, module: Any = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._module = module
+
+    async def on_GET(
+        self,
+        origin: str,
+        content: Optional[bytes],
+        query: dict[bytes, list[bytes]],
+    ) -> tuple[int, JsonDict]:
+        policy = await self._module.own_policy()
+        return 200, policy.to_json()
 
 
 def install_servlet(module_api: "ModuleApi", module: Any) -> None:
@@ -123,22 +155,26 @@ def install_servlet(module_api: "ModuleApi", module: Any) -> None:
         # чтобы не светить пользователями через openid resource.
         if servlet_groups is not None and "openid" in servlet_groups:
             return
-        try:
-            servlet = UserSearchFederationServlet(
-                module=module,
-                hs=hs,
-                authenticator=authenticator,
-                ratelimiter=ratelimiter,
-                server_name=hs.hostname,
-            )
-            servlet.register(resource)
-            logger.info(
-                "UserSearchFederationServlet registered at %s%s",
-                servlet.PREFIX,
-                servlet.PATH,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.error("user_search_guard: регистрация federation-сервлета не удалась: %s", e)
+        for servlet_cls in (UserSearchFederationServlet, UserSearchPolicyFederationServlet):
+            try:
+                servlet = servlet_cls(
+                    module=module,
+                    hs=hs,
+                    authenticator=authenticator,
+                    ratelimiter=ratelimiter,
+                    server_name=hs.hostname,
+                )
+                servlet.register(resource)
+                logger.info(
+                    "%s registered at %s%s",
+                    servlet_cls.__name__,
+                    servlet.PREFIX,
+                    servlet.PATH,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error(
+                    "user_search_guard: регистрация %s не удалась: %s", servlet_cls.__name__, e,
+                )
 
     patched_register_servlets._user_search_patched = True  # type: ignore[attr-defined]
     fed_server_pkg.register_servlets = patched_register_servlets

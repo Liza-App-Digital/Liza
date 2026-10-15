@@ -45,7 +45,7 @@ class TestIsRootSpaceCreation:
             "name": "Отдел",
             "visibility": "private",
             "creation_content": {"type": "m.space"},
-            "power_level_content_override": {"events_default": 100},
+            "power_level_content_override": {"events_default": 100, "invite": 99},
             "initial_state": [
                 {
                     "type": "m.space.parent",
@@ -66,7 +66,7 @@ class TestIsRootSpaceCreation:
             "creation_content": {"type": "m.space"},
             "visibility": "private",
             "name": "Компания 1",
-            "power_level_content_override": {"events_default": 100},
+            "power_level_content_override": {"events_default": 100, "invite": 99},
             "initial_state": [
                 {"type": "m.room.avatar", "content": {"url": "mxc://hs/avatar"}},
                 {"type": "m.room.join_rules", "content": {"join_rule": "invite"}},
@@ -266,3 +266,159 @@ class TestIsLocalRoom:
 
     def test_server_name_present_but_not_at_end(self):
         assert guard.is_local_room("!liza.cyber-agro.ru:other.tld", "liza.cyber-agro.ru") is False
+
+
+# Группа из компании/подпространства — ровно один родитель (задача 04).
+# Тела ниже — литералы того, что шлёт клиент; зеркало —
+# clients/flutter/test/utils/create_group_in_space_test.dart.
+# ledger:RL-company-group-single-parent
+
+_GROUP_IN_SPACE_BODY = {
+    "name": "Отдел продаж",
+    "preset": "private_chat",
+    "visibility": "private",
+    "power_level_content_override": {"invite": 50},
+    "initial_state": [
+        {
+            "type": "m.space.parent",
+            "state_key": "!sub:example.invalid",
+            "content": {"via": ["example.invalid"]},
+        }
+    ],
+}
+
+_MENU_GROUP_BODY = {
+    "name": "Без компании",
+    "preset": "private_chat",
+    "visibility": "private",
+    "power_level_content_override": {"invite": 50},
+}
+
+
+_GRACE_MS = 60_000
+
+
+def _delay(config: dict) -> int:
+    """Повторяет путь модуля: on_create_room → content m.room.create → задержка."""
+    import copy
+
+    config = copy.deepcopy(config)
+    guard.apply_space_parent_marker(config)
+    return guard.auto_add_delay_ms(config.get("creation_content") or {}, _GRACE_MS)
+
+
+class TestSpaceParentMarker:
+    def test_parent_in_initial_state_detected(self):
+        assert guard.has_initial_space_parent(_GROUP_IN_SPACE_BODY) is True
+
+    def test_no_initial_state_not_detected(self):
+        assert guard.has_initial_space_parent(_MENU_GROUP_BODY) is False
+
+    def test_empty_state_key_not_detected(self):
+        config = {"initial_state": [{"type": "m.space.parent", "state_key": ""}]}
+        assert guard.has_initial_space_parent(config) is False
+
+    def test_other_state_not_detected(self):
+        config = {"initial_state": [{"type": "m.room.topic", "state_key": ""}]}
+        assert guard.has_initial_space_parent(config) is False
+
+    def test_marker_set_when_parent(self):
+        # AC:RL-company-group-single-parent/5
+        config = {"initial_state": _GROUP_IN_SPACE_BODY["initial_state"]}
+        guard.apply_space_parent_marker(config)
+        assert config["creation_content"] == {guard.SPACE_PARENT_MARKER: True}
+
+    def test_marker_keeps_existing_creation_content(self):
+        config = {
+            "creation_content": {"type": "m.space"},
+            "initial_state": _GROUP_IN_SPACE_BODY["initial_state"],
+        }
+        guard.apply_space_parent_marker(config)
+        assert config["creation_content"] == {
+            "type": "m.space",
+            guard.SPACE_PARENT_MARKER: True,
+        }
+
+    def test_forged_marker_without_parent_removed(self):
+        # AC:RL-company-group-single-parent/5 — маркер ставит только сервер.
+        config = {"creation_content": {guard.SPACE_PARENT_MARKER: True}}
+        guard.apply_space_parent_marker(config)
+        assert guard.SPACE_PARENT_MARKER not in config["creation_content"]
+
+    def test_no_parent_no_creation_content_added(self):
+        config = dict(_MENU_GROUP_BODY)
+        guard.apply_space_parent_marker(config)
+        assert "creation_content" not in config
+
+    def test_group_in_space_auto_add_is_deferred(self):
+        # AC:RL-company-group-single-parent/6 — сразу в компанию не идёт: связь
+        # пишет клиент со стороны родителя, компания — только запасной путь.
+        assert _delay(_GROUP_IN_SPACE_BODY) == _GRACE_MS
+
+    def test_menu_group_still_auto_added_immediately(self):
+        # AC:RL-company-group-single-parent/6 — обычная группа по-прежнему
+        # уходит в компанию сразу (RL-b2c-chat-outside-space не меняется).
+        assert _delay(_MENU_GROUP_BODY) == 0
+
+    def test_forged_marker_string_is_not_deferral(self):
+        assert guard.auto_add_delay_ms(
+            {guard.SPACE_PARENT_MARKER: "true"}, _GRACE_MS
+        ) == 0
+
+    def test_subspace_marker_does_not_make_it_root(self):
+        config = {
+            "creation_content": {"type": "m.space"},
+            "initial_state": _GROUP_IN_SPACE_BODY["initial_state"],
+        }
+        guard.apply_space_parent_marker(config)
+        assert guard.is_root_space_creation(config) is False
+
+
+class TestModuleWiring:
+    """Контракт исходника модуля: пакет без живого HS не импортируется."""
+
+    _src = (Path(__file__).resolve().parent.parent / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+
+    def test_create_room_applies_marker(self):
+        assert "apply_space_parent_marker(config)" in self._src
+
+    def test_create_event_defers_by_marker(self):
+        # AC:RL-company-group-single-parent/6 — красный на прежнем безусловном
+        # run_as_background_process(_add_room_to_main_space).
+        assert "auto_add_delay_ms(" in self._src
+        assert "event.content" in self._src
+        assert "delayed_background_call(" in self._src
+
+    def test_fallback_adds_only_without_incoming_child(self):
+        # AC:RL-company-group-single-parent/7 — поддельный/несуществующий
+        # parent или упавший клиент не оставляют комнату вне компании.
+        assert "_add_room_if_still_unparented" in self._src
+        assert "WHERE type = 'm.space.child' AND state_key = ?" in self._src
+
+
+class TestRootResponse:
+    # ledger:RL-space-invite-admin-only
+    # AC:RL-space-invite-admin-only/4 — поле company = класс инстанса
+    # (auto_add_new); клиент без поля считает false.
+    def test_company_instance(self):
+        assert guard.root_response("!r:hs", True) == {
+            "exists": True,
+            "room_id": "!r:hs",
+            "company": True,
+        }
+
+    def test_shared_instance(self):
+        assert guard.root_response("!r:hs", False)["company"] is False
+
+    def test_no_root_yet(self):
+        assert guard.root_response(None, True) == {
+            "exists": False,
+            "room_id": None,
+            "company": True,
+        }
+
+    def test_company_is_strict_bool(self):
+        assert guard.root_response(None, 1)["company"] is True
+

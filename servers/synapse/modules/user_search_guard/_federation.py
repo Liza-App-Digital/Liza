@@ -4,6 +4,7 @@ import logging
 
 from synapse.util.async_helpers import yieldable_gather_results
 
+from ._company import POLICY_PATH, CompanyPolicy, parse_policy_payload
 from ._search import belongs_to_domain
 
 logger = logging.getLogger(__name__)
@@ -18,8 +19,13 @@ class FederatedUserSearchClient:
     def __init__(self, hs) -> None:
         self._fed_http = hs.get_federation_http_client()
 
-    async def search(self, query: str, domains: list[str]) -> list[dict]:
+    async def search(
+        self, query: str, domains: list[str], searcher: str | None = None,
+    ) -> list[dict]:
         """Собрать результаты со всех доменов. Недоступный сосед даёт [].
+
+        searcher уходит соседу, чтобы тот показал людей своей скрытой
+        компании её участникам (иначе он считает ищущего посторонним).
 
         Ошибка любого соседа не должна ронять поиск целиком — best-effort
         по каждому домену независимо.
@@ -27,12 +33,16 @@ class FederatedUserSearchClient:
         if not domains or not query:
             return []
 
+        args = {"query": query}
+        if searcher:
+            args["searcher"] = searcher
+
         async def fetch_domain(destination: str) -> list[dict]:
             try:
                 response = await self._fed_http.get_json(
                     destination=destination,
                     path=FEDERATION_PATH,
-                    args={"query": query},
+                    args=args,
                     timeout=_FED_TIMEOUT_MS,
                 )
             except Exception as e:  # noqa: BLE001 — best-effort по каждому домену
@@ -64,3 +74,26 @@ class FederatedUserSearchClient:
         for lst in per_domain:
             results.extend(lst)
         return results
+
+    async def fetch_policies(self, domains: list[str]) -> dict[str, CompanyPolicy]:
+        """Политики поиска соседей. Не ответивший или ответивший криво сосед
+        в результат не попадает — вызывающий держит его прошлую политику."""
+        if not domains:
+            return {}
+
+        async def fetch_domain(destination: str) -> tuple[str, CompanyPolicy | None]:
+            try:
+                response = await self._fed_http.get_json(
+                    destination=destination,
+                    path=POLICY_PATH,
+                    timeout=_FED_TIMEOUT_MS,
+                )
+            except Exception as e:  # noqa: BLE001 — старый сосед отвечает 404
+                logger.debug(
+                    "user_search_guard: политика %s не получена: %s", destination, e
+                )
+                return destination, None
+            return destination, parse_policy_payload(response)
+
+        pairs = await yieldable_gather_results(fetch_domain, domains)
+        return {d: p for d, p in pairs if p is not None}

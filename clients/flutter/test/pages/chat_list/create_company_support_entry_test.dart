@@ -3,7 +3,9 @@
 // AC:RL-create-company-support-entry/3 AC:RL-create-company-support-entry/4
 // AC:RL-create-company-support-entry/5 AC:RL-create-company-support-entry/6
 // AC:RL-create-company-support-entry/8 AC:RL-create-company-support-entry/9
-// AC:RL-create-company-support-entry/10
+// AC:RL-create-company-support-entry/10 AC:RL-create-company-support-entry/11
+// AC:RL-create-company-support-entry/12 AC:RL-create-company-support-entry/13
+// AC:RL-create-company-support-entry/14 AC:RL-create-company-support-entry/15
 // ledger:RL-company-request-intro
 // AC:RL-company-request-intro/13 AC:RL-company-request-intro/14
 // AC:RL-company-request-intro/15 AC:RL-company-request-intro/16
@@ -31,6 +33,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/l10n/l10n_en.dart';
+import 'package:liza/l10n/l10n_ru.dart';
 import 'package:liza/pages/chat_list/chat_list.dart';
 import 'package:liza/pages/chat_list/create_company_list_tile.dart';
 import 'package:liza/pages/chat_list/navi_rail_item.dart';
@@ -174,6 +178,32 @@ Future<void> _settle(WidgetTester tester) async {
   }
 }
 
+const _introText = ValueKey('create_company_intro_text');
+const _introRequest = ValueKey('create_company_intro_request');
+const _introCancel = ValueKey('create_company_intro_cancel');
+
+List<dynamic> _createRoomCalls() => FakeMatrixApi.calledEndpoints.entries
+    .where((e) => e.key.contains('/client/v3/createRoom'))
+    .expand((e) => e.value)
+    .toList();
+
+/// Тап по входу «Создать компанию» → попап. До подтверждения ни DM, ни интента
+/// (AC-11); затем «Оставить заявку».
+Future<void> _tapEntryAndConfirm(WidgetTester tester, Finder entry) async {
+  final rooms = _createRoomCalls().length;
+  final puts = _intentPuts().length;
+  await tester.tap(entry);
+  await _settle(tester);
+  expect(find.byKey(_introText), findsOneWidget);
+  expect(
+    _createRoomCalls(),
+    hasLength(rooms),
+    reason: 'попап до подтверждения',
+  );
+  expect(_intentPuts(), hasLength(puts), reason: 'попап до подтверждения');
+  await tester.tap(find.byKey(_introRequest));
+}
+
 void main() {
   late Client client;
   late SharedPreferences store;
@@ -313,10 +343,11 @@ void main() {
     );
 
     testWidgets(
-      'AC-3: тап по «+» → DM с ботом поддержки — AC:RL-create-company-support-entry/3',
+      'AC-3: тап по «+» → попап → «Оставить заявку» → DM с ботом поддержки '
+      '— AC:RL-create-company-support-entry/3',
       (tester) async {
         await pumpRail(tester, _Root.exists);
-        await tester.tap(find.byKey(_railKey));
+        await _tapEntryAndConfirm(tester, find.byKey(_railKey));
         for (var i = 0; i < 5; i++) {
           await tester.runAsync(
             () => Future<void>.delayed(const Duration(milliseconds: 20)),
@@ -338,6 +369,7 @@ void main() {
         expect(intents, hasLength(1));
         expect(intents.single['state_key'], '');
         expect(intents.single['content']['intent'], 'create_company');
+        expect(intents.single['content']['next'], 'request');
         expect(intents.single['content']['ts'], isA<int>());
         expect(_intentPuts(), isEmpty);
         // FakeMatrixApi не доносит комнату через sync → startDirectChat висит;
@@ -545,10 +577,18 @@ void main() {
       await _settle(tester);
     }
 
-    List<dynamic> createRoomCalls() => FakeMatrixApi.calledEndpoints.entries
-        .where((e) => e.key.contains('/client/v3/createRoom'))
-        .expand((e) => e.value)
-        .toList();
+    List<dynamic> createRoomCalls() => _createRoomCalls();
+
+    Future<void> confirmAndSettle(WidgetTester tester, Finder entry) async {
+      await _tapEntryAndConfirm(tester, entry);
+      for (var i = 0; i < 5; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      await _settle(tester);
+    }
 
     testWidgets(
       'AC-13: ∀ вход {rail «+», плашка} + DM есть → без createRoom, ровно один '
@@ -568,12 +608,13 @@ void main() {
           final target = entry.key == 'rail'
               ? find.byKey(_railKey)
               : find.byType(CreateCompanyListTile);
-          await tapAndSettle(tester, target);
+          await confirmAndSettle(tester, target);
           expectedPuts++;
           expect(createRoomCalls(), isEmpty, reason: entry.key);
           final puts = _intentPuts();
           expect(puts, hasLength(expectedPuts), reason: entry.key);
           expect(puts.last['intent'], 'create_company');
+          expect(puts.last['next'], 'request');
           expect(puts.last['ts'], isA<int>());
           expect(find.text('ROOM $dm'), findsOneWidget, reason: entry.key);
           expect(
@@ -661,11 +702,171 @@ void main() {
           ),
         );
         await _settle(tester);
-        await tapAndSettle(tester, find.byType(CreateCompanyListTile));
+        await confirmAndSettle(tester, find.byType(CreateCompanyListTile));
         expect(find.text('ROOM $dmNoState'), findsOneWidget);
         expect(_intentPuts(), hasLength(1));
         expect(createRoomCalls(), isEmpty);
       },
     );
+  });
+
+  group('попап «Создать компанию» — ledger:RL-create-company-support-entry', () {
+    const dm = '!1234:fakeServer.notExisting';
+
+    Map<String, Widget> entries() => {
+      'rail': _railHome(),
+      'tile': const Scaffold(body: CreateCompanyListTile()),
+    };
+
+    Finder entryFinder(String name) => name == 'rail'
+        ? find.byKey(_railKey)
+        : find.byType(CreateCompanyListTile);
+
+    testWidgets(
+      'AC-11: ∀ вход {rail, плашка} → ровно один попап с текстом и двумя '
+      'кнопками, до подтверждения ни createRoom, ни PUT — '
+      'AC:RL-create-company-support-entry/11',
+      (tester) async {
+        _setSupportDm(client, dm);
+        for (final entry in entries().entries) {
+          await tester.pumpWidget(
+            _app(client: client, store: store, home: entry.value),
+          );
+          await _settle(tester);
+          await tester.tap(entryFinder(entry.key));
+          await _settle(tester);
+          final l10n = L10n.of(tester.element(find.byKey(_introText)));
+          expect(find.byKey(_introText), findsOneWidget, reason: entry.key);
+          expect(find.text(l10n.createCompanyIntroText), findsOneWidget);
+          expect(find.text(l10n.createCompanyViaSupport), findsWidgets);
+          expect(
+            find.descendant(
+              of: find.byKey(_introRequest),
+              matching: find.text('Оставить заявку'),
+            ),
+            findsOneWidget,
+          );
+          expect(
+            find.descendant(
+              of: find.byKey(_introCancel),
+              matching: find.text(l10n.cancel),
+            ),
+            findsOneWidget,
+          );
+          expect(_createRoomCalls(), isEmpty, reason: entry.key);
+          expect(_intentPuts(), isEmpty, reason: entry.key);
+          expect(find.textContaining('ROOM'), findsNothing);
+          await tester.tap(find.byKey(_introCancel));
+          await _settle(tester);
+        }
+      },
+    );
+
+    testWidgets(
+      'AC-12 NEGATIVE: ∀ вход × {«Отмена», тап по фону} → попап закрыт, ни '
+      'createRoom, ни PUT, перехода нет — AC:RL-create-company-support-entry/12',
+      (tester) async {
+        _setSupportDm(client, dm);
+        for (final entry in entries().entries) {
+          for (final dismiss in ['cancel', 'barrier']) {
+            await tester.pumpWidget(
+              _app(client: client, store: store, home: entry.value),
+            );
+            await _settle(tester);
+            await tester.tap(entryFinder(entry.key));
+            await _settle(tester);
+            expect(find.byKey(_introText), findsOneWidget);
+            if (dismiss == 'cancel') {
+              await tester.tap(find.byKey(_introCancel));
+            } else {
+              await tester.tapAt(const Offset(4, 4));
+            }
+            await _settle(tester);
+            final reason = '${entry.key}/$dismiss';
+            expect(find.byKey(_introText), findsNothing, reason: reason);
+            expect(_createRoomCalls(), isEmpty, reason: reason);
+            expect(_intentPuts(), isEmpty, reason: reason);
+            expect(find.textContaining('ROOM'), findsNothing, reason: reason);
+          }
+        }
+      },
+    );
+
+    testWidgets('AC-13: двойной тап по входу → один попап — '
+        'AC:RL-create-company-support-entry/13', (tester) async {
+      _setSupportDm(client, dm);
+      await tester.pumpWidget(
+        _app(
+          client: client,
+          store: store,
+          home: const Scaffold(body: CreateCompanyListTile()),
+        ),
+      );
+      await _settle(tester);
+      await tester.tap(find.byType(CreateCompanyListTile));
+      await tester.tap(find.byType(CreateCompanyListTile), warnIfMissed: false);
+      await _settle(tester);
+      expect(find.byKey(_introText), findsOneWidget);
+      await tester.tap(find.byKey(_introCancel));
+      await _settle(tester);
+      expect(find.byKey(_introText), findsNothing);
+    });
+
+    testWidgets(
+      'AC-14: 320×480 и textScaler 2.0 → без overflow, «Оставить заявку» '
+      'достижима — AC:RL-create-company-support-entry/14',
+      (tester) async {
+        _setSupportDm(client, dm);
+        tester.view.physicalSize = const Size(320, 480);
+        tester.view.devicePixelRatio = 1;
+        tester.platformDispatcher.textScaleFactorTestValue = 2;
+        addTearDown(tester.view.reset);
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        await tester.pumpWidget(
+          _app(
+            client: client,
+            store: store,
+            home: const Scaffold(
+              body: SingleChildScrollView(child: CreateCompanyListTile()),
+            ),
+          ),
+        );
+        await _settle(tester);
+        await tester.tap(find.byType(CreateCompanyListTile));
+        await _settle(tester);
+        expect(tester.takeException(), isNull);
+        final request = find.byKey(_introRequest);
+        expect(request, findsOneWidget);
+        final rect = tester.getRect(request);
+        expect(rect.bottom, lessThanOrEqualTo(480));
+        expect(rect.top, greaterThanOrEqualTo(0));
+        await tester.tap(find.byKey(_introCancel));
+        await _settle(tester);
+      },
+    );
+
+    test('AC-15: ключи попапа есть и в ru, и в en — '
+        'AC:RL-create-company-support-entry/15', () {
+      final ru = L10nRu();
+      final en = L10nEn();
+      for (final l10n in <L10n>[ru, en]) {
+        expect(
+          l10n.createCompanyIntroText,
+          contains('🏢'),
+          reason: l10n.localeName,
+        );
+        expect(
+          l10n.createCompanyLeaveRequest,
+          isNotEmpty,
+          reason: l10n.localeName,
+        );
+      }
+      expect(ru.createCompanyIntroText, startsWith('Привет! Коротко'));
+      expect(
+        ru.createCompanyLeaveRequest,
+        isNot(en.createCompanyLeaveRequest),
+        reason: 'ru не подменён английским',
+      );
+    });
   });
 }

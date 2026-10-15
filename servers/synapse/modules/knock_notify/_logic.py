@@ -9,12 +9,11 @@ MEMBER_EVENT_TYPE = "m.room.member"
 POWER_LEVELS_TYPE = "m.room.power_levels"
 ROOM_NAME_TYPE = "m.room.name"
 
-# Порог «может рассматривать заявки» = модератор (PL 50). Совпадает с клиентским
-# гейтом бейджа (moderatorPowerLevel=50, chat_topology.dart) и семантикой
-# canReviewKnockRequests. Через invite-порог гейтить НЕЛЬЗЯ: у компании (space)
-# invite:0 по умолчанию → пуш о заявке утёк бы ВСЕМ участникам (находка
-# flutter-critic). PL>=50 к тому же на практике означает право invite (invite-
-# порог в группах/компаниях Liza ≤ 50), т.е. получатель реально может одобрить.
+# Нижняя граница порога «может рассматривать заявки» = модератор (PL 50).
+# Совпадает с клиентским moderatorPowerLevel (chat_topology.dart). Через один
+# invite-порог гейтить НЕЛЬЗЯ: у старой компании (space) invite:0 → пуш о
+# заявке утёк бы ВСЕМ участникам (находка flutter-critic). Итоговый порог —
+# review_threshold() = max(50, invite).
 MODERATOR_POWER_LEVEL = 50
 
 
@@ -41,20 +40,39 @@ def user_power_level(user_id: str, power_levels_content: dict | None) -> int:
         return 0
 
 
+def review_threshold(power_levels_content: dict | None) -> int:
+    """Порог ревьюера заявки: max(модератор, invite).
+
+    При «приглашают только админы» (invite:99, задача 13) модератор заявку
+    одобрить не может — значит, и пуш о ней ему не нужен. Та же формула в
+    клиенте: knockReviewThreshold (lib/utils/knock_requests.dart).
+    """
+    raw = (power_levels_content or {}).get("invite", 0)
+    try:
+        invite = int(raw)
+    except (TypeError, ValueError):
+        invite = 0
+    return max(MODERATOR_POWER_LEVEL, invite)
+
+
 def knock_reviewers(
     members: Iterable[tuple[str, str]],
     power_levels_content: dict | None,
     knocker: str | None,
     is_local: Callable[[str], bool],
-    min_level: int = MODERATOR_POWER_LEVEL,
+    min_level: int | None = None,
 ) -> list[str]:
     """Локальные joined-участники с PL>=min_level, кроме самого стучащегося.
+
+    min_level по умолчанию — review_threshold(power_levels_content).
 
     members: iterable из (user_id, membership).
     is_local: callable(user_id)->bool — обслуживаем только своих; каждый инстанс
         достучится до СВОИХ локальных ревьюеров, дублей между инстансами нет.
     Сам knocker исключён: о своём действии пуш не шлём.
     """
+    if min_level is None:
+        min_level = review_threshold(power_levels_content)
     result: set[str] = set()
     for user_id, membership in members:
         if membership != "join":

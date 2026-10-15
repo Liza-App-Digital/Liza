@@ -5,6 +5,7 @@ import 'package:share_plus/share_plus.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/auth_proxy_service.dart';
+import 'package:liza/utils/company_invite_gate.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/qr_code_viewer.dart';
@@ -40,7 +41,11 @@ abstract class LizaShare {
   /// Создаёт (идемпотентно) invite-ссылку текущего пользователя и открывает
   /// НАТИВНОЕ меню шеринга с текстом-приглашением. Используется строкой
   /// «Пригласить людей» и кнопкой «Пригласить» у контакта.
+  ///
+  /// На инстансе-компании ссылка вводит в компанию — без права `invite` в
+  /// главном пространстве вместо ссылки плашка ([ensureCanInviteToLiza]).
   static Future<void> shareInvitePeople(BuildContext context) async {
+    if (!ensureCanInviteToLiza(context)) return;
     final client = Matrix.of(context).client;
     final userId = client.userID;
     if (userId == null) return;
@@ -58,6 +63,7 @@ abstract class LizaShare {
   }
 
   static Future<void> shareInviteLink(BuildContext context) async {
+    if (!ensureCanInviteToLiza(context)) return;
     final client = Matrix.of(context).client;
     final userId = client.userID!;
     final result = await showFutureLoadingDialog(

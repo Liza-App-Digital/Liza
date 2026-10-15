@@ -5,7 +5,7 @@
 // работает». Резолва в контроллере для этого мало — важно, что найденный по
 // нику человек доезжает до КАРУСЕЛИ людей. В chat_list.dart результаты
 // публикуются не через возвращаемое значение mergeSearchResults, а МУТАЦИЕЙ
-// userSearchResult.results (..clear() ..addAll(pinned)); стоит кому-то
+// userSearchResult.results (..clear() ..addAll(merged)), из него считаются разделы; стоит кому-то
 // разорвать эту цепочку — находка по нику молча пропадёт из интерфейса,
 // оставаясь «успешно отрезолвленной» в контроллере.
 //
@@ -37,20 +37,20 @@ void main() {
           FederatedUserEntry.fromJson({'user_id': '@byhandle:prod'}),
         ],
       );
-      final pinned = pinAiProfilesFirst(
-        merged,
-        isAi: (p) => false,
-        lizaMxid: null,
-      );
       // Публикация — мутацией, как в chat_list.dart::_search().
       userSearchResult.results
         ..clear()
-        ..addAll(pinned);
+        ..addAll(merged);
+      // Карусели рисуют разделы, посчитанные из userSearchResult.results
+      // (RL-search-people-vs-bots-sections) — ровно как _partitionUserSearch.
+      final sections = partitionPeopleAndBots(
+        userSearchResult.results,
+        isBotOrAi: (_) => false,
+      );
 
-      // Карусель людей рендерит именно userSearchResult.results — если
-      // находка по нику сюда не попала, на экране её не будет.
+      // Если находка по нику не попала в раздел «Люди», на экране её не будет.
       expect(
-        userSearchResult.results.map((p) => p.userId),
+        sections.people.map((p) => p.userId),
         containsAll(<String>['@known:prod', '@byhandle:prod']),
         reason: 'человек, найденный по нику, обязан быть в выдаче экрана',
       );

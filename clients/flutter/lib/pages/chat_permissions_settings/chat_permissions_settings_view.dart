@@ -100,6 +100,10 @@ class ChatPermissionsSettingsView extends StatelessWidget {
                         permissionKey: entry.key,
                         permission: entry.value,
                         isChannel: room.isChannel,
+                        maxLevel: permissionThresholdMaxLevel(
+                          key: entry.key,
+                          ownPowerLevel: room.ownPowerLevel,
+                        ),
                         onChanged: (level) => controller.editPowerLevel(
                           context,
                           entry.key,
@@ -135,6 +139,11 @@ class ChatPermissionsSettingsView extends StatelessWidget {
                           permission: value,
                           category: 'notifications',
                           isChannel: room.isChannel,
+                          maxLevel: permissionThresholdMaxLevel(
+                            key: key,
+                            category: 'notifications',
+                            ownPowerLevel: room.ownPowerLevel,
+                          ),
                           canEdit: room.canChangePowerLevel,
                           onChanged: (level) => controller.editPowerLevel(
                             context,
@@ -164,6 +173,11 @@ class ChatPermissionsSettingsView extends StatelessWidget {
                         category: 'events',
                         permission: entry.value ?? 0,
                         isChannel: room.isChannel,
+                        maxLevel: permissionThresholdMaxLevel(
+                          key: entry.key,
+                          category: 'events',
+                          ownPowerLevel: room.ownPowerLevel,
+                        ),
                         canEdit: room.canChangePowerLevel,
                         onChanged: (level) => controller.editPowerLevel(
                           context,

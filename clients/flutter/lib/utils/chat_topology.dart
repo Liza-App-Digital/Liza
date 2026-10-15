@@ -35,11 +35,178 @@ const channelNoForwardsState = 'com.liza.channel.no_forwards';
 /// уже принятое старыми сборками, нечитаемым (см. client_manager.dart).
 const String hideReadReceiptsState = 'com.liza.chat.hide_read_receipts';
 
-/// Пороги power level в Matrix: администратор — 100, модератор — 50.
-const int adminPowerLevel = 100;
+/// Роли в комнате (механика ВК, спека 2026-10-14-room-owner-role-design):
+/// владелец — 100, администратор — 99, модератор — 50.
+///
+/// Владелец и администратор разведены на соседние уровни ради правила
+/// протокола «менять можно только тех, кто ниже тебя»: владелец (100) снимает
+/// админа (99), а админы не трогают ни владельца, ни друг друга (99 < 99 —
+/// ложь). Предикат «админ» в клиенте — `>= adminPowerLevel`, он включает и
+/// владельца. В старых комнатах может быть несколько 100 — это равные
+/// со-владельцы, как было до введения роли.
+const int ownerPowerLevel = 100;
+const int adminPowerLevel = 99;
 const int moderatorPowerLevel = 50;
 
-/// State-событие: администратор (PL >= 100) скрыл участников из ВИТРИНЫ списка
+bool isOwnerLevel(int powerLevel) => powerLevel >= ownerPowerLevel;
+
+/// Максимальная роль, которую [ownPowerLevel] может выдать участнику.
+/// Админа назначает только владелец; админ назначает не выше модератора.
+int assignableRoleMaxLevel(int ownPowerLevel) =>
+    ownPowerLevel >= ownerPowerLevel
+    ? adminPowerLevel
+    : (ownPowerLevel < moderatorPowerLevel
+          ? ownPowerLevel
+          : moderatorPowerLevel);
+
+/// Верхняя граница значения порога [key] (в [category] или верхнего уровня),
+/// которое [ownPowerLevel] может выставить на экране «Права».
+///
+/// `users_default` — это не порог действия, а роль КАЖДОГО участника по
+/// умолчанию: 99 «Администратор» разом делала бы админом всех (в т.ч. новых),
+/// и они смогли бы деактивировать участников через access_admin. Поэтому для
+/// него потолок — модератор, даже у владельца (роль админа выдаётся только
+/// поимённо). Остальные пороги — не выше собственного уровня и не выше 99:
+/// «только админы» — законная настройка и для админа.
+int permissionThresholdMaxLevel({
+  required String key,
+  String? category,
+  required int ownPowerLevel,
+}) {
+  final cap = category == null && key == 'users_default'
+      ? moderatorPowerLevel
+      : adminPowerLevel;
+  return ownPowerLevel < cap ? ownPowerLevel : cap;
+}
+
+/// Пороги, которые [normalizeOwnerModelThresholds] НЕ опускает до 99:
+/// `com.liza.chat.topology` (скрытость/тип комнаты) держится только за
+/// владельцем — на 100 опираются сторис (stories_extension.dart) и серверный
+/// backfill скрытых комнат.
+const Set<String> ownerOnlyEventThresholds = {_topologyEventType};
+
+/// Копия content `m.room.power_levels`, где каждый порог, равный ровно
+/// [ownerPowerLevel], опущен до [adminPowerLevel] (кроме
+/// [ownerOnlyEventThresholds]).
+///
+/// Шаблон Synapse и override-ы создания держат «админские» пороги на 100
+/// (`m.room.power_levels`, `history_visibility`, у канала `events_default`).
+/// Админ-99 в такой комнате не смог бы назначать модераторов и публиковать в
+/// канале. Поэтому пороги нормализуются в том же событии, которое впервые
+/// выдаёт 99 ([promoteToAdminContent], [transferOwnershipContent]). Сделать это
+/// вправе только тот, у кого PL >= старого порога, то есть владелец. Так одним
+/// механизмом покрыты и новые комнаты, и созданные старыми сборками, и
+/// пространства, чьи power_levels создаёт не наш override. `users` не трогаем.
+Map<String, Object?> normalizeOwnerModelThresholds(
+  Map<String, Object?> content,
+) {
+  int? lowered(Object? v) => v == ownerPowerLevel ? adminPowerLevel : null;
+  final result = <String, Object?>{};
+  for (final entry in content.entries) {
+    final value = entry.value;
+    if (entry.key == 'users') {
+      result['users'] = value is Map ? Map<String, Object?>.from(value) : value;
+    } else if (value is Map) {
+      result[entry.key] = {
+        for (final e in value.entries)
+          e.key.toString():
+              entry.key == 'events' &&
+                  ownerOnlyEventThresholds.contains(e.key.toString())
+              ? e.value
+              : lowered(e.value) ?? e.value,
+      };
+    } else {
+      result[entry.key] = lowered(value) ?? value;
+    }
+  }
+  return result;
+}
+
+Map<String, Object?> _withUsers(
+  Map<String, Object?> content,
+  Map<String, int> changes,
+) {
+  final result = normalizeOwnerModelThresholds(content);
+  final users = result['users'] is Map
+      ? Map<String, Object?>.from(result['users'] as Map)
+      : <String, Object?>{};
+  users.addAll(changes);
+  result['users'] = users;
+  return result;
+}
+
+/// Тело ОДНОГО события `m.room.power_levels` «сделать администратором».
+Map<String, Object?> promoteToAdminContent(
+  Map<String, Object?> content,
+  String targetId,
+) => _withUsers(content, {targetId: adminPowerLevel});
+
+/// Тело ОДНОГО события «передать владение»: получателю 100, себе 99.
+/// Одним событием, а не двумя `setPower`: после первого (себе 99) отдать 100
+/// уже нельзя — новое значение выше собственного уровня.
+Map<String, Object?> transferOwnershipContent(
+  Map<String, Object?> content, {
+  required String ownerId,
+  required String recipientId,
+}) => _withUsers(content, {
+  recipientId: ownerPowerLevel,
+  ownerId: adminPowerLevel,
+});
+
+/// Отправить ОДНО событие `m.room.power_levels`, собранное [build] из
+/// текущего content комнаты. Как и SDK `Room.setPower`, берём локальный state,
+/// но без него НЕ шлём `{}`: пустой content стёр бы все пороги комнаты.
+Future<String> _putOwnerModelPowerLevels(
+  Room room,
+  Map<String, Object?> Function(Map<String, Object?> current) build,
+) async {
+  final current = room.getState(EventTypes.RoomPowerLevels)?.content;
+  if (current == null) {
+    throw StateError('m.room.power_levels ещё не загружен в ${room.id}');
+  }
+  return await room.client.setRoomStateWithKey(
+    room.id,
+    EventTypes.RoomPowerLevels,
+    '',
+    build(Map<String, Object?>.from(current)),
+  );
+}
+
+/// «Сделать администратором»: цели 99 + нормализация порогов, одним событием.
+Future<String> promoteMemberToAdmin(Room room, String userId) =>
+    _putOwnerModelPowerLevels(
+      room,
+      (current) => promoteToAdminContent(current, userId),
+    );
+
+/// «Передать владение»: получателю 100, себе 99, одним событием.
+Future<String> transferRoomOwnership(Room room, String recipientId) =>
+    _putOwnerModelPowerLevels(
+      room,
+      (current) => transferOwnershipContent(
+        current,
+        ownerId: room.client.userID!,
+        recipientId: recipientId,
+      ),
+    );
+
+/// Можно ли показать «Передать владение» на строке участника.
+bool canTransferOwnershipTo({
+  required int ownPowerLevel,
+  required String callerId,
+  required String targetId,
+  required int targetPowerLevel,
+  required bool targetJoined,
+  required bool isDirectChat,
+}) =>
+    isOwnerLevel(ownPowerLevel) &&
+    !isDirectChat &&
+    callerId != targetId &&
+    targetJoined &&
+    !isServiceAccountId(targetId) &&
+    targetPowerLevel < ownerPowerLevel;
+
+/// State-событие: администратор (PL >= 99) скрыл участников из ВИТРИНЫ списка
 /// участников (кнопка «Скрыть из списка», LABA-2381). Глобально: у всех членов
 /// чата список рисуется без них. Скрытие косметическое — членство, сообщения,
 /// права скрытого НЕ меняются, и себя он видит как обычно.
@@ -48,7 +215,7 @@ const int moderatorPowerLevel = 50;
 /// со `state_key = @victim`: Synapse (room v10/v11, `msc3757` off) отвергает
 /// state event, чей state_key начинается с `@` и ≠ отправителя — `403 "You are
 /// not allowed to set others state"` (`event_auth.py`). Пустой state_key этот
-/// блок обходит; порог записи — `state_default` (50). Клиентский гейт PL>=100 —
+/// блок обходит; порог записи — `state_default` (50). Клиентский гейт PL>=99 —
 /// сверх серверного 50 (осознанная модель доверия модератору, спека
 /// `docs/superpowers/specs/2026-08-18-participant-hide-from-member-list-design.md`,
 /// R1). Тип в `importantStateEvents` (client_manager.dart), иначе partial-
@@ -80,6 +247,124 @@ const Map<String, Object?> synapseDefaultEventPowerLevels = {
   'm.room.server_acl': 100,
   'm.room.encryption': 100,
 };
+
+/// power_levels нового канала.
+///
+/// `events_default: 100` — постить может только админ (это и есть канал).
+/// Порог `m.reaction: 0` обязателен явно: иначе он унаследует
+/// `events_default`, и подписчику реакции запретит сервер.
+///
+/// Порог `m.room.redaction: 0` — ПАРНЫЙ к `m.reaction`: снятие реакции это
+/// не «отмена», а отправка события `m.room.redaction`. Без явного порога оно
+/// тоже наследует `events_default: 100`, и подписчик, поставивший реакцию,
+/// получал `M_FORBIDDEN` при попытке её снять («Нет прав доступа»).
+///
+/// ⚠️ Именно `events['m.room.redaction'] = 0`, а НЕ `redact: 0`. Это разные
+/// права по auth-rules Matrix: `events['m.room.redaction']` — право ОТПРАВИТЬ
+/// событие редакции (по нему пользователь удаляет СВОЁ событие, ветка
+/// «sender редакции == sender цели»), а `redact` — право отредактировать
+/// ЧУЖОЕ событие. Опустив `redact` до 0, мы дали бы любому подписчику удалять
+/// посты канала и чужие реакции; поэтому `redact` остаётся шаблонным (50).
+///
+/// Порог `invite: moderatorPowerLevel` (50) обязателен явно: preset
+/// `private_chat`/`trusted_private_chat` Synapse выставляет `invite: 0`
+/// (`handlers/room.py`), и без явного порога ПРИВАТНЫЙ канал наследовал 0 —
+/// любой подписчик (PL 0) мог приглашать посторонних. Публичный канал (preset
+/// `public_chat`) уже получал 50 из шаблона Synapse, приватный — нет; это
+/// расхождение выравниваем, чтобы приглашать в канал мог только модератор,
+/// независимо от типа (проверено на локальном стеке 2026-08-24,
+/// [[RL-channel-permissions-enforcement]]).
+///
+/// Шаблонные пороги переносим явно — см. [synapseDefaultEventPowerLevels].
+Map<String, Object?> channelPowerLevelOverride() => {
+  'events_default': 100,
+  'invite': moderatorPowerLevel,
+  'events': {
+    ...synapseDefaultEventPowerLevels,
+    'm.reaction': 0,
+    'm.room.redaction': 0,
+  },
+};
+
+/// power_levels нового ГРУППОВОГО чата.
+///
+/// Задаёт ТОЛЬКО `invite: moderatorPowerLevel` (50). Preset `private_chat`
+/// Synapse (`handlers/room.py`) выставляет `invite: 0`, и без явного порога
+/// приватная группа наследовала 0 — любой участник (PL 0) мог приглашать
+/// посторонних (тот же класс отклонения, что был у канала, см.
+/// [channelPowerLevelOverride] и `howItWoks/chanels/rightsInChannel.md §6`).
+/// Публичная группа (preset `public_chat`) уже получала 50 из шаблона Synapse —
+/// расхождение выравниваем, чтобы приглашать в группу мог только модератор,
+/// независимо от типа.
+///
+/// ⚠️ НАМЕРЕННО без ключа `events` и без `events_default`. Synapse применяет
+/// override shallow-merge'ем top-level ключей: `invite` перекрывает preset-ный
+/// `invite: 0`, НЕ трогая шаблонный блок `events`. Появись здесь ключ `events`
+/// — он заменил бы весь блок ЦЕЛИКОМ (как в канале, где ради этого копируется
+/// [synapseDefaultEventPowerLevels]), и неперечисленные типы упали бы на
+/// `state_default: 50` → модератор группы переписал бы `m.room.power_levels`.
+/// В отличие от канала, группе НЕЛЬЗЯ поднимать `events_default` до 100 — в
+/// группе сообщения пишут ВСЕ участники (порог остаётся дефолтным 0).
+Map<String, Object?> groupPowerLevelOverride() => {
+  'invite': moderatorPowerLevel,
+};
+
+/// power_levels нового ПРОСТРАНСТВА (компания или подпространство).
+///
+/// `events_default: 100` — state пространства (дети, имя) пишет только админ.
+///
+/// `invite: adminPowerLevel` (99) — только на инстансе-компании
+/// ([companyInstance], поле `company` ответа `single_space_guard`): «если в
+/// настройках компании выбрано, что приглашать могут только админы — значит,
+/// только админы. По умолчанию предлагаю именно так» (Надежда, 14.10, спека
+/// 2026-10-14-search-sections-and-company-invite-admin-only). Preset
+/// `private_chat` иначе даёт `invite: 0`, и приглашать мог любой участник.
+/// 99, а не 100: админ (99) приглашает, а [normalizeOwnerModelThresholds]
+/// такой порог не трогает. На общем инстансе (users.liza.ru, «компания сама по
+/// себе общая») порог прежний — preset-ный.
+///
+/// Без ключа `events` — по той же причине, что [groupPowerLevelOverride].
+///
+/// [users] — поимённые уровни нового пространства (см.
+/// [subspaceUsersOverride]). Synapse и этот ключ сливает shallow: переданный
+/// `users` ЗАМЕНЯЕТ его `{создатель: 100}` целиком, поэтому создатель обязан
+/// быть в карте (иначе 400 «'users' did not contain ...»).
+Map<String, Object?> spacePowerLevelOverride({
+  required bool companyInstance,
+  Map<String, int>? users,
+}) => {
+  'events_default': 100,
+  if (companyInstance) 'invite': adminPowerLevel,
+  'users': ?users,
+};
+
+/// `users` нового подпространства компании: администраторы и владельцы
+/// родителя (PL >= [adminPowerLevel]) переносятся с уровнем
+/// min(их PL, [adminPowerLevel]), создатель — [ownerPowerLevel].
+///
+/// Без переноса подпространство на инстансе-компании (`invite: 99`) знало бы
+/// одного создателя: админ компании получал бы в чужом подпространстве 0 и
+/// видел ложную плашку «Приглашать могут только администраторы». Владелец
+/// родителя — тоже 99, а не 100: владелец подпространства один — его
+/// создатель (модель владельца, спека 2026-10-14-room-owner-role-design).
+/// Рядовые участники и модераторы не переносятся — у них уровень по умолчанию.
+Map<String, int> subspaceUsersOverride({
+  required Map<String, Object?>? parentPowerLevels,
+  required String creatorId,
+}) {
+  final parentUsers = parentPowerLevels?['users'];
+  final result = <String, int>{};
+  if (parentUsers is Map) {
+    for (final e in parentUsers.entries) {
+      final v = e.value;
+      final level = v is num ? v.toInt() : int.tryParse('$v');
+      if (level == null || level < adminPowerLevel) continue;
+      result[e.key.toString()] = adminPowerLevel;
+    }
+  }
+  result[creatorId] = ownerPowerLevel;
+  return result;
+}
 
 /// Виден ли поимённый список людей: в пространстве и в канале — только
 /// модератору/админу.
@@ -356,7 +641,7 @@ extension LizaChatTopology on Room {
 
   /// Вправе ли ТЕКУЩИЙ пользователь скрывать/возвращать участников
   /// (владелец/админ). Серверный порог записи ниже (`state_default`=50), но
-  /// кнопку показываем только с PL>=100 — по тексту тикета «функция админа».
+  /// кнопку показываем только админу (PL>=99) — по тексту тикета «функция админа».
   bool get canHideMembers => ownPowerLevel >= adminPowerLevel;
 
   /// Скрыт ли [memberId] из витрины списка для ТЕКУЩЕГО пользователя.

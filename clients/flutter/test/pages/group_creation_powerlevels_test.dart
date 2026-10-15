@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:liza/pages/new_group/new_group.dart';
 import 'package:liza/utils/chat_topology.dart';
 
 // ledger:RL-group-permissions-enforcement

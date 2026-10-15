@@ -1,5 +1,6 @@
 """User roles catalog: storage, cache, helpers."""
 
+import json
 import logging
 import re
 import time
@@ -63,7 +64,7 @@ _SCHEMA_SQL_SQLITE = (
 _SEED_ROLES: list[tuple[str, str, str | None]] = [
     ("user", "Пользователь", None),
     ("ai", "ИИ", "#4CAF50"),
-    ("developer", "Разработчик", None),
+    ("developer", "Разработчик", "#1565C0"),
     ("moderator", "Модератор", None),
     ("manager", "Менеджер", None),
     ("admin", "Администратор", None),
@@ -251,13 +252,12 @@ class RoleCatalog:
     async def users_with_role(self, code: str) -> list[str]:
         """Return user_ids whose com.liza.user_role account_data points at this role.
 
-        Implementation note: we LIKE-match the JSON-encoded content because
         Synapse stores account_data.content as TEXT (JSON-encoded string), not
-        jsonb. Synapse's ``json_encoder`` uses ``separators=(",", ":")`` so the
-        stored payload is ``{"role":"<code>"}`` with no spaces; our pattern
-        matches that exact substring. Quoting around ``{code}`` prevents
-        substring matches like searching for role ``"a"`` accidentally hitting
-        ``"ai"``.
+        jsonb. LIKE here is only a coarse prefilter on the quoted code; the
+        exact match is ``json.loads(content)["role"] == code`` in Python.
+        Matching the raw substring ``"role":"<code>"`` missed rows written
+        with spaces (``{"role": "developer"}`` — prod has such rows, written
+        outside ``json_encoder``), so the catalog-patch broadcast skipped them.
 
         We escape ``_`` and ``%`` (LIKE metacharacters) in the code so that a
         valid role code containing ``_`` (e.g. ``cyber_agronom``) does not
@@ -265,16 +265,24 @@ class RoleCatalog:
         """
 
         safe = code.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
-        pattern = f'%"role":"{safe}"%'
+        pattern = f'%"{safe}"%'
 
         def _select(txn):
             txn.execute(
-                "SELECT user_id FROM account_data "
+                "SELECT user_id, content FROM account_data "
                 "WHERE account_data_type = ? "
                 "AND content LIKE ? ESCAPE '\\'",
                 (ACCOUNT_DATA_TYPE, pattern),
             )
-            return [row[0] for row in txn]
+            result = []
+            for user_id, content in txn:
+                try:
+                    data = json.loads(content)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(data, dict) and data.get("role") == code:
+                    result.append(user_id)
+            return result
 
         return await self._db.runInteraction(
             "user_roles_users_with_role", _select

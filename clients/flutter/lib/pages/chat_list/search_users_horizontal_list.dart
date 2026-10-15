@@ -18,19 +18,20 @@ import 'package:liza/widgets/user_identifier.dart';
 /// `ChatListBody` нельзя отрисовать в страже на реальном виджете
 /// (RL-search-handle-profile-hydration).
 ///
-/// Рисует ровно то, что лежит в `userSearchResult.results` — контроллер
-/// публикует результат мутацией этого списка (стадия 1: находки с
-/// `@ник`-фоллбэком, стадия 2: те же индексы с именем и аватаром из
-/// профиля). Сети из `build()` нет: заголовок и буква аватара считаются
+/// Рисует ровно переданный [profiles] — один раздел выдачи («Люди» или
+/// «Боты и ИИ», RL-search-people-vs-bots-sections). Контроллер пересчитывает
+/// разделы при публикации (стадия 1: находки с `@ник`-фоллбэком), после
+/// гидратации (стадия 2: имя и аватар из профиля) и при позднем приходе
+/// ролей. Сети из `build()` нет: заголовок и буква аватара считаются
 /// синхронно через [searchResultLabel].
 class SearchUsersHorizontalList extends StatefulWidget {
   const SearchUsersHorizontalList({
-    required this.userSearchResult,
+    required this.profiles,
     required this.onItemTap,
     super.key,
   });
 
-  final SearchUserDirectoryResponse? userSearchResult;
+  final List<Profile> profiles;
   final void Function(String userId) onItemTap;
 
   @override
@@ -49,50 +50,49 @@ class _SearchUsersHorizontalListState extends State<SearchUsersHorizontalList> {
 
   @override
   Widget build(BuildContext context) {
-    final userSearchResult = widget.userSearchResult;
+    final profiles = widget.profiles;
     final handles = Matrix.of(context).userHandleService;
     final unknown = L10n.of(context).user;
     return AnimatedContainer(
       clipBehavior: Clip.hardEdge,
       decoration: const BoxDecoration(),
-      height: userSearchResult == null || userSearchResult.results.isEmpty
-          ? 0
-          : 106,
+      height: profiles.isEmpty ? 0 : 106,
       duration: LizaThemes.animationDuration,
       curve: LizaThemes.animationCurve,
-      child: userSearchResult == null
-          ? null
-          : HorizontalMouseWheel(
-              controller: _scrollController,
-              child: PrimaryScrollController.none(
-                child: ListView.builder(
-                  primary: false,
-                  controller: _scrollController,
-                  scrollDirection: Axis.horizontal,
-                  physics: const ClampingScrollPhysics(),
-                  itemCount: userSearchResult.results.length,
-                  itemBuilder: (context, i) {
-                    final profile = userSearchResult.results[i];
-                    final label = searchResultLabel(
-                      profile,
-                      handles: handles,
-                      unknown: unknown,
-                    );
-                    return SearchCarouselItem(
-                      title: label.title,
-                      avatarName: label.avatarName,
-                      avatar: profile.avatarUrl,
-                      userId: profile.userId,
-                      onPressed: () => widget.onItemTap(profile.userId),
-                      onLongPress: () {
-                        HapticFeedback.heavyImpact();
-                        UserDialog.show(context: context, profile: profile);
-                      },
-                    );
-                  },
-                ),
-              ),
-            ),
+      child: HorizontalMouseWheel(
+        controller: _scrollController,
+        child: PrimaryScrollController.none(
+          child: ListView.builder(
+            primary: false,
+            controller: _scrollController,
+            scrollDirection: Axis.horizontal,
+            physics: const ClampingScrollPhysics(),
+            itemCount: profiles.length,
+            itemBuilder: (context, i) {
+              final profile = profiles[i];
+              final label = searchResultLabel(
+                profile,
+                handles: handles,
+                unknown: unknown,
+              );
+              return SearchCarouselItem(
+                // Элемент мог переехать между разделами (поздние роли):
+                // ключ по userId не даёт переиспользовать чужое состояние.
+                key: ValueKey(profile.userId),
+                title: label.title,
+                avatarName: label.avatarName,
+                avatar: profile.avatarUrl,
+                userId: profile.userId,
+                onPressed: () => widget.onItemTap(profile.userId),
+                onLongPress: () {
+                  HapticFeedback.heavyImpact();
+                  UserDialog.show(context: context, profile: profile);
+                },
+              );
+            },
+          ),
+        ),
+      ),
     );
   }
 }

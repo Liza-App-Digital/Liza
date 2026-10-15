@@ -101,65 +101,60 @@ void main() {
     });
   });
 
-  group('pinAiProfilesFirst', () {
-    test('AI-профили поднимаются в начало списка, порядок остальных сохраняется', () {
+  // Прежний pinAiProfilesFirst превращён в разбиение на разделы
+  // (RL-search-people-vs-bots-sections); кейсы классификатора — в
+  // people_and_bots_partition_test.dart.
+  group('partitionPeopleAndBots', () {
+    test('боты/ИИ уходят в свой раздел, порядок внутри разделов сохраняется',
+        () {
       final profiles = [
         Profile(userId: '@human1:prod', displayName: 'Человек 1'),
         Profile(userId: '@ai:prod', displayName: 'AI-помощник'),
         Profile(userId: '@human2:prod', displayName: 'Человек 2'),
       ];
 
-      final pinned = pinAiProfilesFirst(
+      final sections = partitionPeopleAndBots(
         profiles,
-        isAi: (p) => p.userId == '@ai:prod',
+        isBotOrAi: (id) => id == '@ai:prod',
       );
 
-      expect(pinned.map((p) => p.userId).toList(),
-          ['@ai:prod', '@human1:prod', '@human2:prod']);
-    });
-
-    test('без AI-профилей порядок не меняется', () {
-      final profiles = [
-        Profile(userId: '@human1:prod'),
-        Profile(userId: '@human2:prod'),
-      ];
-
-      final pinned = pinAiProfilesFirst(profiles, isAi: (p) => false);
-
-      expect(pinned.map((p) => p.userId).toList(),
+      expect(sections.people.map((p) => p.userId).toList(),
           ['@human1:prod', '@human2:prod']);
+      expect(sections.botsAndAi.map((p) => p.userId).toList(), ['@ai:prod']);
     });
 
-    test('Лиза идёт первой среди AI', () {
+    test('Лиза идёт первой в «Боты и ИИ»', () {
       final profiles = [
         Profile(userId: '@human:prod'),
         Profile(userId: '@gpt:bots.liza.ru'),
         Profile(userId: '@liza:bots.liza.ru'),
       ];
 
-      final pinned = pinAiProfilesFirst(
+      final sections = partitionPeopleAndBots(
         profiles,
-        isAi: (p) => p.userId.endsWith(':bots.liza.ru'),
+        isBotOrAi: (id) => id.endsWith(':bots.liza.ru'),
         lizaMxid: '@liza:bots.liza.ru',
       );
 
-      expect(pinned.map((p) => p.userId).toList(),
-          ['@liza:bots.liza.ru', '@gpt:bots.liza.ru', '@human:prod']);
+      expect(sections.botsAndAi.map((p) => p.userId).toList(),
+          ['@liza:bots.liza.ru', '@gpt:bots.liza.ru']);
+      expect(sections.people.map((p) => p.userId).toList(), ['@human:prod']);
     });
 
-    test('без lizaMxid порядок внутри AI-группы не меняется', () {
+    test('без lizaMxid порядок внутри «Боты и ИИ» не меняется', () {
       final profiles = [
         Profile(userId: '@gpt:bots.liza.ru'),
         Profile(userId: '@liza:bots.liza.ru'),
       ];
 
-      final pinned = pinAiProfilesFirst(
+      final sections = partitionPeopleAndBots(
         profiles,
-        isAi: (p) => true,
+        isBotOrAi: (_) => true,
       );
 
-      expect(pinned.map((p) => p.userId).toList(),
+      expect(sections.botsAndAi.map((p) => p.userId).toList(),
           ['@gpt:bots.liza.ru', '@liza:bots.liza.ru']);
+      expect(sections.people, isEmpty);
     });
   });
 }

@@ -18,7 +18,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:universal_html/html.dart' as html;
 import 'package:url_launcher/url_launcher_string.dart';
 
-import 'package:liza/utils/direct_chat_ensure.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/app_badge.dart';
@@ -55,6 +54,7 @@ import '../config/setting_keys.dart';
 import '../pages/key_verification/key_verification_dialog.dart';
 import '../utils/account_bundles.dart';
 import '../utils/stream_extension.dart';
+import '../utils/stories/frequent_contacts.dart';
 import '../utils/stories/stories_extension.dart';
 import '../utils/background_push.dart';
 import 'local_notifications_extension.dart';
@@ -414,6 +414,13 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
 
   bool isAiUser(String userId) =>
       userRoleService.isAiUser(userId) || _fallbackAiMxids.contains(userId);
+
+  /// Бот или ИИ: роль `ai` (её носят все боты liza-bot-api) ИЛИ bot-like MXID
+  /// (бот-хоумсервер / настоящий ИИ по localpart). Единый классификатор для
+  /// раздела «Боты и ИИ» в поиске (RL-search-people-vs-bots-sections) и для
+  /// исключения ботов из ленты частых собеседников сторис.
+  bool isBotOrAiUser(String userId) =>
+      isBotLikeMxid(userId) || isAiUser(userId);
 
   bool get isCurrentUserDeveloper => userRoleService.isCurrentUserDeveloper;
 
@@ -1269,7 +1276,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
       }
 
       Logs().i('[Liza] Creating DM with $lizaMxid');
-      await c.ensureDirectChat(lizaMxid);
+      await ensureLizaAssistantDm(c, lizaMxid);
     } catch (e, s) {
       Logs().w('[Liza] Failed to ensure DM with Liza', e, s);
     }

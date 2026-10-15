@@ -177,6 +177,9 @@ abstract class ClientManager {
         // здесь getState возвращал null и isHiddenChat молча давал false,
         // из-за чего чат обсуждений всплывал в списке после тихого join.
         'com.liza.chat.topology',
+        // Маркер чата-запроса к Лизе: на нём держится закрепление основного
+        // чата с Лизой (isLizaAssistantRoom) в списке — partial-комнаты.
+        'com.liza.assistant.request',
         // Скрытие отдельных участников из списка (LABA-2381) держится на этом
         // room state. Без записи здесь partial-комната вернула бы getState=null
         // и скрытый участник всплывал бы в списке (тот же класс, что topology).

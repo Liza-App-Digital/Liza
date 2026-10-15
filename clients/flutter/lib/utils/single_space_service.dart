@@ -30,9 +30,7 @@ class CompanyEntry {
     avatarUrl: json['avatar_url'] as String?,
     numJoinedMembers: (json['num_joined_members'] as int?) ?? 0,
     homeserver: json['homeserver'] as String?,
-    via:
-        (json['via'] as List?)?.map((e) => e.toString()).toList() ??
-        const [],
+    via: (json['via'] as List?)?.map((e) => e.toString()).toList() ?? const [],
   );
 }
 
@@ -73,6 +71,15 @@ class SingleSpaceService {
 
   bool _guardDisabled = false;
 
+  bool _isCompanyInstance = false;
+
+  /// Инстанс — компания (поле `company` ответа `/single_space/v1/root`,
+  /// = `auto_add_new` модуля `single_space_guard`): все чаты сервера живут в
+  /// одном главном пространстве. Общий инстанс (users.liza.ru, bots, стенд) и
+  /// старый сервер без поля дают false — поведение приглашений как до
+  /// гейта «приглашают только те, кому разрешено» (спека 2026-10-14).
+  bool get isCompanyInstance => _isCompanyInstance;
+
   /// Модуля single_space_guard на сервере нет (локальный стенд): ограничения
   /// «одно главное пространство» нет, создавать пространства можно.
   bool get guardDisabled => _guardDisabled;
@@ -87,9 +94,7 @@ class SingleSpaceService {
       return (exists: false, roomId: null);
     }
     try {
-      final uri = homeserver.resolve(
-        '/_synapse/client/single_space/v1/root',
-      );
+      final uri = homeserver.resolve('/_synapse/client/single_space/v1/root');
       final response = await http.get(
         uri,
         headers: {'Authorization': 'Bearer $accessToken'},
@@ -100,14 +105,13 @@ class SingleSpaceService {
             response.body.contains('M_UNRECOGNIZED')) {
           _guardDisabled = true;
         }
-        Logs().w(
-          '[SingleSpace] unexpected status ${response.statusCode}',
-        );
+        Logs().w('[SingleSpace] unexpected status ${response.statusCode}');
         return (exists: _cachedExists ?? false, roomId: _cachedRoomId);
       }
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       final exists = body['exists'] == true;
       final roomId = body['room_id'] as String?;
+      _isCompanyInstance = body['company'] == true;
       _cachedExists = exists;
       _cachedRoomId = roomId;
       return (exists: exists, roomId: roomId);
@@ -124,9 +128,9 @@ class SingleSpaceService {
     final accessToken = client.accessToken;
     if (homeserver == null || accessToken == null) return const [];
     try {
-      final uri = homeserver.resolve(
-        '/_synapse/client/single_space/v1/companies',
-      ).replace(queryParameters: {'query': query});
+      final uri = homeserver
+          .resolve('/_synapse/client/single_space/v1/companies')
+          .replace(queryParameters: {'query': query});
       final response = await http.get(
         uri,
         headers: {'Authorization': 'Bearer $accessToken'},
@@ -193,11 +197,7 @@ class SingleSpaceService {
       _companyChildrenCache[company.roomId] = _CompanyChildrenCache(ids);
       return ids;
     } catch (e, s) {
-      Logs().w(
-        '[SingleSpace] hierarchy of ${company.roomId} failed',
-        e,
-        s,
-      );
+      Logs().w('[SingleSpace] hierarchy of ${company.roomId} failed', e, s);
       // Положительный кэш писать опасно: ошибка временная. Не кэшируем.
       return const {};
     }

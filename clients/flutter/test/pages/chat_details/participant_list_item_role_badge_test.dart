@@ -88,19 +88,19 @@ void main() {
     expect(find.text('Только в дочерних чатах'), findsNothing);
   });
 
-  testWidgets('членство в компании + PL>=100 -> "Админ компании"', (
+  testWidgets('членство в компании + PL 99 -> "Админ компании"', (
     tester,
   ) async {
     final member = const SpaceMember(
       userId: '@bob:srv',
       membershipInSpace: 'join',
-      maxPowerLevel: 100,
+      maxPowerLevel: 99,
       elevatedRooms: [],
     );
     await tester.pumpWidget(
       _wrap(
         ParticipantListItem(
-          user(powerLevel: 100),
+          user(powerLevel: 99),
           spaceMember: member,
           isCompanyRoom: true,
         ),
@@ -112,19 +112,19 @@ void main() {
     expect(find.text('Админ компании'), findsOneWidget);
   });
 
-  testWidgets('членство в суб-пространстве + PL>=100 -> "Админ пространства"', (
+  testWidgets('членство в суб-пространстве + PL 99 -> "Админ пространства"', (
     tester,
   ) async {
     final member = const SpaceMember(
       userId: '@bob:srv',
       membershipInSpace: 'join',
-      maxPowerLevel: 100,
+      maxPowerLevel: 99,
       elevatedRooms: [],
     );
     await tester.pumpWidget(
       _wrap(
         ParticipantListItem(
-          user(powerLevel: 100),
+          user(powerLevel: 99),
           spaceMember: member,
           isCompanyRoom: false,
         ),
@@ -243,4 +243,35 @@ void main() {
     expect(find.text('Модератор компании'), findsNothing);
     expect(find.text('Только в дочерних чатах'), findsNothing);
   });
+  // ledger:RL-room-owner-transfer — AC-15: PL 100 подписан «Владелец компании/пространства», а не
+  // «Админ компании/пространства» ∀ {компания, подпространство}.
+  for (final isCompany in [true, false]) {
+    testWidgets(
+      'AC:RL-room-owner-transfer/15 PL 100 в '
+      '${isCompany ? 'компании' : 'подпространстве'} -> "Владелец компании/пространства"',
+      (tester) async {
+        final member = const SpaceMember(
+          userId: '@bob:srv',
+          membershipInSpace: 'join',
+          maxPowerLevel: 100,
+          elevatedRooms: [],
+        );
+        await tester.pumpWidget(
+          _wrap(
+            ParticipantListItem(
+              user(powerLevel: 100),
+              spaceMember: member,
+              isCompanyRoom: isCompany,
+            ),
+            client,
+            store,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Владелец'), findsOneWidget);
+        expect(find.text('Админ компании'), findsNothing);
+        expect(find.text('Админ пространства'), findsNothing);
+      },
+    );
+  }
 }

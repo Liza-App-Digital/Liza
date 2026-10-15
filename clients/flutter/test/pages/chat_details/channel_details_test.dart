@@ -195,7 +195,8 @@ void main() {
       expect(controller.contains('deleteChannelAction'), isTrue);
       expect(view.contains('deleteChannelAction'), isTrue);
       // Пункт «Удалить канал» — необратимая по смыслу операция: гейт должен
-      // требовать И isChannel, И полные права (>= 100), а не любое из двух.
+      // требовать И isChannel, И права админа (>= adminPowerLevel = 99, с
+      // 2026-10-14 владелец 100 / админ 99), а не любое из двух.
       // Матчим точную форму условия целиком (не отдельные токены), иначе
       // `room.isChannel` (без power level) тоже прошёл бы этот тест.
       final deleteBlockStart = view.indexOf(
@@ -217,12 +218,14 @@ void main() {
       final ifCondition = view.substring(ifStart, deleteBlockStart);
       expect(
         _normalize(ifCondition).startsWith(
-          _normalize('if (room.isChannel && room.ownPowerLevel >= 100)'),
+          _normalize(
+            'if (room.isChannel && room.ownPowerLevel >= adminPowerLevel)',
+          ),
         ),
         isTrue,
         reason:
             'пункт «Удалить канал» должен гейтиться ровно по '
-            'room.isChannel && room.ownPowerLevel >= 100',
+            'room.isChannel && room.ownPowerLevel >= adminPowerLevel',
       );
     });
 
@@ -232,19 +235,19 @@ void main() {
         isTrue,
         reason: 'настройки видимости/прав скрываются от гостей канала',
       );
-      // Точная форма присваивания: инверсия `>= 100` → `< 100` меняет только
+      // Точная форма присваивания: инверсия `>=` → `<` меняет только
       // одну подстроку, а токен `canEditChannelSettings` остаётся в файле
       // при любом значении условия — его наличие ничего не гарантирует.
       expect(
         viewNormalized.contains(
           _normalize(
-            'final canEditChannelSettings = !room.isChannel || room.ownPowerLevel >= 100;',
+            'final canEditChannelSettings = !room.isChannel || room.ownPowerLevel >= adminPowerLevel;',
           ),
         ),
         isTrue,
         reason:
             'canEditChannelSettings должен быть '
-            '!room.isChannel || room.ownPowerLevel >= 100 дословно',
+            '!room.isChannel || room.ownPowerLevel >= adminPowerLevel дословно',
       );
     });
 

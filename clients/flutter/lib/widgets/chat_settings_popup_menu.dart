@@ -289,7 +289,8 @@ class ChatSettingsPopupMenuState extends State<ChatSettingsPopupMenu> {
     );
   }
 
-  /// Выход из канала с передачей прав, если уходит ЕДИНСТВЕННЫЙ админ (п.7).
+  /// Выход из канала с передачей владения, если уходит ЕДИНСТВЕННЫЙ владелец
+  /// (п.7; с 2026-10-14 «админ» здесь = владелец PL 100, см. ownerPowerLevel).
   ///
   /// `true` — случай канала обработан (преемник назначен ИЛИ канала
   /// единственного участника удалён), обычный выход не нужен. `false` — я не
@@ -317,10 +318,11 @@ class ChatSettingsPopupMenuState extends State<ChatSettingsPopupMenu> {
     final joined = participants
         .where((u) => u.membership == Membership.join)
         .toList();
-    final admins = joined
-        .where((u) => u.powerLevel >= adminPowerLevel)
-        .toList();
-    final iAmSoleAdmin = admins.length == 1 && admins.first.id == myId;
+    // «Единственный» считаем по владельцам (PL 100), а не по админам-99:
+    // уход владельца при живых админах иначе оставил бы канал без того, кто
+    // может снять админа. Преемником тогда станет админ с наибольшим PL.
+    final owners = joined.where((u) => isOwnerLevel(u.powerLevel)).toList();
+    final iAmSoleAdmin = owners.length == 1 && owners.first.id == myId;
     if (!iAmSoleAdmin) return false;
 
     final hidden = room.hiddenMemberIds;
@@ -372,7 +374,7 @@ class ChatSettingsPopupMenuState extends State<ChatSettingsPopupMenu> {
     final result = await showFutureLoadingDialog(
       context: context,
       future: () async {
-        await room.setPower(successorId, adminPowerLevel);
+        await room.setPower(successorId, ownerPowerLevel);
         await room.leave();
       },
     );

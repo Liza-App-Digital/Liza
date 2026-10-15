@@ -347,10 +347,11 @@ void main() {
     expect(find.text('Чат'), findsOneWidget);
   });
 
-  // AC:RL-company-members-access/16 — подписи чекбоксов фильтра укорочены до
-  // однострочных «На сервере»/«В компании» (guard от отката строки; визуальная
-  // проверка «влезает без …» — manual M-7). Читаем реальный сгенерированный
-  // L10n, а не литерал.
+  // AC:RL-company-members-access/16 — подписи чекбоксов фильтра короткие
+  // однострочные: «На сервере {server}» (имя сервера — с 2026-10-14,
+  // RL-member-filter-useful-checkboxes) и «В компании» (guard от отката
+  // строки; визуальная проверка «влезает без …» — manual M-7). Читаем
+  // реальный сгенерированный L10n, а не литерал.
   testWidgets('короткие подписи чекбоксов фильтра (ru)', (tester) async {
     L10n? l10n;
     await tester.pumpWidget(
@@ -367,7 +368,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(l10n!.memberFilterOnServer, 'На сервере');
+    expect(l10n!.memberFilterOnServer('Агро'), 'На сервере Агро');
     expect(l10n!.memberFilterInCompany, 'В компании');
   });
 

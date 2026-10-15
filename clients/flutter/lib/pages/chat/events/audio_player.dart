@@ -46,11 +46,30 @@ class AudioPlayerWidget extends StatefulWidget {
     required this.linkColor,
     required this.fontSize,
     this.trailing,
+    this.autoTranscribe = false,
     super.key,
   });
 
+  /// Личка с ИИ-ботом: расшифровка голосового раскрывается сама, без тапа по 🎤
+  /// (Роман, 14.10: «в чате должен текст появиться»). RL-ai-dm-voice-auto-transcript.
+  final bool autoTranscribe;
+
+  /// Старше — только ручная 🎤: открытие давнего чата не должно расшифровывать
+  /// всю историю (лимит сервера — 10 запросов в минуту на человека).
+  static const Duration autoTranscribeMaxAge = Duration(hours: 24);
+
   @override
   AudioPlayerState createState() => AudioPlayerState();
+}
+
+/// Личка с ИИ-ботом — там голосовое показывает расшифровку само. Бота узнаём
+/// синхронно по домену `bots.liza.ru` ∪ роли `ai` (её кэш ленивый: когда роли
+/// подтянутся, пузырь перестроится и [AudioPlayerState.didUpdateWidget]
+/// запустит расшифровку). `@support` — живой оператор, ему текст не нужен.
+bool isAiDirectChat(BuildContext context, Room room) {
+  final dm = room.directChatMatrixID;
+  if (dm == null || dm.split(':').first == '@support') return false;
+  return Matrix.of(context).isBotOrAiUser(dm);
 }
 
 enum AudioPlayerStatus { notDownloaded, downloading, downloaded }
@@ -381,6 +400,74 @@ class AudioPlayerState extends State<AudioPlayerWidget> {
     setState(() {});
   }
 
+  @override
+  void didUpdateWidget(covariant AudioPlayerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Пузырь переиспользован под другое событие (локальное эхо → серверный id,
+    // соседний элемент списка): чужая расшифровка в нём остаться не должна.
+    if (oldWidget.event.eventId != widget.event.eventId ||
+        oldWidget.autoTranscribe != widget.autoTranscribe) {
+      _transcriptionText = null;
+      _isTranscribing = false;
+      _restoreTranscription();
+    }
+  }
+
+  /// Текст из кэша — синхронно, до первого кадра (без мигания при скролле);
+  /// иначе, если положено, — авто-расшифровка после кадра.
+  void _restoreTranscription() {
+    if (!_isVoiceMessage) return;
+    _transcriptionText = matrix.transcriptionService.cachedText(widget.event);
+    if (_transcriptionText != null || !_shouldAutoTranscribe) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _autoTranscribe();
+    });
+  }
+
+  bool get _shouldAutoTranscribe {
+    final event = widget.event;
+    return widget.autoTranscribe &&
+        event.status.isSent &&
+        DateTime.now().difference(event.originServerTs) <
+            AudioPlayerWidget.autoTranscribeMaxAge;
+  }
+
+  Future<void> _autoTranscribe() async {
+    if (_transcriptionText != null || _isTranscribing) return;
+    final event = widget.event;
+    setState(() => _isTranscribing = true);
+    try {
+      final text = await matrix.transcriptionService.autoTranscribe(event);
+      if (!mounted || widget.event.eventId != event.eventId) return;
+      setState(() {
+        _transcriptionText = text;
+        _isTranscribing = false;
+      });
+    } catch (e) {
+      // Тихо: авто-попытка не должна сыпать SnackBar на каждый пузырь; 🎤
+      // остаётся для ручного повтора. В мониторинг — только не транспортные
+      // сбои (занятость/таймаут/сеть/лимит — шум, а не баг), один раз на
+      // событие (сервис не повторяет проваленное).
+      if (e is TranscriptionException &&
+          !const {
+            TranscriptionErrorKind.serviceBusy,
+            TranscriptionErrorKind.timeout,
+            TranscriptionErrorKind.network,
+          }.contains(e.kind) &&
+          e.statusCode != 429) {
+        Monitoring.reportAudioIssue(
+          prefix: Monitoring.audioTranscriptionFailurePrefix,
+          reason: 'transcription-auto-${e.kind.name}',
+          host: event.room.client.homeserver?.host,
+          context: audioIssueContext(event),
+        );
+      }
+      if (mounted && widget.event.eventId == event.eventId) {
+        setState(() => _isTranscribing = false);
+      }
+    }
+  }
+
   void _onTranscribe() async {
     setState(() => _isTranscribing = true);
     try {
@@ -473,6 +560,7 @@ class AudioPlayerState extends State<AudioPlayerWidget> {
     if (!_initialized) {
       _initialized = true;
       matrix = Matrix.of(context);
+      _restoreTranscription();
     }
     _scaffoldMessenger = ScaffoldMessenger.of(context);
 

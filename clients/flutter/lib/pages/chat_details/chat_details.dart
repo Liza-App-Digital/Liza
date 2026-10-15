@@ -385,13 +385,13 @@ class ChatDetailsController extends State<ChatDetails> {
     );
     // getParticipants() отдаёт только локально загруженный (при lazy
     // loading — неполный) список. requestParticipants() догружает полный
-    // список членов с сервера (/members), иначе часть админов PL>=100
+    // список членов с сервера (/members), иначе часть админов PL>=99
     // может не попасть в инвайты и не получить зеркало своих постов.
     final participants = await channel.requestParticipants();
     final admins = participants
         .where(
           (u) =>
-              channel.getPowerLevelByUserId(u.id) >= 100 &&
+              channel.getPowerLevelByUserId(u.id) >= adminPowerLevel &&
               u.id != client.userID,
         )
         .map((u) => u.id)

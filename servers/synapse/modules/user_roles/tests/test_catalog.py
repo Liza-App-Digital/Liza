@@ -106,6 +106,10 @@ class CatalogMigrationTestCase(unittest.TestCase):
         self.assertEqual(ai["display_name"], "ИИ")
         self.assertEqual(ai["color"], "#4CAF50")
 
+        # Тег «Разработчик» отличим от зелёного «ИИ»/«Бот» с первого старта инстанса.
+        developer = next(r for r in rows if r["code"] == "developer")
+        self.assertEqual(developer["color"], "#1565C0")
+
     def test_seed_keeps_existing_rows_unchanged(self) -> None:
         _run(self.catalog.ensure_schema())
         # simulate an operator UPDATE outside the catalog API
@@ -324,6 +328,29 @@ class CatalogUsersByRoleTestCase(unittest.TestCase):
         self._insert("@bob:test", "com.liza.user_role", {"role": "ami"})
         users = _run(self.catalog.users_with_role("a_i"))
         self.assertEqual(users, ["@alice:test"])
+
+    def test_users_with_role_matches_json_with_spaces(self) -> None:
+        # Регрессия: на проде есть записи, сохранённые мимо json_encoder —
+        # {"role": "developer"} с пробелами; подстрочный LIKE их не находил,
+        # и рассылка после PATCH каталога обходила этих носителей.
+        self.pool._conn.execute(
+            "INSERT INTO account_data VALUES (?, ?, ?)",
+            ("@daniel:test", "com.liza.user_role", '{"role": "developer", "role_v2": null}'),
+        )
+        self._insert("@nadezhda:test", "com.liza.user_role", {"role": "developer"})
+        self._insert("@x:test", "com.liza.user_role", {"role": "developerx"})
+        users = _run(self.catalog.users_with_role("developer"))
+        self.assertEqual(sorted(users), ["@daniel:test", "@nadezhda:test"])
+
+    def test_users_with_role_ignores_code_in_other_fields(self) -> None:
+        # Код в extra_roles/role_v2 не делает человека носителем основной роли.
+        self._insert(
+            "@owner:test",
+            "com.liza.user_role",
+            {"role": "admin", "extra_roles": ["developer"]},
+        )
+        users = _run(self.catalog.users_with_role("developer"))
+        self.assertEqual(users, [])
 
 
 class CatalogSnapshotTestCase(unittest.TestCase):

@@ -25,7 +25,9 @@ class InvitationSelectionController extends State<InvitationSelection> {
   TextEditingController controller = TextEditingController();
   late String currentSearchTerm;
   bool loading = false;
-  List<Profile> foundProfiles = [];
+  /// Выдача поиска, разбитая на «Люди» / «Боты и ИИ»
+  /// (RL-search-people-vs-bots-sections).
+  PeopleAndBots foundProfiles = const PeopleAndBots();
   Timer? coolDown;
 
   String? get roomId => widget.roomId;
@@ -102,7 +104,7 @@ class InvitationSelectionController extends State<InvitationSelection> {
   void searchUser(BuildContext context, String text) async {
     coolDown?.cancel();
     if (text.isEmpty) {
-      setState(() => foundProfiles = []);
+      setState(() => foundProfiles = const PeopleAndBots());
     }
     currentSearchTerm = text;
     if (currentSearchTerm.isEmpty) return;
@@ -166,10 +168,21 @@ class InvitationSelectionController extends State<InvitationSelection> {
       merged,
     );
 
-    final pinned = pinAiProfilesFirst(
+    PeopleAndBots partition() => partitionPeopleAndBots(
       hydrated,
-      isAi: (p) => matrix.isAiUser(p.userId),
+      isBotOrAi: matrix.isBotOrAiUser,
       lizaMxid: MatrixState.lizaMxid,
+    );
+
+    // Роли решают раздел («Боты и ИИ» — по роли ai) и шильдик. Ждём их перед
+    // публикацией, но не дольше таймаута; поздний ответ переразбивает уже
+    // показанную выдачу, если запрос всё ещё актуален.
+    await waitForRolesBounded(
+      matrix.userRoleService.fetchRoles(hydrated.map((p) => p.userId)),
+      onLate: () {
+        if (!mounted || currentSearchTerm != text) return;
+        setState(() => foundProfiles = partition());
+      },
     );
 
     // Пока шли запросы, пользователь мог дописать символы — результат
@@ -177,14 +190,8 @@ class InvitationSelectionController extends State<InvitationSelection> {
     // (тот же приём, что в chat_list.dart).
     if (!mounted || currentSearchTerm != text) return;
     setState(() {
-      foundProfiles = pinned;
+      foundProfiles = partition();
     });
-    // Префетч ролей: badge перерисуется сам через rolesVersion.
-    unawaited(
-      matrix.userRoleService.fetchRoles(
-        foundProfiles.map((p) => p.userId),
-      ),
-    );
   }
 
   @override

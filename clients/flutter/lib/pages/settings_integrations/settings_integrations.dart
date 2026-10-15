@@ -3,9 +3,12 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
+import 'package:collection/collection.dart';
+
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/utils/direct_chat_ensure.dart';
+import 'package:liza/utils/miniapp_room.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/settings_integrations/settings_integrations_view.dart';
 import 'package:liza/utils/mcp_connections.dart';
@@ -60,8 +63,7 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
   /// максимум один блок.
   void toggleDetails(McpServer server) {
     setState(() {
-      expandedDetailsCard =
-          expandedDetailsCard == server.id ? null : server.id;
+      expandedDetailsCard = expandedDetailsCard == server.id ? null : server.id;
       if (expandedDetailsCard != null) expandedKeyForm = null;
     });
   }
@@ -77,14 +79,14 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
   /// Показывать ли статус «ключ нечитаем» вместо «Подключено».
   bool get keyUnreadable => isConnected && _keyUnreadable;
 
-  /// DM с Лизой ИИ — комната, где живёт state-event с подключениями.
-  Room? get lizaRoom {
-    final client = Matrix.of(context).client;
-    for (final room in client.rooms) {
-      if (room.directChatMatrixID == MatrixState.lizaMxid) return room;
-    }
-    return null;
-  }
+  /// Основной DM с Лизой ИИ — комната, где живёт state-event с подключениями.
+  /// Не первый попавшийся DM с @liza: это мог быть запрос или mini App-чат, а
+  /// бот читает подключения из основного (в запросах — тоже из него). Предикат
+  /// по m.direct, как у закрепления: member-стейт Лизы в partial-комнате на этом
+  /// экране может быть не загружен.
+  Room? get lizaRoom => Matrix.of(context).client.rooms.firstWhereOrNull(
+    (r) => isLizaAssistantRoom(r, MatrixState.lizaMxid),
+  );
 
   /// Авторитетный набор включённых расширений — спрошенный у СЕРВЕРА.
   /// `null` = ещё не спросили (или спросить не удалось) — тогда показываем
@@ -123,10 +125,7 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
       _checkKeyReadable();
       _refreshEnabled();
       // Правка с другого устройства/ботом: перечитываем авторитетно.
-      _syncSub = Matrix.of(context)
-          .client
-          .onSync
-          .stream
+      _syncSub = Matrix.of(context).client.onSync.stream
           .where(McpConnections.syncAffectsConnections)
           .listen((_) => _refreshEnabled());
     });

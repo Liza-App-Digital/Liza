@@ -1,4 +1,6 @@
 // ledger:RL-create-menu-order-agent-entry
+// ledger:RL-liza-multi-dm-new-request
+// AC:RL-liza-multi-dm-new-request/4 — «Новый запрос» первым (AC-1 ниже).
 //
 // Страж состава и порядка меню «+» шапки списка чатов. guard.render:pure-function —
 // `createMenuSections` и есть единственный источник пунктов в ChatListHeader
@@ -33,6 +35,7 @@ void main() {
       final s = sections(role, mobile);
       final reason = 'role=$role mobile=$mobile';
       expect(s.first, [
+        _A.newRequest,
         _A.group,
         if (role == _Role.admin) _A.channel,
         _A.story,

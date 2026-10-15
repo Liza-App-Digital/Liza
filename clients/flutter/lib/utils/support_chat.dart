@@ -8,6 +8,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/composer_draft.dart';
 import 'package:liza/utils/direct_chat_ensure.dart';
 import 'package:liza/utils/support_intent.dart';
+import 'package:liza/widgets/adaptive_dialogs/adaptive_dialog_action.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/matrix.dart';
 
@@ -110,4 +111,45 @@ Future<void> openSupportChat(
   } finally {
     _opening[activeClient] = null;
   }
+}
+
+/// «Создать компанию» (rail-«+», плашка на чипе «Компании»): попап с описанием
+/// компаний → «Оставить заявку» открывает чат поддержки сразу в сборе заявки.
+/// Своя адаптивная обёртка, а не `showOkCancelAlertDialog`: тот режет ширину до
+/// 256 и не прокручивается, а текст постановщика — ~520 символов в 4 абзаца.
+/// Спека: docs/superpowers/specs/2026-10-14-create-company-popup-design.md.
+Future<void> confirmCreateCompanyRequest(BuildContext context) async {
+  // Второго попапа от двойного тапа не будет без своего гейта: push маршрута
+  // глушит указатели до следующего кадра, а дальше вход закрыт барьером.
+  final l10n = L10n.of(context);
+  final confirmed = await showAdaptiveDialog<bool>(
+    context: context,
+    useRootNavigator: true,
+    builder: (context) => AlertDialog.adaptive(
+      scrollable: true,
+      title: Text(l10n.createCompanyViaSupport),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Text(
+          l10n.createCompanyIntroText,
+          key: const ValueKey('create_company_intro_text'),
+        ),
+      ),
+      actions: [
+        AdaptiveDialogAction(
+          key: const ValueKey('create_company_intro_cancel'),
+          onPressed: () => Navigator.of(context).pop<bool>(false),
+          child: Text(l10n.cancel),
+        ),
+        AdaptiveDialogAction(
+          key: const ValueKey('create_company_intro_request'),
+          onPressed: () => Navigator.of(context).pop<bool>(true),
+          autofocus: true,
+          child: Text(l10n.createCompanyLeaveRequest),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true || !context.mounted) return;
+  await openSupportChat(context, intent: SupportIntent.createCompanyRequest);
 }

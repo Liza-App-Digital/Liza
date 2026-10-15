@@ -2,6 +2,7 @@
 
 SPACE_TYPE = "m.space"
 SPACE_PARENT_EVENT = "m.space.parent"
+SPACE_PARENT_MARKER = "io.liza.has_space_parent"
 MEMBER_EVENT = "m.room.member"
 PROTECTED_MEMBERSHIPS = ("leave", "ban")
 
@@ -19,6 +20,50 @@ def is_root_space_creation(config: dict) -> bool:
         ev.get("type") == SPACE_PARENT_EVENT for ev in initial_state
     )
     return not has_parent
+
+
+def has_initial_space_parent(config: dict) -> bool:
+    """True если createRoom-конфиг объявляет родителя в initial_state."""
+    initial_state = config.get("initial_state") or []
+    return any(
+        isinstance(ev, dict)
+        and ev.get("type") == SPACE_PARENT_EVENT
+        and bool(ev.get("state_key"))
+        for ev in initial_state
+    )
+
+
+def apply_space_parent_marker(config: dict) -> None:
+    """Пометить в creation_content, что комната рождается с родителем.
+
+    Автодобавление в компанию решается на m.room.create, а initial_state
+    применяется позже — без маркера группа, созданная в подпространстве,
+    уходила ещё и в главное пространство (второй входящий m.space.child).
+    Маркер едет в content самого m.room.create, то есть привязан к комнате, а
+    не к sender: параллельные createRoom не путаются, упавший createRoom не
+    оставляет висящей пометки. Ставит его только сервер — присланный клиентом
+    без настоящего m.space.parent снимается.
+
+    Маркер не отменяет автодобавление, а ОТКЛАДЫВАЕТ его (auto_add_delay_ms):
+    parent в initial_state сервер не проверяет, а клиент пишет m.space.child
+    отдельным запросом и может не успеть (упал, сеть). Если к сроку входящего
+    m.space.child нет — комната вкладывается в компанию как обычно.
+    """
+    creation_content = config.get("creation_content")
+    if has_initial_space_parent(config):
+        if not isinstance(creation_content, dict):
+            creation_content = {}
+            config["creation_content"] = creation_content
+        creation_content[SPACE_PARENT_MARKER] = True
+    elif isinstance(creation_content, dict):
+        creation_content.pop(SPACE_PARENT_MARKER, None)
+
+
+def auto_add_delay_ms(create_content: dict, grace_ms: int) -> int:
+    """Через сколько мс вкладывать новую комнату в компанию: 0 — сразу."""
+    if create_content.get(SPACE_PARENT_MARKER) is True:
+        return grace_ms
+    return 0
 
 
 def is_dm_creation(config: dict) -> bool:
@@ -124,3 +169,15 @@ def deduplicate_companies(companies: list[dict]) -> list[dict]:
         seen.add(rid)
         result.append(c)
     return result
+
+
+def root_response(room_id: str | None, company: bool) -> dict:
+    """Тело ответа GET /single_space/v1/root.
+
+    ``company`` — класс инстанса (= ``auto_add_new``): компания, где все чаты
+    живут в одном главном пространстве, или общий инстанс (users.liza.ru, bots,
+    стенд). Клиент по нему включает гейт приглашений «кнопка у всех, без права —
+    плашка» (задача 13, спека 2026-10-14-search-sections-and-company-invite-
+    admin-only). Старый сервер поля не отдаёт — клиент читает это как false.
+    """
+    return {"exists": room_id is not None, "room_id": room_id, "company": bool(company)}

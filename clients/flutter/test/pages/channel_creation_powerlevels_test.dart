@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:liza/pages/new_group/new_group.dart';
 import 'package:liza/utils/chat_topology.dart';
 
 // Спек 2026-07-30 §1.8. Канал создаётся с events_default: 100 (постить может

@@ -668,6 +668,17 @@
     "type": "String",
     "placeholders": {}
   },
+  "createCompanyIntroText": "Привет! Коротко о функционале компаний:\n\n🏢 Компания — ваш собственный мессенджер внутри Liza с отдельным сервером и базой данных для команды и клиентов.\n\n👥 Гибкая настройка ролей — назначение Модераторов и Администраторов под свои задачи.\n\nЧто это даёт:\n- данные компании изолированы от чужих;\n- при увольнении сотрудника доступ легко отключается;\n- видно, кто к чему имеет доступ в соответствии с ролью;\n- можно переписываться с другими пользователями Liza.",
+  "@createCompanyIntroText": {
+    "type": "String",
+    "placeholders": {},
+    "description": "Попап «Создать компанию». Текст — дословная копия COMPANY_INTRO_TEXT (servers/liza-bot-api/support/cards.py): правишь одно — правь и другое."
+  },
+  "createCompanyLeaveRequest": "Оставить заявку",
+  "@createCompanyLeaveRequest": {
+    "type": "String",
+    "placeholders": {}
+  },
   "companyName": "Название компании",
   "@companyName": {
     "type": "String",
@@ -2636,6 +2647,10 @@
   "@recoveryKeyLost": {},
   "users": "Пользователи",
   "@users": {},
+  "searchSectionPeople": "Люди",
+  "@searchSectionPeople": {"description": "Поиск людей: заголовок раздела с людьми (задача 12, RL-search-people-vs-bots-sections)"},
+  "searchSectionBotsAndAi": "Боты и ИИ",
+  "@searchSectionBotsAndAi": {"description": "Поиск людей: заголовок раздела с ботами и ИИ-ассистентами (задача 12, RL-search-people-vs-bots-sections)"},
   "unlockOldMessages": "Разблокировать старые сообщения",
   "@unlockOldMessages": {},
   "storeInSecureStorageDescription": "Сохраните ключ восстановления в безопасном хранилище этого устройства.",
@@ -2969,8 +2984,14 @@
   "@unbanUserDescriptionChannel": {},
   "pushNotificationsNotAvailable": "Push-уведомления недоступны",
   "@pushNotificationsNotAvailable": {},
-  "makeAdminDescription": "Как только вы назначите этого пользователя администратором, вы не сможете этого отменить, так как их права доступа и ваши будут одинаковы.",
+  "makeAdminDescription": "Администратор сможет управлять участниками и назначать модераторов. Снять права администратора сможет только владелец.",
   "@makeAdminDescription": {},
+  "roomOwner": "Владелец",
+  "@roomOwner": {"description": "Роль участника с PL 100 (владелец комнаты, спека 2026-10-14-room-owner-role-design)"},
+  "transferOwnership": "Передать владение",
+  "@transferOwnership": {"description": "Пункт меню участника: передать владение (получателю 100, себе 99)"},
+  "transferOwnershipDescription": "{username} станет владельцем. Вы останетесь администратором, и менять вашу роль сможет только новый владелец.",
+  "@transferOwnershipDescription": {"description": "Подтверждение передачи владения", "placeholders": {"username": {"type": "String"}}},
   "archiveRoomDescription": "Вы выйдете из чата — он переместится в архив. Другие участники останутся в чате и увидят, что вы вышли. Удалить чат насовсем можно в разделе «Архив».",
   "leaveChatAction": "Выйти из чата",
   "leaveSpaceDescription": "Вы покинете это пространство. У других участников оно сохранится.",
@@ -3027,6 +3048,10 @@
   "@wrongRecoveryKey": {},
   "groupName": "Название группы",
   "@groupName": {},
+  "groupPlace": "Где создать",
+  "@groupPlace": {"description": "Экран «Создать группу»: выбор компании/подпространства (newInterface 10)"},
+  "groupPlaceAuto": "Автоматически",
+  "@groupPlaceAuto": {"description": "Пункт выбора места по умолчанию: группа создаётся как раньше, без явного родителя"},
   "databaseMigrationTitle": "База данных оптимизированна",
   "@databaseMigrationTitle": {},
   "searchChatsRooms": "Поиск #чатов, @людей...",
@@ -3969,6 +3994,10 @@
   "resume": "Резюмировать",
   "@resume": {},
   "newSubSpace": "Новое подпространство",
+  "createChatInSpace": "Создать чат",
+  "@createChatInSpace": {
+    "description": "Заметная кнопка на экране компании/подпространства: создать группу внутри него."
+  },
   "@newSubSpace": {},
   "moveToDifferentSpace": "Переместить в другое пространство",
   "@moveToDifferentSpace": {},
@@ -4299,6 +4328,8 @@
   "@createMiniApp": {},
   "connectAiAgent": "Подключить ИИ-агента",
   "@connectAiAgent": {},
+  "newLizaRequest": "Новый запрос",
+  "@newLizaRequest": {},
   "channelComments": "Комментарии",
   "@channelComments": {},
   "enableChannelComments": "Включить комментарии",
@@ -4381,7 +4412,7 @@
   "@changeTheVisibilityOfChannelHistory": {},
   "editChannelAvatar": "Изменить аватар канала",
   "@editChannelAvatar": {},
-  "channelLeaveSoleAdminMessage": "Вы единственный администратор этого канала. После вашего выхода администратором станет {username}.",
+  "channelLeaveSoleAdminMessage": "Вы владелец этого канала. После вашего выхода владельцем станет {username}.",
   "@channelLeaveSoleAdminMessage": {
     "type": "String",
     "placeholders": {
@@ -4836,10 +4867,37 @@
   "@roleFilterModerators": {},
   "roleFilterUsers": "Пользователи",
   "@roleFilterUsers": {},
-  "memberFilterOnServer": "На сервере",
-  "@memberFilterOnServer": {},
+  "memberFilterOnServer": "На сервере {server}",
+  "@memberFilterOnServer": {
+    "type": "String",
+    "placeholders": {
+      "server": {
+        "type": "String"
+      }
+    }
+  },
   "memberFilterInCompany": "В компании",
   "@memberFilterInCompany": {},
+  "memberFiltersAllFromServerAndCompany": "Все пользователи — с сервера {server} и из компании",
+  "@memberFiltersAllFromServerAndCompany": {
+    "type": "String",
+    "placeholders": {
+      "server": {
+        "type": "String"
+      }
+    }
+  },
+  "memberFiltersAllFromServer": "Все пользователи — с сервера {server}",
+  "@memberFiltersAllFromServer": {
+    "type": "String",
+    "placeholders": {
+      "server": {
+        "type": "String"
+      }
+    }
+  },
+  "memberFiltersAllFromCompany": "Все пользователи — из компании",
+  "@memberFiltersAllFromCompany": {},
   "accessManagement": "Управление доступами",
   "@accessManagement": {},
   "accessDossierServer": "Сервер",
@@ -4914,10 +4972,14 @@
   "@memberViaChildRoomsOnly": {},
   "roleAdminOfCompany": "Админ компании",
   "@roleAdminOfCompany": {},
+  "roleOwnerOfCompany": "Владелец компании",
+  "@roleOwnerOfCompany": {},
   "roleModeratorOfCompany": "Модератор компании",
   "@roleModeratorOfCompany": {},
   "roleAdminOfSpace": "Админ пространства",
   "@roleAdminOfSpace": {},
+  "roleOwnerOfSpace": "Владелец пространства",
+  "@roleOwnerOfSpace": {},
   "roleModeratorOfSpace": "Модератор пространства",
   "@roleModeratorOfSpace": {},
   "roleAdminInRooms": "{count, plural, one{Админ в {count} сущности} few{Админ в {count} сущностях} many{Админ в {count} сущностях} other{Админ в {count} сущностях}}",
@@ -5198,5 +5260,9 @@
   "botCommandsMenu": "Команды бота",
   "@botCommandsMenu": {"description": "Кнопки и меню команд бота (bot-api-compat-fixes)"},
   "captionSentSeparately": "Подпись длиннее {limit} символов — текст уйдёт отдельным сообщением после файлов.",
-  "@captionSentSeparately": {"description": "Подпись длиннее лимита уходит отдельным сообщением (заявка №52)", "placeholders": {"limit": {"type": "int"}}}
+  "@captionSentSeparately": {"description": "Подпись длиннее лимита уходит отдельным сообщением (заявка №52)", "placeholders": {"limit": {"type": "int"}}},
+  "storiesBarOpenChatWith": "Открыть чат с {name}",
+  "@storiesBarOpenChatWith": {"description": "Сторис-лента: подпись для скринридера у тайла частого собеседника (тап открывает личный чат)", "placeholders": {"name": {"type": "String"}}},
+  "inviteNotAllowed": "У вас недостаточно прав для приглашения пользователей",
+  "@inviteNotAllowed": {"description": "Плашка: у пользователя компании нет права приглашать (порог invite в power_levels пространства)"}
 }

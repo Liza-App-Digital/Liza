@@ -9,6 +9,7 @@ import 'package:liza/pages/chat_details/chat_details.dart';
 import 'package:liza/utils/auth_proxy_service.dart';
 import 'package:liza/utils/channel_discussion.dart';
 import 'package:liza/utils/chat_topology.dart';
+import 'package:liza/utils/company_invite_gate.dart';
 import 'package:liza/utils/miniapp_member_block.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/pages/chat_details/participant_list_item.dart';
@@ -93,6 +94,14 @@ class ChatDetailsView extends StatelessWidget {
         final inviteThreshold =
             (powerLevelsContent?.tryGet<int>('invite')) ?? 50;
         final canManageInviteLink = room.ownPowerLevel >= inviteThreshold;
+        // В пространстве компании оба входа приглашения видны всем; без права
+        // invite тап показывает плашку (задача 13, ensureCanInviteToSpace).
+        final companySpace = isOwnCompanySpace(
+          room,
+          companyInstance: Matrix.of(
+            context,
+          ).singleSpaceService.isCompanyInstance,
+        );
         // Раздел «Заблокированные/удалённые» — только владельцу/модератору
         // чата-магазина (mini App): управление блокировками по порогу ban.
         final banThreshold = (powerLevelsContent?.tryGet<int>('ban')) ?? 50;
@@ -101,7 +110,7 @@ class ChatDetailsView extends StatelessWidget {
         // Гости канала (без PL владельца) не должны видеть настройки, которые
         // им всё равно не дадут применить. Обычных чатов гейт не касается.
         final canEditChannelSettings =
-            !room.isChannel || room.ownPowerLevel >= 100;
+            !room.isChannel || room.ownPowerLevel >= adminPowerLevel;
         return Scaffold(
           appBar: AppBar(
             leading:
@@ -509,7 +518,8 @@ class ChatDetailsView extends StatelessWidget {
                               ),
                               onTap: controller.openDiscussionAction,
                             ),
-                          if (room.isChannel && room.ownPowerLevel >= 100)
+                          if (room.isChannel &&
+                              room.ownPowerLevel >= adminPowerLevel)
                             ListTile(
                               leading: CircleAvatar(
                                 backgroundColor: room.hasComments
@@ -532,7 +542,8 @@ class ChatDetailsView extends StatelessWidget {
                                   ? controller.disableChannelComments
                                   : controller.enableChannelComments,
                             ),
-                          if (room.isChannel && room.ownPowerLevel >= 100)
+                          if (room.isChannel &&
+                              room.ownPowerLevel >= adminPowerLevel)
                             ListTile(
                               leading: CircleAvatar(
                                 backgroundColor:
@@ -584,7 +595,8 @@ class ChatDetailsView extends StatelessWidget {
                                 '/rooms/${room.id}/details/members',
                               ),
                             ),
-                          if (!room.isDirectChat && room.canInvite)
+                          if (!room.isDirectChat &&
+                              (room.canInvite || companySpace))
                             ListTile(
                               title: Text(L10n.of(context).inviteContact),
                               leading: CircleAvatar(
@@ -598,10 +610,15 @@ class ChatDetailsView extends StatelessWidget {
                               trailing: const Icon(
                                 Icons.chevron_right_outlined,
                               ),
-                              onTap: () =>
-                                  context.go('/rooms/${room.id}/invite'),
+                              onTap: () {
+                                if (!ensureCanInviteToSpace(context, room)) {
+                                  return;
+                                }
+                                context.go('/rooms/${room.id}/invite');
+                              },
                             ),
-                          if (!room.isDirectChat && canManageInviteLink)
+                          if (!room.isDirectChat &&
+                              (canManageInviteLink || companySpace))
                             ListTile(
                               title: Text(L10n.of(context).getInviteLink),
                               leading: CircleAvatar(
@@ -613,6 +630,9 @@ class ChatDetailsView extends StatelessWidget {
                                 child: const Icon(Icons.link_outlined),
                               ),
                               onTap: () {
+                                if (!ensureCanInviteToSpace(context, room)) {
+                                  return;
+                                }
                                 // Токен для invite-ссылки берём у аккаунта,
                                 // реально СОСТОЯЩЕГО в комнате (room.client) —
                                 // в cross-HS бандле это может быть аккаунт с

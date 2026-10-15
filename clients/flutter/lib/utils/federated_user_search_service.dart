@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -189,27 +190,82 @@ bool applyHydratedProfiles(List<Profile> target, List<Profile> hydrated) {
   return changed;
 }
 
-/// Поднять AI-профили в начало списка, не меняя относительный порядок
-/// остальных. [isAi] — предикат распознавания AI-аккаунта.
+/// Выдача поиска людей, разбитая на разделы «Люди» и «Боты и ИИ»
+/// (задача 12, RL-search-people-vs-bots-sections). Одна форма на всех трёх
+/// экранах поиска: главный экран, «Новый личный чат», приглашение в группу.
+class PeopleAndBots {
+  const PeopleAndBots({this.people = const [], this.botsAndAi = const []});
+
+  final List<Profile> people;
+  final List<Profile> botsAndAi;
+
+  bool get isEmpty => people.isEmpty && botsAndAi.isEmpty;
+
+  bool get isNotEmpty => !isEmpty;
+}
+
+/// Разбить [profiles] на людей и ботов/ИИ, сохраняя относительный порядок
+/// внутри каждого раздела. [isBotOrAi] — общий классификатор
+/// `MatrixState.isBotOrAiUser` (роль `ai` ∪ bot-like MXID).
 ///
-/// Лиза идёт первой среди AI: она — основной ассистент, и во всех трёх
+/// Лиза идёт первой в «Боты и ИИ»: она — основной ассистент, и во всех трёх
 /// экранах поиска ожидается именно вверху. Правило живёт здесь, а не в
 /// вызывающем коде, чтобы экраны не расходились в поведении.
-List<Profile> pinAiProfilesFirst(
-  List<Profile> profiles, {
-  required bool Function(Profile) isAi,
+PeopleAndBots partitionPeopleAndBots(
+  Iterable<Profile> profiles, {
+  required bool Function(String userId) isBotOrAi,
   String? lizaMxid,
 }) {
-  final ai = <Profile>[];
-  final rest = <Profile>[];
+  final bots = <Profile>[];
+  final people = <Profile>[];
   for (final p in profiles) {
-    (isAi(p) ? ai : rest).add(p);
+    (isBotOrAi(p.userId) ? bots : people).add(p);
   }
   if (lizaMxid != null) {
-    final lizaIndex = ai.indexWhere((p) => p.userId == lizaMxid);
+    final lizaIndex = bots.indexWhere((p) => p.userId == lizaMxid);
     if (lizaIndex > 0) {
-      ai.insert(0, ai.removeAt(lizaIndex));
+      bots.insert(0, bots.removeAt(lizaIndex));
     }
   }
-  return [...ai, ...rest];
+  return PeopleAndBots(people: people, botsAndAi: bots);
+}
+
+/// Сколько поиск ждёт роли перед публикацией разделов. Роль `ai` решает, в
+/// какой раздел попадёт бот вне bots.liza.ru; дольше держать выдачу нельзя —
+/// поиск должен оставаться отзывчивым.
+const Duration searchRolesWaitTimeout = Duration(milliseconds: 1500);
+
+/// Ждёт загрузку ролей [roles] не дольше [timeout]. Если роли пришли позже,
+/// вызывает [onLate] — экран переразбивает УЖЕ показанную выдачу (проверку
+/// «запрос ещё актуален» делает сам [onLate]). Ошибка загрузки ролей поиск
+/// не роняет: разбиваем по тому, что есть в кэше.
+///
+/// Без гонки «таймер сработал, а роли пришли в тот же тик»: исход решает
+/// один синхронный флаг `isCompleted`, поэтому [onLate] вызывается ровно
+/// тогда, когда ожидание уже завершилось по таймауту.
+Future<void> waitForRolesBounded(
+  Future<void> roles, {
+  Duration timeout = searchRolesWaitTimeout,
+  void Function()? onLate,
+}) {
+  final waited = Completer<void>();
+  final timer = Timer(timeout, () {
+    if (!waited.isCompleted) waited.complete();
+  });
+  roles.then(
+    (_) {
+      timer.cancel();
+      if (waited.isCompleted) {
+        onLate?.call();
+      } else {
+        waited.complete();
+      }
+    },
+    onError: (Object e, StackTrace s) {
+      timer.cancel();
+      Logs().v('[UserSearch] roles fetch failed', e, s);
+      if (!waited.isCompleted) waited.complete();
+    },
+  );
+  return waited.future;
 }

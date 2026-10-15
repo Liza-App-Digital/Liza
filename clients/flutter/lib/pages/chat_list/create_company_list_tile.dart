@@ -13,7 +13,7 @@ bool shouldShowCreateCompanyRow(
 
 /// Плашка «Создать компанию» под списком компаний. Сам пользователь компанию
 /// создать не может (1 инстанс = 1 компания, личную заводит админ — см.
-/// howItWoks/lizaSpaces.md), поэтому тап ведёт в чат поддержки.
+/// howItWoks/lizaSpaces.md), поэтому тап → попап с описанием → чат поддержки.
 /// Спека: docs/superpowers/specs/2026-09-15-create-company-support-entry-design.md.
 class CreateCompanyListTile extends StatelessWidget {
   const CreateCompanyListTile({super.key});
@@ -35,8 +35,7 @@ class CreateCompanyListTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppConfig.borderRadius),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () =>
-              openSupportChat(context, intent: SupportIntent.createCompany),
+          onTap: () => confirmCreateCompanyRequest(context),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             child: Row(

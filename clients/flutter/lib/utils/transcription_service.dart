@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -44,13 +45,74 @@ class TranscriptionService {
   // растёт примерно как 0.8×длительность_аудио + 10с.
   static const Duration _requestTimeout = Duration(seconds: 300);
 
+  // Авто-расшифровка в личке с ИИ-ботом (RL-ai-dm-voice-auto-transcript):
+  // сервер даёт человеку 10 запросов/мин, автоматика берёт не больше 4 —
+  // остальное остаётся ручной 🎤. По одному за раз: при открытии чата с
+  // десятком голосовых запросы идут очередью, а не залпом.
+  static const int autoPerMinute = 4;
+  @visibleForTesting
+  Duration autoWindow = const Duration(minutes: 1);
+  Future<void> _autoChain = Future.value();
+  final List<DateTime> _autoStarts = [];
+  final Map<String, Future<String?>> _autoQueued = {};
+  // Неудачная авто-попытка не повторяется до конца сессии: иначе каждый
+  // перестроенный пузырь (скролл) заново бился бы в 429/недоступный сервис.
+  final Set<String> _autoFailed = {};
+
+  /// Подмена сетевой части в тестах (скачивание + POST в transcribe).
+  @visibleForTesting
+  Future<String> Function(Event event)? debugFetch;
+
   TranscriptionService(this.client)
       : _httpClient = CustomHttpClient.createHTTPClient();
 
+  static String _keyOf(Event event) => '${event.room.id}:${event.eventId}';
+
+  /// Уже известная расшифровка — синхронно, чтобы пересозданный пузырь
+  /// (desktop/Web без keep-alive) показал текст в первом же кадре.
+  String? cachedText(Event event) => _cache[_keyOf(event)];
+
+  /// Авто-расшифровка: очередь по одному, не больше [autoPerMinute] в минуту.
+  /// Возвращает null, если событие уже проваливалось в этой сессии. Первую
+  /// ошибку пробрасывает (вызывающий решает, докладывать ли в мониторинг).
+  Future<String?> autoTranscribe(Event event) {
+    final key = _keyOf(event);
+    final cached = _cache[key];
+    if (cached != null) return Future.value(cached);
+    if (_autoFailed.contains(key)) return Future.value(null);
+    final queued = _autoQueued[key];
+    if (queued != null) return queued;
+
+    final completer = Completer<String?>();
+    _autoQueued[key] = completer.future;
+    _autoChain = _autoChain.then((_) async {
+      try {
+        if (_cache[key] == null) await _waitAutoSlot();
+        completer.complete(await transcribe(event));
+      } catch (e, s) {
+        _autoFailed.add(key);
+        completer.completeError(e, s);
+      } finally {
+        _autoQueued.remove(key);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<void> _waitAutoSlot() async {
+    while (true) {
+      final now = DateTime.now();
+      _autoStarts.removeWhere((t) => now.difference(t) >= autoWindow);
+      if (_autoStarts.length < autoPerMinute) {
+        _autoStarts.add(now);
+        return;
+      }
+      await Future.delayed(autoWindow - now.difference(_autoStarts.first));
+    }
+  }
+
   Future<String> transcribe(Event event) async {
-    final eventId = event.eventId;
-    final roomId = event.room.id;
-    final cacheKey = '$roomId:$eventId';
+    final cacheKey = _keyOf(event);
 
     final cached = _cache[cacheKey];
     if (cached != null) return cached;
@@ -58,7 +120,13 @@ class TranscriptionService {
     final pending = _pending[cacheKey];
     if (pending != null) return pending;
 
-    final future = _doTranscribe(event, cacheKey);
+    final fetch = debugFetch;
+    final future = fetch == null
+        ? _doTranscribe(event, cacheKey)
+        : fetch(event).then((text) {
+            _addToCache(cacheKey, text);
+            return text;
+          });
     _pending[cacheKey] = future;
     try {
       return await future;

@@ -1679,7 +1679,7 @@ class ChatController extends State<ChatPageWithRoom>
     });
   }
 
-  /// Публикация истории от имени канала — только admin/moderator (PL>=100).
+  /// Публикация истории от имени канала — только админ (PL>=99).
   Future<void> addChannelStory() async {
     if (_blockedByUpdate()) return;
     final composer = await pickStoryMediaComposer(context, channelId: room.id);

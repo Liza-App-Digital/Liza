@@ -183,7 +183,7 @@ class _MessageContextMenu extends StatelessWidget {
     final actions = <_MenuAction>[];
     // Владелец канала запретил вынос контента подписчикам (com.liza.channel
     // .no_forwards) — прячем пункты, которые копируют/пересылают/сохраняют
-    // содержимое наружу. Админов канала (PL >= 100) не ограничиваем.
+    // содержимое наружу. Модераторов и админов канала (PL >= 50) не ограничиваем.
     final contentProtected = controller.room.isContentProtected;
 
     void close() => Navigator.of(context).pop();

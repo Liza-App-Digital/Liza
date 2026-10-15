@@ -7,6 +7,7 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/access_admin_service.dart';
 import 'package:liza/utils/chat_topology.dart';
+import 'package:liza/utils/matrix_sdk_extensions/matrix_locals.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import '../../widgets/matrix.dart';
@@ -35,9 +36,22 @@ class ChatMembersController extends State<ChatMembersPage> {
   bool onServerOnly = false;
   bool inCompanyOnly = false;
 
+  /// Меняет ли чекбокс список (см. [memberFilterUsefulness]). Бесполезный
+  /// чекбокс не рисуется; если бесполезны оба — вместо них плашка.
+  bool serverFilterUseful = false;
+  bool companyFilterUseful = false;
+
+  /// Пуста ли база расчёта пользы — тогда ни чекбоксов, ни плашки.
+  bool filterBaseEmpty = true;
+
+  /// Первая загрузка [spaceMembers] завершилась (успехом или ошибкой). До
+  /// неё польза «В компании» у админа неизвестна: без флага плашка «все из
+  /// компании» мелькала бы и сменялась чекбоксом.
+  bool _spaceMembersSettled = false;
+
   /// Показывать ли скрытых участников (LABA-2381). По умолчанию выключено —
   /// скрытые не видны. Тумблер доступен только тому, кто вправе скрывать
-  /// (PL>=100): включив, админ видит скрытых с бейджем «скрыт», чтобы вернуть.
+  /// (PL>=99): включив, админ видит скрытых с бейджем «скрыт», чтобы вернуть.
   bool showHiddenMembers = false;
 
   /// Участники всего поддерева пространства (space_members, Task 7), ключ —
@@ -64,10 +78,92 @@ class ChatMembersController extends State<ChatMembersPage> {
 
   /// Домен сервера компании — по нему чекбокс «состоит на сервере» отличает
   /// свои аккаунты от федеративных.
-  String get companyServerName {
-    final roomId = widget.roomId;
+  String get companyServerName => _serverNameOf(widget.roomId);
+
+  static String _serverNameOf(String roomId) {
     final separator = roomId.indexOf(':');
     return separator < 0 ? '' : roomId.substring(separator + 1);
+  }
+
+  bool get _isSpaceRoom =>
+      Matrix.of(context).client.getRoomById(widget.roomId)?.isSpace ?? false;
+
+  bool get _needsSpaceMembers => _isSpaceRoom && canManageAccess;
+
+  /// Можно ли уже решать, какие чекбоксы показывать.
+  bool get membershipFiltersReady =>
+      _spaceMembersSettled || !_needsSpaceMembers;
+
+  /// Читаемое имя для «На сервере {server}» — см. [memberFilterServerLabel].
+  String get serverLabel {
+    final client = Matrix.of(context).client;
+    final room = client.getRoomById(widget.roomId);
+    final serverName = companyServerName;
+    final locals = MatrixLocals(L10n.of(context));
+    return memberFilterServerLabel(
+      serverName: serverName,
+      ownCompanyName: room != null && isCompanyRoom
+          ? room.getLocalizedDisplayname(locals)
+          : null,
+      companyNamesOnServer: client.rooms
+          .where(
+            (r) =>
+                r.isSpace &&
+                r.membership == Membership.join &&
+                _serverNameOf(r.id) == serverName &&
+                isCompanySpace(space: r, allRooms: client.rooms),
+          )
+          .map((r) => r.getLocalizedDisplayname(locals)),
+    );
+  }
+
+  /// База расчёта пользы чекбоксов: участники текущей вкладки членства (и
+  /// на вкладке join — участники только дочерних сущностей, как во вьюхе),
+  /// без скрытых для зрителя. Роль, чекбоксы и поиск НЕ учитываются.
+  /// childOnlySpaceMembers не годится — он уже прогнан через чекбоксы.
+  List<MemberFilterFacts> _filterBase() {
+    final serverName = companyServerName;
+    return [
+      for (final m in members ?? const <User>[])
+        if (m.membership == membershipFilter && !_isHiddenForViewer(m.id))
+          (
+            belongsToServer: memberBelongsToServer(
+              userId: m.id,
+              serverName: serverName,
+            ),
+            joinedCompany: memberJoinedCompany(
+              joinedRoom: m.membership == Membership.join,
+              spaceMember: spaceMembers[m.id],
+            ),
+          ),
+      if (membershipFilter == Membership.join)
+        for (final m in spaceMembers.values)
+          if (m.membershipInSpace == null && !_isHiddenForViewer(m.userId))
+            (
+              belongsToServer: memberBelongsToServer(
+                userId: m.userId,
+                serverName: serverName,
+              ),
+              joinedCompany: false,
+            ),
+    ];
+  }
+
+  /// Пересчёт пользы чекбоксов. Скрытый чекбокс сбрасывается ДО фильтрации:
+  /// иначе отмеченный, а затем скрытый (смена вкладки, догрузка) фильтр
+  /// продолжал бы сужать список, и снять его было бы нечем.
+  void _updateFilterUsefulness() {
+    final base = _filterBase();
+    final useful = memberFilterUsefulness(
+      base: base,
+      hasServerName: companyServerName.isNotEmpty,
+      isSpace: _isSpaceRoom,
+    );
+    filterBaseEmpty = base.isEmpty;
+    serverFilterUseful = useful.server;
+    companyFilterUseful = useful.company;
+    if (!serverFilterUseful) onServerOnly = false;
+    if (!companyFilterUseful) inCompanyOnly = false;
   }
 
   /// Единый предикат для ВСЕХ участников — и тех, кто состоит в самой комнате,
@@ -253,6 +349,7 @@ class ChatMembersController extends State<ChatMembersPage> {
   }
 
   void setFilter([dynamic _]) async {
+    _updateFilterUsefulness();
     final filter = filterController.text.toLowerCase().trim();
 
     final members = this.members
@@ -331,15 +428,17 @@ class ChatMembersController extends State<ChatMembersPage> {
     try {
       final loaded = await _access.fetchSpaceMembers(widget.roomId);
       if (!mounted) return;
-      setState(() {
-        spaceMembers
-          ..clear()
-          ..addEntries(loaded.map((m) => MapEntry(m.userId, m)));
-      });
-      setFilter();
+      spaceMembers
+        ..clear()
+        ..addEntries(loaded.map((m) => MapEntry(m.userId, m)));
     } catch (e, s) {
       Logs().w('Не удалось загрузить участников поддерева', e, s);
+      if (!mounted) return;
     }
+    // Ошибка тоже «завершает» загрузку: видимый список правдив и без
+    // поддерева, а держать строку чекбоксов скрытой навсегда нельзя.
+    _spaceMembersSettled = true;
+    setFilter();
   }
 
   StreamSubscription? _updateSub;

@@ -2,6 +2,8 @@ import 'package:collection/collection.dart';
 import 'package:go_router/go_router.dart';
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/utils/liza_dm.dart';
+
 /// Чистое решение о цели навигации по правилу «чат/запрос — только с первым
 /// сообщением» (тестируется без Client/виджета):
 ///
@@ -26,10 +28,15 @@ void openDirectChatOrDraft(
   Profile? profile,
 }) {
   final existingId = client.getDirectChatFromUserId(userId);
-  final existing = existingId == null ? null : client.getRoomById(existingId);
+  var existing = existingId == null ? null : client.getRoomById(existingId);
+  // SDK берёт самый свежий DM — у Лизы это может быть чат-запрос; «Написать»
+  // из профиля ведёт в основной чат с ней.
+  if (existing != null && isLizaRequestRoom(existing)) {
+    existing = findLizaAssistantDm(client, userId) ?? existing;
+  }
   final joinedRoomId =
       (existing != null && existing.membership == Membership.join)
-      ? existingId
+      ? existing.id
       : null;
   if (joinedRoomId != null) {
     router.go(directChatTarget(userId: userId, joinedRoomId: joinedRoomId));

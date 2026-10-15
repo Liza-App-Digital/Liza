@@ -1,4 +1,5 @@
 enum CreateMenuAction {
+  newRequest,
   group,
   channel,
   story,
@@ -13,7 +14,8 @@ enum CreateMenuAction {
 /// Разделы меню «+» шапки списка чатов; между разделами — разделитель.
 ///
 /// Порядок — постановка продакта 2026-09-16 (спека
-/// `2026-09-16-create-menu-connect-agent-design.md`). «Добавить МСР» — отдельным
+/// `2026-09-16-create-menu-connect-agent-design.md`); «Новый запрос» к Лизе —
+/// первым (РГ Лиза 05.10, спека `2026-10-14-liza-new-request-chat-design.md`). «Добавить МСР» — отдельным
 /// разделом только для разработчика (и админа); у остальных нет ни пункта, ни
 /// лишнего разделителя. «Контакты» — только на мобильных: flutter_contacts на
 /// web/десктопе бросает MissingPluginException.
@@ -23,6 +25,7 @@ List<List<CreateMenuAction>> createMenuSections({
   required bool isMobile,
 }) => [
   [
+    CreateMenuAction.newRequest,
     CreateMenuAction.group,
     if (isAdmin) CreateMenuAction.channel,
     CreateMenuAction.story,

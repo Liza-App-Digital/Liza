@@ -60,13 +60,16 @@ void main() {
     await tester.pump(const Duration(milliseconds: 700));
     await tester.waitUntil(find.byType(SpaceView));
 
-    // «+» в шапке пространства → меню.
-    final plus = find.descendant(
+    // Меню ⋮ в шапке пространства (задача 04: «Новое подпространство» уехало
+    // сюда из «+», вместо «+» — кнопка «Создать чат»).
+    final menu = find.descendant(
       of: find.byType(SpaceView),
-      matching: find.byIcon(Icons.add_outlined),
+      matching: find.byWidgetPredicate(
+        (w) => w is PopupMenuButton<SpaceActions>,
+      ),
     );
-    await tester.waitUntil(plus);
-    await tester.tap(plus.first);
+    await tester.waitUntil(menu);
+    await tester.tap(menu.first);
     await tester.pump(const Duration(milliseconds: 700));
     await tester.waitUntil(find.text('Новое подпространство'));
     await tester.tap(find.text('Новое подпространство').last);

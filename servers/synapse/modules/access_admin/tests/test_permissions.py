@@ -30,8 +30,12 @@ class _FakeSpaces:
         self._powers = powers or {}
         self._room_powers = room_powers or {}
 
-    async def shared_space_powers(self, caller_id: str, target_id: str):
-        return self._powers.get((caller_id, target_id), [])
+    async def shared_space_power_pairs(self, caller_id: str, target_id: str):
+        # Короткая запись [100] = PL вызывающего, цель — обычный участник (0).
+        return [
+            p if isinstance(p, tuple) else (p, 0)
+            for p in self._powers.get((caller_id, target_id), [])
+        ]
 
     async def power_in_room(self, user_id: str, room_id: str) -> int:
         return self._room_powers.get((user_id, room_id), 0)
@@ -101,7 +105,7 @@ class MayViewTestCase(unittest.TestCase):
 
     def test_no_shared_space_with_federated_target_may_not_view(self):
         """Страховка после Task 4: is_local_room больше не фильтрует по
-        домену, поэтому shared_space_powers теперь способен вернуть
+        домену, поэтому shared_space_power_pairs теперь способен вернуть
         пространства и с федеративным участием. Но право по-прежнему
         держится на ФАКТЕ общего пространства — если у вызывающего и
         федеративной цели общих пространств нет, доступа быть не должно.
@@ -172,6 +176,92 @@ class MayDeactivateTestCase(unittest.TestCase):
         )
         self.assertTrue(allowed)
         self.assertIsNone(reason)
+
+
+class OwnerModelTestCase(unittest.TestCase):
+    """ledger:RL-room-owner-transfer — владелец 100, админ 99 (механика ВК).
+
+    Red-proof: ADMIN_POWER_LEVEL = 100 → падают test_admin_99_*; убрать
+    условие `target < caller` → падают test_admin_cannot_deactivate_*;
+    убрать вето «цель ≥ вызывающего хоть в одном общем пространстве» (ревью
+    2026-10-14) → падают *_via_other_space и owner_in_one_space_protected.
+    """
+
+    BOSS = "@boss:liza.example"
+    U = "@u:liza.example"
+
+    def _deactivate(self, pairs):
+        c = _checker(powers={(self.BOSS, self.U): pairs})
+        return _run(c.may_deactivate(self.BOSS, self.U))
+
+    def test_admin_99_may_view(self):
+        """AC:RL-room-owner-transfer/9 — новый админ компании видит досье."""
+        c = _checker(powers={(self.BOSS, self.U): [(99, 100)]})
+        self.assertTrue(_run(c.may_view(self.BOSS, self.U)))
+
+    def test_98_may_not_view(self):
+        c = _checker(powers={(self.BOSS, self.U): [98]})
+        self.assertFalse(_run(c.may_view(self.BOSS, self.U)))
+
+    def test_admin_99_may_deactivate_below(self):
+        for target in (0, 50, 98):
+            self.assertEqual(self._deactivate([(99, target)]), (True, None))
+
+    def test_admin_cannot_deactivate_owner_or_admin(self):
+        """AC:RL-room-owner-transfer/9 — ∀ цель ∈ {владелец 100, админ 99}."""
+        for target in (99, 100):
+            self.assertEqual(
+                self._deactivate([(99, target)]), (False, "forbidden"), target
+            )
+
+    def test_owner_may_deactivate_admin(self):
+        self.assertEqual(self._deactivate([(100, 99)]), (True, None))
+
+    def test_legacy_co_owners_still_equal_as_before(self):
+        """Старая компания с двумя 100: как до роли «владелец»."""
+        self.assertEqual(self._deactivate([(100, 100)]), (True, None))
+
+    def test_owner_in_one_space_protected_from_owner_of_another(self):
+        """Цель — владелец X (там вызывающий админ 99), вызывающий — владелец
+        Y. Деактивация глобальна: владелец X вне власти вызывающего."""
+        self.assertEqual(
+            self._deactivate([(99, 100), (100, 99)]), (False, "forbidden")
+        )
+
+    def test_admin_cannot_deactivate_owner_via_other_space(self):
+        """AC:RL-room-owner-transfer/13 — владелец 100 в X и рядовой (0) в Y,
+        вызывающий админ 99 в обоих: ∀ порядок пространств → отказ."""
+        for pairs in ([(99, 100), (99, 0)], [(99, 0), (99, 100)]):
+            self.assertEqual(self._deactivate(pairs), (False, "forbidden"), pairs)
+
+    def test_admin_cannot_deactivate_admin_via_other_space(self):
+        """AC:RL-room-owner-transfer/13 — равный админ 99 в X, 50 в Y."""
+        self.assertEqual(
+            self._deactivate([(99, 99), (99, 50)]), (False, "forbidden")
+        )
+
+    def test_legit_cases_still_allowed_across_spaces(self):
+        """AC:RL-room-owner-transfer/13 — легитимное не сломано: владелец над
+        админом/рядовым, админ над рядовым/модератором в нескольких общих
+        пространствах, в т.ч. где оба рядовые."""
+        for pairs in (
+            [(100, 99), (100, 0)],
+            [(100, 0), (0, 0)],
+            [(99, 0), (99, 50)],
+            [(99, 0), (0, 0)],
+            [(99, 0), (0, 50)],
+            [(100, 100), (100, 0)],
+        ):
+            self.assertEqual(self._deactivate(pairs), (True, None), pairs)
+
+    def test_moderator_never(self):
+        self.assertEqual(self._deactivate([(50, 0)]), (False, "forbidden"))
+
+    def test_server_admin_unaffected_by_target_level(self):
+        c = _checker(
+            server_admins={self.BOSS}, powers={(self.BOSS, self.U): [(0, 100)]}
+        )
+        self.assertEqual(_run(c.may_deactivate(self.BOSS, self.U)), (True, None))
 
 
 class MayViewSpaceTestCase(unittest.TestCase):

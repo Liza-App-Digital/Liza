@@ -14,7 +14,9 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat_list/unread_bubble.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/company_deletion.dart';
+import 'package:liza/utils/company_invite_gate.dart';
 import 'package:liza/utils/company_membership.dart';
+import 'package:liza/utils/create_group_in_space.dart';
 import 'package:liza/utils/create_subspace.dart';
 import 'package:liza/utils/hierarchy_displayname.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
@@ -75,6 +77,7 @@ enum SpaceChildAction { edit, moveToSpace, removeFromSpace }
 
 enum SpaceActions {
   details,
+  newSubspace,
   settings,
   invite,
   members,
@@ -248,7 +251,10 @@ class _SpaceViewState extends State<SpaceView> {
         MergeChild(roomId: e.key, name: e.value.name, isLocal: isLocal),
       );
     }
-    final ordered = mergeSpaceChildren(spaceChildren: local, hierarchy: foreign);
+    final ordered = mergeSpaceChildren(
+      spaceChildren: local,
+      hierarchy: foreign,
+    );
 
     return [for (final m in ordered) chunkById[m.roomId]!];
   }
@@ -279,11 +285,15 @@ class _SpaceViewState extends State<SpaceView> {
         await space?.postLoad();
         context.push('/rooms/${widget.spaceId}/details/info');
         break;
+      case SpaceActions.newSubspace:
+        _addChatOrSubspace(AddRoomType.subspace);
+        return;
       case SpaceActions.settings:
         await space?.postLoad();
         context.push('/rooms/${widget.spaceId}/details');
         break;
       case SpaceActions.invite:
+        if (space != null && !ensureCanInviteToSpace(context, space)) return;
         await space?.postLoad();
         context.push('/rooms/${widget.spaceId}/invite');
         break;
@@ -326,7 +336,11 @@ class _SpaceViewState extends State<SpaceView> {
   void _addChatOrSubspace(AddRoomType roomType) async {
     final names = await showAddRoomNameDialog(context, roomType);
     if (names == null) return;
+    if (!mounted) return;
     final client = Matrix.of(context).client;
+    final companyInstance = Matrix.of(
+      context,
+    ).singleSpaceService.isCompanyInstance;
     final result = await showFutureLoadingDialog(
       context: context,
       future: () async {
@@ -336,15 +350,16 @@ class _SpaceViewState extends State<SpaceView> {
         if (roomType == AddRoomType.subspace) {
           // Родитель объявляется в initial_state, иначе single_space_guard
           // режет space как вторую компанию (LABA-2532).
-          await createSubspace(parent: activeSpace, name: names);
-        } else {
-          final roomId = await client.createGroupChat(
-            enableEncryption: false,
-            groupName: names,
-            preset: CreateRoomPreset.privateChat,
-            visibility: sdk.Visibility.private,
+          await createSubspace(
+            parent: activeSpace,
+            name: names,
+            companyInstance: isOwnCompanySpace(
+              activeSpace,
+              companyInstance: companyInstance,
+            ),
           );
-          await activeSpace.setSpaceChild(roomId);
+        } else {
+          await createGroupInSpace(space: activeSpace, name: names);
         }
       },
     );
@@ -384,9 +399,7 @@ class _SpaceViewState extends State<SpaceView> {
             children: [
               const Icon(Icons.move_down_outlined),
               const SizedBox(width: 12),
-              Flexible(
-                child: Text(L10n.of(context).moveToDifferentSpace),
-              ),
+              Flexible(child: Text(L10n.of(context).moveToDifferentSpace)),
             ],
           ),
         ),
@@ -406,9 +419,7 @@ class _SpaceViewState extends State<SpaceView> {
             children: [
               const Icon(Icons.group_remove_outlined),
               const SizedBox(width: 12),
-              Flexible(
-                child: Text(L10n.of(context).removeFromSpace),
-              ),
+              Flexible(child: Text(L10n.of(context).removeFromSpace)),
             ],
           ),
         ),
@@ -447,11 +458,8 @@ class _SpaceViewState extends State<SpaceView> {
         if (newSpace == null) return;
         final result = await showFutureLoadingDialog(
           context: context,
-          future: () => moveRoomToSpace(
-            from: space,
-            to: newSpace,
-            roomId: roomId,
-          ),
+          future: () =>
+              moveRoomToSpace(from: space, to: newSpace, roomId: roomId),
         );
         if (result.isError) return;
         if (!mounted) return;
@@ -487,8 +495,12 @@ class _SpaceViewState extends State<SpaceView> {
     final displayname =
         room?.getLocalizedDisplayname() ?? L10n.of(context).nothingFound;
     const avatarSize = Avatar.defaultSize / 1.5;
-    final isAdmin = room?.canChangeStateEvent(EventTypes.SpaceChild) == true;
+    final isAdmin = canCreateChatInSpace(room);
     final canSeeMembers = room?.canSeeSpaceMembers == true;
+    // В компании «Пригласить» видят все, право проверяет тап (плашка).
+    final showInvite =
+        room != null &&
+        companyInviteEntryVisible(context, room, legacyVisible: canSeeMembers);
     // Та же таблица, что в меню шапки и контекстном меню плитки: до LABA-2533
     // здесь стоял свой `isOwnCompany`-гейт и корзина на leave — SSOT LABA-2540
     // сюда не доходил.
@@ -518,36 +530,6 @@ class _SpaceViewState extends State<SpaceView> {
           ),
         ),
         actions: [
-          if (isAdmin)
-            PopupMenuButton<AddRoomType>(
-              icon: const Icon(Icons.add_outlined),
-              onSelected: _addChatOrSubspace,
-              tooltip: L10n.of(context).addChatOrSubSpace,
-              itemBuilder: (context) => [
-                PopupMenuItem(
-                  value: AddRoomType.chat,
-                  child: Row(
-                    mainAxisSize: .min,
-                    children: [
-                      const Icon(Icons.group_add_outlined),
-                      const SizedBox(width: 12),
-                      Text(L10n.of(context).newGroup),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: AddRoomType.subspace,
-                  child: Row(
-                    mainAxisSize: .min,
-                    children: [
-                      const Icon(Icons.workspaces_outlined),
-                      const SizedBox(width: 12),
-                      Text(L10n.of(context).newSubSpace),
-                    ],
-                  ),
-                ),
-              ],
-            ),
           PopupMenuButton<SpaceActions>(
             useRootNavigator: true,
             onSelected: _onSpaceAction,
@@ -565,6 +547,18 @@ class _SpaceViewState extends State<SpaceView> {
               ),
               if (isAdmin)
                 PopupMenuItem(
+                  value: SpaceActions.newSubspace,
+                  child: Row(
+                    mainAxisSize: .min,
+                    children: [
+                      const Icon(Icons.workspaces_outlined),
+                      const SizedBox(width: 12),
+                      Text(L10n.of(context).newSubSpace),
+                    ],
+                  ),
+                ),
+              if (isAdmin)
+                PopupMenuItem(
                   value: SpaceActions.settings,
                   child: Row(
                     mainAxisSize: .min,
@@ -575,11 +569,11 @@ class _SpaceViewState extends State<SpaceView> {
                     ],
                   ),
                 ),
-              // Приглашать может модератор/админ. Гейт по power level, а НЕ по
-              // room.canInvite: в пространствах-компаниях порог invite равен 0,
-              // то есть canInvite истинно для любого участника и не отсекает
-              // никого — пункт видели все.
-              if (canSeeMembers)
+              // Вне компании пункт видит модератор/админ (гейт по power level:
+              // у старых пространств порог invite равен 0, и canInvite не
+              // отсекал бы никого). В пространстве компании — все участники;
+              // без права invite тап показывает плашку (задача 13).
+              if (showInvite)
                 PopupMenuItem(
                   value: SpaceActions.invite,
                   child: Row(
@@ -681,6 +675,21 @@ class _SpaceViewState extends State<SpaceView> {
                         ),
                       ),
                     ),
+                    // Задача 04 (newInterface): явная кнопка вместо иконки
+                    // «+» в шапке — создавать чат в компании искали и не
+                    // находили. Гейт прежний: право писать m.space.child.
+                    if (isAdmin)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                          child: FilledButton.tonalIcon(
+                            onPressed: () =>
+                                _addChatOrSubspace(AddRoomType.chat),
+                            icon: const Icon(Icons.group_add_outlined),
+                            label: Text(L10n.of(context).createChatInSpace),
+                          ),
+                        ),
+                      ),
                     SliverList.builder(
                       itemCount: children.length + 1,
                       itemBuilder: (context, i) {
@@ -702,9 +711,7 @@ class _SpaceViewState extends State<SpaceView> {
                           );
                         }
                         final item = children[i];
-                        final knownRoom = room.client.getRoomById(
-                          item.roomId,
-                        );
+                        final knownRoom = room.client.getRoomById(item.roomId);
                         final displayname = hierarchyDisplayname(
                           itemName: item.name,
                           canonicalAlias: item.canonicalAlias,

@@ -1,5 +1,7 @@
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/utils/chat_topology.dart';
+
 /// Создать подпространство [name] внутри пространства [parent] и вернуть его id.
 ///
 /// Серверный модуль `single_space_guard` (`servers/synapse/modules/
@@ -30,9 +32,17 @@ import 'package:matrix/matrix.dart';
 ///
 /// `space_view` в widget-тесте не поднимается (общий гэп с `space_move.dart`),
 /// поэтому логика живёт здесь и стережётся юнит-тестом по телам запросов.
+///
+/// [companyInstance] — подпространство компании этого инстанса (класс по
+/// корню, `isOwnCompanySpace`): тогда приглашают только админы
+/// ([spacePowerLevelOverride]), а админы и владельцы родителя переносятся в
+/// подпространство уровнем 99 ([subspaceUsersOverride]) — иначе админ компании
+/// в чужом подпространстве оказался бы рядовым и не мог бы приглашать. На
+/// общем инстансе `users` не передаётся (Synapse: `{создатель: 100}`).
 Future<String> createSubspace({
   required Room parent,
   required String name,
+  required bool companyInstance,
 }) async {
   final client = parent.client;
   final via = [client.userID!.domain!];
@@ -41,9 +51,17 @@ Future<String> createSubspace({
     name: name,
     visibility: Visibility.private,
     creationContent: {'type': RoomCreationTypes.mSpace},
-    // Паритет с Client.createSpace: иначе state в подпространстве сможет
-    // писать любой участник.
-    powerLevelContentOverride: {'events_default': 100},
+    powerLevelContentOverride: spacePowerLevelOverride(
+      companyInstance: companyInstance,
+      users: companyInstance
+          ? subspaceUsersOverride(
+              parentPowerLevels: parent
+                  .getState(EventTypes.RoomPowerLevels)
+                  ?.content,
+              creatorId: client.userID!,
+            )
+          : null,
+    ),
     initialState: [
       StateEvent(
         type: EventTypes.SpaceParent,

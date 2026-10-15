@@ -18,7 +18,12 @@ LEVEL_ADMIN = "admin"
 LEVEL_MODERATOR = "moderator"
 LEVEL_USER = "user"
 
-ADMIN_POWER_LEVEL = 100
+# Роли в комнате (механика ВК, спека 2026-10-14-room-owner-role-design):
+# владелец 100, администратор 99, модератор 50. «Админ» — от 99 и выше,
+# зеркало adminPowerLevel клиента (lib/utils/chat_topology.dart). Порог 100
+# отрезал бы новых админов компании от досье и деактивации.
+OWNER_POWER_LEVEL = 100
+ADMIN_POWER_LEVEL = 99
 MODERATOR_POWER_LEVEL = 50
 
 DEFAULT_BOT_LOCALPARTS = frozenset(

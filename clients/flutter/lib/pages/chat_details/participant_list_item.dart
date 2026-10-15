@@ -16,6 +16,16 @@ import '../../widgets/story_avatar_ring.dart';
 import '../../widgets/user_identifier.dart';
 import '../../widgets/user_role_badge.dart';
 
+/// Бейдж роли в строке участника: «Владелец» (100) / «Администратор» (99) /
+/// «Модератор» (50) / пусто. Пустая строка — бейдж не рисуется.
+String memberRoleLabel(L10n l10n, int powerLevel) => isOwnerLevel(powerLevel)
+    ? l10n.roomOwner
+    : powerLevel >= adminPowerLevel
+    ? l10n.admin
+    : powerLevel >= moderatorPowerLevel
+    ? l10n.moderator
+    : '';
+
 class ParticipantListItem extends StatelessWidget {
   final User user;
 
@@ -63,6 +73,12 @@ class ParticipantListItem extends StatelessWidget {
     final inSpace = member.membershipInSpace != null;
     final ownPl = user.powerLevel;
 
+    // Владелец (100) — отдельная роль механики ВК: «Админ компании» под ним
+    // путал бы, кто может снимать админов. Не голое «Владелец» — его уже
+    // рисует бейдж роли в заголовке строки.
+    if (inSpace && isOwnerLevel(ownPl)) {
+      return isCompanyRoom ? l10n.roleOwnerOfCompany : l10n.roleOwnerOfSpace;
+    }
     if (inSpace && ownPl >= adminPowerLevel) {
       return isCompanyRoom ? l10n.roleAdminOfCompany : l10n.roleAdminOfSpace;
     }
@@ -100,11 +116,7 @@ class ParticipantListItem extends StatelessWidget {
             : L10n.of(context).leftTheChat,
     };
 
-    final permissionBatch = user.powerLevel >= 100
-        ? L10n.of(context).admin
-        : user.powerLevel >= 50
-        ? L10n.of(context).moderator
-        : '';
+    final permissionBatch = memberRoleLabel(L10n.of(context), user.powerLevel);
 
     // Баг №4 (Android): используем ОДНУ переменную и для условия тапа, и
     // для Avatar.storyRing ниже - конфликт двух GestureDetector решаем
@@ -200,7 +212,7 @@ class ParticipantListItem extends StatelessWidget {
                     vertical: 2,
                   ),
                   decoration: BoxDecoration(
-                    color: user.powerLevel >= 100
+                    color: user.powerLevel >= adminPowerLevel
                         ? theme.colorScheme.tertiary
                         : theme.colorScheme.tertiaryContainer,
                     borderRadius: BorderRadius.circular(6),
@@ -209,7 +221,7 @@ class ParticipantListItem extends StatelessWidget {
                     permissionBatch,
                     style: theme.textTheme.labelSmall?.copyWith(
                       fontSize: 10,
-                      color: user.powerLevel >= 100
+                      color: user.powerLevel >= adminPowerLevel
                           ? theme.colorScheme.onTertiary
                           : theme.colorScheme.onTertiaryContainer,
                     ),

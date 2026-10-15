@@ -33,19 +33,27 @@ Duration ensureDirectChatTimeout = const Duration(seconds: 30);
 /// SDK возвращает как есть) и в ключ мемо не входит: параллельный вызов по тому
 /// же mxid получит комнату первого («первый побеждает»). Единственный
 /// вызывающий с state — `openSupportChat`, он сериализован своим гейтом.
+///
+/// [forceNew] — создать ЕЩЁ один DM, даже если с [mxid] уже есть (новый запрос к
+/// Лизе, пересоздание её основного DM). Ключ мемо отдельный: иначе тап «Новый
+/// запрос» во время фонового `_ensureLizaDm` получил бы основной DM, а не новый.
+/// Двойной тап по-прежнему даёт одну комнату, последовательные вызовы — новые.
 extension EnsureDirectChat on Client {
   Future<String> ensureDirectChat(
     String mxid, {
     List<StateEvent>? initialState,
+    bool forceNew = false,
   }) {
     final map = _inFlight[this] ??= {};
-    final pending = map[mxid] ??=
+    final key = forceNew ? '$mxid#new' : mxid;
+    final pending = map[key] ??=
         startDirectChat(
           mxid,
           enableEncryption: false,
           initialState: initialState,
+          skipExistingChat: forceNew,
         ).whenComplete(() {
-          map.remove(mxid);
+          map.remove(key);
         });
     return pending.timeout(ensureDirectChatTimeout);
   }

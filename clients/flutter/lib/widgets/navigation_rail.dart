@@ -78,7 +78,8 @@ class SpacesNavigationRail extends StatelessWidget {
                           itemBuilder: (context, i) {
                             if (i == 0) {
                               return NaviRailItem(
-                                isSelected: activeSpaceId == null && !isSettings,
+                                isSelected:
+                                    activeSpaceId == null && !isSettings,
                                 onTap: onGoToChats,
                                 icon: const Padding(
                                   padding: EdgeInsets.all(10.0),
@@ -108,12 +109,12 @@ class SpacesNavigationRail extends StatelessWidget {
                               return NaviRailItem(
                                 key: const ValueKey('rail_create_company'),
                                 isSelected: false,
-                                onTap: () => openSupportChat(
-                                  context,
-                                  intent: SupportIntent.createCompany,
-                                ),
+                                onTap: () =>
+                                    confirmCreateCompanyRequest(context),
                                 icon: const _CreateCompanyRailIcon(),
-                                toolTip: L10n.of(context).createCompanyViaSupport,
+                                toolTip: L10n.of(
+                                  context,
+                                ).createCompanyViaSupport,
                                 toolTipSubtitle: L10n.of(
                                   context,
                                 ).createCompanyRailHint,

@@ -28,8 +28,7 @@ bool memberBelongsToServer({
 bool memberJoinedCompany({
   required bool joinedRoom,
   SpaceMember? spaceMember,
-}) =>
-    joinedRoom || spaceMember?.membershipInSpace != null;
+}) => joinedRoom || spaceMember?.membershipInSpace != null;
 
 /// Два чекбокса под табами ролей — независимые сужения, комбинируются по AND.
 /// Снятый чекбокс не фильтрует ничего.
@@ -42,4 +41,57 @@ bool matchesMembershipCheckboxes({
   if (onServerOnly && !belongsToServer) return false;
   if (inCompanyOnly && !joinedCompany) return false;
   return true;
+}
+
+/// Участник базового набора для расчёта пользы чекбоксов — ровно те два
+/// признака, по которым чекбоксы фильтруют.
+typedef MemberFilterFacts = ({bool belongsToServer, bool joinedCompany});
+
+/// Меняет ли каждый чекбокс список. Чекбокс полезен, только если РАЗБИВАЕТ
+/// базу: кого-то исключает и кого-то оставляет. «Исключает никого» — нет
+/// разницы до/после; «исключает всех» (вкладка приглашённых, где никто ещё не
+/// вступил) — пустой экран вместо фильтра.
+///
+/// База — участники текущей вкладки членства без скрытых для зрителя, БЕЗ
+/// роли, чекбоксов и поиска: иначе чекбоксы появлялись бы и пропадали при
+/// переключении таба роли или вводе в поиск.
+///
+/// «На сервере» бессмыслен без домена (roomId без `:`), «В компании» — вне
+/// пространства (там joinedCompany совпадает с членством в самой комнате).
+({bool server, bool company}) memberFilterUsefulness({
+  required Iterable<MemberFilterFacts> base,
+  required bool hasServerName,
+  required bool isSpace,
+}) {
+  var onServer = 0;
+  var inCompany = 0;
+  var total = 0;
+  for (final m in base) {
+    total++;
+    if (m.belongsToServer) onServer++;
+    if (m.joinedCompany) inCompany++;
+  }
+  bool splits(int passed) => passed > 0 && passed < total;
+  return (
+    server: hasServerName && splits(onServer),
+    company: isSpace && splits(inCompany),
+  );
+}
+
+/// Читаемое имя сервера для подписи «На сервере {server}»: экран открыт на
+/// самой компании — её имя; иначе ровно одна компания с этим доменом среди
+/// известных клиенту комнат — её имя; иначе домен. На общих инстансах
+/// (`user.liza.ru`, стенд `local`) корней одного домена бывает много —
+/// «первое попавшееся» имя было бы чужим.
+String memberFilterServerLabel({
+  required String serverName,
+  String? ownCompanyName,
+  required Iterable<String> companyNamesOnServer,
+}) {
+  if (ownCompanyName != null && ownCompanyName.isNotEmpty) {
+    return ownCompanyName;
+  }
+  final names = companyNamesOnServer.toList();
+  if (names.length == 1 && names.single.isNotEmpty) return names.single;
+  return serverName;
 }

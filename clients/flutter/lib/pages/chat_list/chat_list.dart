@@ -197,6 +197,11 @@ class ChatListController extends State<ChatList>
   String? searchServer;
   Timer? _coolDown;
   SearchUserDirectoryResponse? userSearchResult;
+
+  /// Опубликованная выдача людей, разбитая на «Люди» / «Боты и ИИ»
+  /// (RL-search-people-vs-bots-sections). Разбиение считается здесь, при
+  /// публикации, гидратации и позднем приходе ролей, — не в build().
+  PeopleAndBots? userSearchSections;
   QueryPublicRoomsResponse? roomSearchResult;
   List<CompanyEntry> companySearchResult = const [];
 
@@ -366,14 +371,9 @@ class ChatListController extends State<ChatList>
           merged.any((profile) => profile.userId == searchQuery) == false) {
         merged.add(Profile(userId: searchQuery));
       }
-      final pinned = pinAiProfilesFirst(
-        merged,
-        isAi: (p) => matrix.isAiUser(p.userId),
-        lizaMxid: MatrixState.lizaMxid,
-      );
       userSearchResult.results
         ..clear()
-        ..addAll(pinned);
+        ..addAll(merged);
       // Поиск по телефону: если весь ввод — полный номер, спрашиваем auth-proxy
       // (POST /contacts/v1/lookup), кто из них уже в Liza. Гейт полноты номера
       // (≥10 цифр) не даёт слать lookup на частичный ввод и жечь суточную квоту
@@ -392,11 +392,16 @@ class ChatListController extends State<ChatList>
           userSearchResult.results.insert(0, Profile(userId: mxid));
         }
       }
-      // Префетч ролей для шильдика и соты в горизонтальной карусели поиска.
-      unawaited(
+      // Роли решают раздел («Боты и ИИ» — по роли ai) и шильдик/соту в
+      // карусели. Ждём их перед публикацией, но не дольше таймаута; поздний
+      // ответ переразбивает уже показанную выдачу. Список берётся ПОСЛЕ
+      // вставок MXID/телефона выше — иначе их роль не загрузилась бы.
+      final published = userSearchResult;
+      await waitForRolesBounded(
         matrix.userRoleService.fetchRoles(
-          userSearchResult.results.map((p) => p.userId),
+          published.results.map((p) => p.userId),
         ),
+        onLate: () => _repartitionUserSearch(matrix, published, searchQuery),
       );
     } catch (e, s) {
       Logs().w('User search has crashed', e, s);
@@ -415,6 +420,9 @@ class ChatListController extends State<ChatList>
       isSearching = false;
       this.roomSearchResult = roomSearchResult;
       this.userSearchResult = userSearchResult;
+      userSearchSections = userSearchResult == null
+          ? null
+          : _partitionUserSearch(matrix, userSearchResult);
     });
     // Стадия 2: находки по нику / MXID / телефону опубликованы выше голым
     // Profile(userId) (карусель показывает их по `@ник`), имя и аватар
@@ -422,16 +430,49 @@ class ChatListController extends State<ChatList>
     // отдельным setState, не задерживая остальные разделы поиска.
     if (userSearchResult != null) {
       unawaited(
-        _hydrateUserSearchResult(client, userSearchResult, searchQuery),
+        _hydrateUserSearchResult(
+          matrix,
+          client,
+          userSearchResult,
+          searchQuery,
+        ),
       );
     }
   }
 
+  PeopleAndBots _partitionUserSearch(
+    MatrixState matrix,
+    SearchUserDirectoryResponse published,
+  ) =>
+      partitionPeopleAndBots(
+        published.results,
+        isBotOrAi: matrix.isBotOrAiUser,
+        lizaMxid: MatrixState.lizaMxid,
+      );
+
+  /// Роли пришли после таймаута ожидания: переразбить УЖЕ показанную выдачу,
+  /// если она всё ещё актуальна. Ответ устаревшего запроса (пользователь
+  /// дописал символы, поиск закрыт, выдача заменена) не показывается.
+  void _repartitionUserSearch(
+    MatrixState matrix,
+    SearchUserDirectoryResponse published,
+    String searchQuery,
+  ) {
+    if (!mounted || !isSearchMode) return;
+    if (searchController.text.trim() != searchQuery) return;
+    if (!identical(userSearchResult, published)) return;
+    setState(() {
+      userSearchSections = _partitionUserSearch(matrix, published);
+    });
+  }
+
   /// Догружает профили в УЖЕ опубликованный [published] и перерисовывает
   /// карусель. Список подменяется по индексу, а не пересоздаётся: карусель
-  /// читает именно `published.results`, а `pinAiProfilesFirst`/дедуп/телефон
-  /// на индексе 0 уже выполнены стадией 1 и не перезапускаются.
+  /// читает именно `published.results`, а дедуп/телефон на индексе 0 уже
+  /// выполнены стадией 1 и не перезапускаются. Разделы пересчитываются по
+  /// обновлённому списку (классификация по userId при этом не меняется).
   Future<void> _hydrateUserSearchResult(
+    MatrixState matrix,
     Client client,
     SearchUserDirectoryResponse published,
     String searchQuery,
@@ -446,7 +487,9 @@ class ChatListController extends State<ChatList>
     if (searchController.text.trim() != searchQuery) return;
     if (!identical(userSearchResult, published)) return;
     if (applyHydratedProfiles(published.results, hydrated)) {
-      setState(() {});
+      setState(() {
+        userSearchSections = _partitionUserSearch(matrix, published);
+      });
     }
   }
 
@@ -478,6 +521,7 @@ class ChatListController extends State<ChatList>
     setState(() {
       searchController.clear();
       isSearchMode = false;
+      userSearchSections = null;
       roomSearchResult = userSearchResult = null;
       companySearchResult = const [];
       isSearching = false;

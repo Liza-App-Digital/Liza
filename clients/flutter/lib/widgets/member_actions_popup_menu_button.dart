@@ -35,10 +35,20 @@ void showMemberActionsPopupMenu({
   final isPendingInvite = user.membership == Membership.invite;
 
   // Скрытие участника из ВИТРИНЫ списка (LABA-2381): только владелец/админ
-  // (PL>=100), не над собой и не в личном чате (там нет «списка участников»).
+  // (PL>=99), не над собой и не в личном чате (там нет «списка участников»).
   // Скрытие косметическое: членство/сообщения/права не меняются.
   final canHide = user.room.canHideMembers && !isMe && !user.room.isDirectChat;
   final isHidden = user.room.hiddenMemberIds.contains(user.id);
+
+  // «Передать владение» — только владельцу (PL 100), по механике ВК.
+  final canTransferOwnership = canTransferOwnershipTo(
+    ownPowerLevel: user.room.ownPowerLevel,
+    callerId: user.room.client.userID ?? '',
+    targetId: user.id,
+    targetPowerLevel: user.powerLevel,
+    targetJoined: user.membership == Membership.join,
+    isDirectChat: user.room.isDirectChat,
+  );
 
   // Формулировки прав/kick/ban/unban зависят от типа комнаты: канал/чат
   // остаются как раньше, а для пространств различаем корневую компанию
@@ -181,10 +191,12 @@ void showMemberActionsPopupMenu({
                 Text(
                   // Численный уровень пользователю ничего не говорит —
                   // оставляем только роль (спек 2026-07-30 §1.4).
-                  user.powerLevel < 50
+                  user.powerLevel < moderatorPowerLevel
                       ? L10n.of(context).userLevel
-                      : user.powerLevel < 100
+                      : user.powerLevel < adminPowerLevel
                       ? L10n.of(context).moderatorLevel
+                      : isOwnerLevel(user.powerLevel)
+                      ? L10n.of(context).roomOwner
                       : L10n.of(context).adminLevel,
                   style: const TextStyle(fontSize: 10),
                 ),
@@ -193,6 +205,17 @@ void showMemberActionsPopupMenu({
           ],
         ),
       ),
+      if (canTransferOwnership)
+        PopupMenuItem(
+          value: _MemberActions.transferOwnership,
+          child: Row(
+            children: [
+              const Icon(Icons.workspace_premium_outlined),
+              const SizedBox(width: 18),
+              Text(L10n.of(context).transferOwnership),
+            ],
+          ),
+        ),
       if (user.canKick)
         PopupMenuItem(
           value: _MemberActions.kick,
@@ -326,12 +349,13 @@ void showMemberActionsPopupMenu({
       final power = await showPermissionChooser(
         context,
         currentLevel: user.powerLevel,
-        maxLevel: user.room.ownPowerLevel,
+        // Админа назначает только владелец, админ — не выше модератора.
+        maxLevel: assignableRoleMaxLevel(user.room.ownPowerLevel),
         isChannel: user.room.isChannel,
       );
       if (power == null) return;
       if (!context.mounted) return;
-      if (power >= 100) {
+      if (power >= adminPowerLevel) {
         final consent = await showOkCancelAlertDialog(
           context: context,
           title: L10n.of(context).areYouSure,
@@ -339,10 +363,31 @@ void showMemberActionsPopupMenu({
         );
         if (consent != OkCancelResult.ok) return;
         if (!context.mounted) return;
+        await showFutureLoadingDialog(
+          context: context,
+          future: () => promoteMemberToAdmin(user.room, user.id),
+        );
+        return;
       }
       await showFutureLoadingDialog(
         context: context,
         future: () => user.setPower(power),
+      );
+      return;
+    case _MemberActions.transferOwnership:
+      final consent = await showOkCancelAlertDialog(
+        context: context,
+        title: L10n.of(context).transferOwnership,
+        message: L10n.of(context).transferOwnershipDescription(displayname),
+        okLabel: L10n.of(context).transferOwnership,
+        cancelLabel: L10n.of(context).cancel,
+        isDestructive: true,
+      );
+      if (consent != OkCancelResult.ok) return;
+      if (!context.mounted) return;
+      await showFutureLoadingDialog(
+        context: context,
+        future: () => transferRoomOwnership(user.room, user.id),
       );
       return;
     case _MemberActions.approve:
@@ -496,6 +541,7 @@ enum _MemberActions {
   info,
   mention,
   setRole,
+  transferOwnership,
   kick,
   ban,
   removeFromStore,

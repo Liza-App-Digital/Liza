@@ -2,7 +2,7 @@
 
 - on_create_room: блокирует создание второго root-space.
 - check_event_allowed: блокирует выход/бан из главного root-space.
-- web endpoint GET /_synapse/client/single_space/v1/root -> {exists, room_id}.
+- web endpoint GET /_synapse/client/single_space/v1/root -> {exists, room_id, company}.
 - web endpoint GET /_synapse/client/single_space/v1/companies?query= -> {companies: [...]}.
 
 Главное пространство = самый ранний (min origin_server_ts m.room.create) среди
@@ -16,6 +16,8 @@ root-space (space без входящего m.space.child). Кэшируется
         config:
           backfill_existing: false   # разовый перенос старых чатов (opt-in)
           auto_add_new: true         # авто-добавление новых чатов (дефолт)
+          parent_grace_seconds: 60   # сколько ждать m.space.child у комнаты,
+                                     # рождённой с m.space.parent
 """
 
 import json
@@ -31,6 +33,8 @@ from synapse.util.async_helpers import yieldable_gather_results
 from synapse.module_api import ModuleApi
 
 from ._guard import (
+    apply_space_parent_marker,
+    auto_add_delay_ms,
     deduplicate_companies,
     is_auto_add_candidate,
     is_dm_creation,
@@ -39,6 +43,7 @@ from ._guard import (
     is_root_space_creation,
     is_space_chunk,
     matches_query,
+    root_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,6 +58,9 @@ class SingleSpaceGuardModule:
         # auto_add_new (дефолт True): хук на НОВЫЕ чаты - поведение по умолчанию.
         self._backfill_existing = bool(config.get("backfill_existing", False))
         self._auto_add_new = bool(config.get("auto_add_new", True))
+        self._parent_grace_ms = int(
+            float(config.get("parent_grace_seconds", 60)) * 1000
+        )
 
         # None = ещё не определено / нет root-space; str = кэш главного навсегда.
         self._main_root_space_id: Optional[str] = None
@@ -91,6 +99,11 @@ class SingleSpaceGuardModule:
             _CompaniesResource(api, self),
         )
         logger.info("SingleSpaceGuardModule loaded")
+
+    @property
+    def is_company(self) -> bool:
+        """Инстанс-компания: класс задаёт ``auto_add_new`` (LABA-2539)."""
+        return self._auto_add_new
 
     async def get_main_root_space_id(self) -> Optional[str]:
         """Вернуть room_id главного пространства или None. Кэширует не-None."""
@@ -278,6 +291,32 @@ class SingleSpaceGuardModule:
                 main_id,
                 e,
             )
+
+    async def _add_room_if_still_unparented(
+        self, room_id: str, main_id: str, sender: str
+    ) -> None:
+        """Запасной путь для комнаты с m.space.parent: вложить в компанию, если
+        ни одно пространство так и не записало на неё m.space.child."""
+        has_child = await self._api.run_db_interaction(
+            "single_space_guard_has_incoming_child",
+            self._has_incoming_child_txn,
+            room_id,
+        )
+        if has_child:
+            return
+        await self._add_room_to_main_space(room_id, main_id, sender)
+
+    @staticmethod
+    def _has_incoming_child_txn(txn, room_id: str) -> bool:
+        txn.execute(
+            """
+            SELECT 1 FROM current_state_events
+            WHERE type = 'm.space.child' AND state_key = ?
+            LIMIT 1
+            """,
+            (room_id,),
+        )
+        return txn.fetchone() is not None
 
     @staticmethod
     def _create_meta_txn(txn) -> None:
@@ -499,6 +538,7 @@ class SingleSpaceGuardModule:
     ) -> None:
         if is_dm_creation(config):
             self._pending_dm_senders.add(requester.user.to_string())
+        apply_space_parent_marker(config)
         if not is_root_space_creation(config):
             return
         existing = await self.get_main_root_space_id()
@@ -555,18 +595,34 @@ class SingleSpaceGuardModule:
                 if candidate and event.room_id != main_id:
                     creator = await self._main_space_creator(main_id)
                     if creator is not None:
-                        self._api.run_as_background_process(
-                            "single_space_guard_add_room",
-                            self._add_room_to_main_space,
-                            event.room_id,
-                            main_id,
-                            creator,
+                        delay_ms = auto_add_delay_ms(
+                            event.content, self._parent_grace_ms
                         )
+                        if delay_ms:
+                            # Родилась с m.space.parent: связь пишет клиент
+                            # со стороны родителя. Компания — только запасной
+                            # путь, если он так и не записал m.space.child.
+                            self._api.delayed_background_call(
+                                delay_ms,
+                                self._add_room_if_still_unparented,
+                                event.room_id,
+                                main_id,
+                                creator,
+                                desc="single_space_guard_add_unparented",
+                            )
+                        else:
+                            self._api.run_as_background_process(
+                                "single_space_guard_add_room",
+                                self._add_room_to_main_space,
+                                event.room_id,
+                                main_id,
+                                creator,
+                            )
         return (True, None)
 
 
 class _RootSpaceResource(resource.Resource):
-    """GET /_synapse/client/single_space/v1/root -> {exists, room_id}."""
+    """GET /_synapse/client/single_space/v1/root -> {exists, room_id, company}."""
 
     isLeaf = True
 
@@ -583,10 +639,7 @@ class _RootSpaceResource(resource.Resource):
     async def _handle_get(self, request: server.Request) -> None:
         await self._api.get_user_by_req(request)  # требует валидный токен
         room_id = await self._module.get_main_root_space_id()
-        self._json(
-            request,
-            {"exists": room_id is not None, "room_id": room_id},
-        )
+        self._json(request, root_response(room_id, self._module.is_company))
 
     def _json(self, request: server.Request, data: dict, status: int = 200) -> None:
         request.setResponseCode(status)

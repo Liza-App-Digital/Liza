@@ -281,6 +281,7 @@ class MessageContent extends StatelessWidget {
                 linkColor: linkColor,
                 fontSize: fontSize,
                 trailing: trailingTime,
+                autoTranscribe: isAiDirectChat(context, event.room),
               );
             }
             return MessageDownloadContent(

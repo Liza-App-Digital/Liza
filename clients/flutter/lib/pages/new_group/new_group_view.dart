@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/new_group/new_group.dart';
+import 'package:liza/utils/create_group_in_space.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
 import 'package:liza/utils/room_name_limit.dart';
 import 'package:liza/widgets/avatar.dart';
@@ -82,6 +83,42 @@ class NewGroupView extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
+            if (controller.showPlacePicker)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 8,
+                ),
+                child: DropdownButtonFormField<GroupPlace?>(
+                  key: const ValueKey('newGroupPlacePicker'),
+                  initialValue: controller.place,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.workspaces_outlined),
+                    labelText: L10n.of(context).groupPlace,
+                  ),
+                  onChanged: controller.loading ? null : controller.setPlace,
+                  items: [
+                    DropdownMenuItem<GroupPlace?>(
+                      value: null,
+                      child: Text(L10n.of(context).groupPlaceAuto),
+                    ),
+                    for (final p in controller.places)
+                      DropdownMenuItem<GroupPlace?>(
+                        value: p,
+                        child: Text(
+                          [
+                            if (p.company != null)
+                              p.company!.getLocalizedDisplayname(),
+                            p.space.getLocalizedDisplayname(),
+                          ].join(' › '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             if (controller.createGroupType == CreateGroupType.space) ...[
               SwitchListTile.adaptive(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 32),
@@ -105,7 +142,9 @@ class NewGroupView extends StatelessWidget {
                 ),
               ),
             ],
-            if (controller.createGroupType != CreateGroupType.space) ...[
+            // Группа в выбранном месте всегда приватная (задача 00, LABA-2539).
+            if (controller.createGroupType != CreateGroupType.space &&
+                controller.place == null) ...[
               SwitchListTile.adaptive(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 32),
                 secondary: const Icon(Icons.public_outlined),

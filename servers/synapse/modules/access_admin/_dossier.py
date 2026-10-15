@@ -233,7 +233,7 @@ class DossierBuilder:
     async def power_in_room(self, user_id: str, room_id: str) -> int:
         """PL пользователя НЕПОСРЕДСТВЕННО в указанной комнате.
 
-        В отличие от shared_space_powers (PL вызывающего в пространствах,
+        В отличие от shared_space_power_pairs (PL в пространствах,
         где состоит ЦЕЛЕВОЙ пользователь) — здесь целевого пользователя
         нет, есть конкретная space-комната из URL (space_members), и нужен
         прямой запрос PL вызывающего именно в ней.
@@ -257,10 +257,15 @@ class DossierBuilder:
         power_raw = row[0] if row else None
         return power_from_content(_content_from_json(power_raw), user_id)
 
-    async def shared_space_powers(
+    async def shared_space_power_pairs(
         self, caller_id: str, target_id: str
-    ) -> list[int]:
-        """PL вызывающего в пространствах, где состоит целевой пользователь."""
+    ) -> list[tuple[int, int]]:
+        """(PL вызывающего, PL цели) в пространствах, где состоит цель.
+
+        Оба уровня читаются из одного content m.room.power_levels — лишнего
+        запроса нет. PL цели нужен деактивации: админ (99) не вправе
+        действовать над владельцем (100) и другим админом.
+        """
         target_rows = await self._fetch_rows(target_id)
         target_spaces = {
             row[0]
@@ -283,7 +288,11 @@ class DossierBuilder:
             _tombstone,
         ) in caller_rows:
             if room_id in target_spaces:
+                content = _content_from_json(power_raw)
                 powers.append(
-                    power_from_content(_content_from_json(power_raw), caller_id)
+                    (
+                        power_from_content(content, caller_id),
+                        power_from_content(content, target_id),
+                    )
                 )
         return powers

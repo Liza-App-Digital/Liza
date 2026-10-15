@@ -190,9 +190,10 @@ class ChatView extends StatelessWidget {
       ];
     } else if (!controller.room.isArchived) {
       return [
-        // Публикация истории канала — только admin/moderator (PL>=100), как и
+        // Публикация истории канала — только админ (PL>=99), как и
         // остальное управление каналом (см. chat_details_view.dart).
-        if (controller.room.isChannel && controller.room.ownPowerLevel >= 100)
+        if (controller.room.isChannel &&
+            controller.room.ownPowerLevel >= adminPowerLevel)
           IconButton(
             icon: const Icon(Icons.add_circle_outline),
             tooltip: L10n.of(context).addChannelStory,

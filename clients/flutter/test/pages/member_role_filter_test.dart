@@ -9,16 +9,20 @@ void main() {
       expect(matchesRoleFilter(100, MemberRoleFilter.all), isTrue);
     });
 
-    test('admins — только 100 и выше', () {
+    // С 2026-10-14: владелец 100 и админ 99 — оба «админы» (RL-room-owner-transfer).
+    test('admins — 99 и выше (админ и владелец)', () {
       expect(matchesRoleFilter(100, MemberRoleFilter.admins), isTrue);
+      expect(matchesRoleFilter(99, MemberRoleFilter.admins), isTrue);
+      expect(matchesRoleFilter(98, MemberRoleFilter.admins), isFalse);
       expect(matchesRoleFilter(101, MemberRoleFilter.admins), isTrue);
       expect(matchesRoleFilter(50, MemberRoleFilter.admins), isFalse);
       expect(matchesRoleFilter(0, MemberRoleFilter.admins), isFalse);
     });
 
-    test('moderators — от 50 до 99', () {
+    test('moderators — от 50 до 98', () {
       expect(matchesRoleFilter(50, MemberRoleFilter.moderators), isTrue);
-      expect(matchesRoleFilter(99, MemberRoleFilter.moderators), isTrue);
+      expect(matchesRoleFilter(98, MemberRoleFilter.moderators), isTrue);
+      expect(matchesRoleFilter(99, MemberRoleFilter.moderators), isFalse);
       expect(matchesRoleFilter(100, MemberRoleFilter.moderators), isFalse);
       expect(matchesRoleFilter(49, MemberRoleFilter.moderators), isFalse);
     });

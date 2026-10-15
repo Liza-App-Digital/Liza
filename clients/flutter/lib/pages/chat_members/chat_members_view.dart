@@ -12,6 +12,7 @@ import '../../widgets/layouts/max_width_body.dart';
 import '../../widgets/matrix.dart';
 import '../chat_details/participant_list_item.dart';
 import 'chat_members.dart';
+import 'member_filter_checkboxes.dart';
 import 'member_role_filter.dart';
 
 class ChatMembersView extends StatelessWidget {
@@ -261,38 +262,28 @@ class ChatMembersView extends StatelessWidget {
                                 .toList(),
                           ),
                         ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: _membershipCheckbox(
-                                  context,
-                                  label: L10n.of(context).memberFilterOnServer,
-                                  value: controller.onServerOnly,
-                                  onChanged: controller.setOnServerOnly,
-                                ),
-                              ),
-                              Expanded(
-                                child: _membershipCheckbox(
-                                  context,
-                                  label: L10n.of(context).memberFilterInCompany,
-                                  value: controller.inCompanyOnly,
-                                  onChanged: controller.setInCompanyOnly,
-                                ),
-                              ),
-                            ],
+                        if (controller.membershipFiltersReady &&
+                            !controller.filterBaseEmpty)
+                          MemberFilterCheckboxes(
+                            serverLabel: controller.serverLabel,
+                            hasServerName:
+                                controller.companyServerName.isNotEmpty,
+                            isSpace: room.isSpace,
+                            showServer: controller.serverFilterUseful,
+                            showCompany: controller.companyFilterUseful,
+                            onServerOnly: controller.onServerOnly,
+                            inCompanyOnly: controller.inCompanyOnly,
+                            onServerChanged: controller.setOnServerOnly,
+                            onCompanyChanged: controller.setInCompanyOnly,
                           ),
-                        ),
                         // Тумблер «показать скрытых» — только тому, кто вправе
-                        // скрывать (PL>=100), и только если скрытые вообще есть.
+                        // скрывать (PL>=99), и только если скрытые вообще есть.
                         if (room.canHideMembers && hiddenIds.isNotEmpty)
                           Padding(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 16.0,
                             ),
-                            child: _membershipCheckbox(
-                              context,
+                            child: MembershipCheckbox(
                               label: L10n.of(context).showHiddenMembers,
                               value: controller.showHiddenMembers,
                               onChanged: controller.setShowHiddenMembers,
@@ -355,32 +346,6 @@ class ChatMembersView extends StatelessWidget {
       ),
     );
   }
-
-  Widget _membershipCheckbox(
-    BuildContext context, {
-    required String label,
-    required bool value,
-    required ValueChanged<bool> onChanged,
-  }) => InkWell(
-    onTap: () => onChanged(!value),
-    child: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Checkbox(
-          value: value,
-          onChanged: (checked) => onChanged(checked ?? false),
-          visualDensity: VisualDensity.compact,
-        ),
-        Flexible(
-          child: Text(
-            label,
-            style: Theme.of(context).textTheme.bodyMedium,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      ],
-    ),
-  );
 
   Widget? _accessPanel(
     BuildContext context,

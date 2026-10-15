@@ -44,7 +44,10 @@ void main() {
         reason: 'ChatController должен уметь публиковать историю канала',
       );
 
-      final view = File('lib/pages/chat/chat_view.dart').readAsStringSync();
+      // Пробелы схлопываем: dart format переносит длинное условие на две строки.
+      final view = File(
+        'lib/pages/chat/chat_view.dart',
+      ).readAsStringSync().replaceAll(RegExp(r'\s+'), ' ');
       expect(
         view.contains('controller.addChannelStory'),
         isTrue,
@@ -57,13 +60,13 @@ void main() {
       // кнопки при этом окажется снят (найдено ревью, деградация ловится
       // только проверкой соседства, а не поиском подстроки по всему файлу).
       final gate =
-          'controller.room.isChannel && controller.room.ownPowerLevel >= 100';
+          'controller.room.isChannel && controller.room.ownPowerLevel >= adminPowerLevel';
       final gateIndex = view.indexOf(gate);
       expect(
         gateIndex,
         isNot(-1),
         reason:
-            'гейт "isChannel && ownPowerLevel >= 100" должен стоять прямо '
+            'гейт "isChannel && ownPowerLevel >= adminPowerLevel" должен стоять прямо '
             'перед кнопкой addChannelStory (проверяем полное условие целиком, '
             'не отдельно isChannel — иначе снятый гейт с отвлекающим '
             'упоминанием isChannel в другом месте файла проходит незамеченным)',

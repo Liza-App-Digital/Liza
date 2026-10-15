@@ -181,6 +181,7 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
   ) {
     final l10n = L10n.of(context);
     return switch (action) {
+      CreateMenuAction.newRequest => l10n.newLizaRequest,
       CreateMenuAction.group => l10n.createGroup,
       CreateMenuAction.channel => l10n.createChannel,
       CreateMenuAction.story => l10n.createStory,
@@ -203,6 +204,9 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
     CreateMenuAction action,
   ) async {
     switch (action) {
+      case CreateMenuAction.newRequest:
+        await _openNewLizaRequest(context);
+        return;
       case CreateMenuAction.group:
         context.go('/rooms/newgroup');
         return;
@@ -245,6 +249,22 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
     }
   }
 
+  /// «Новый запрос»: отдельный чат с Лизой (P1 встречи 05.10). Название
+  /// «Лиза: <суть>» ставит бот после первого сообщения; до того — «Новый
+  /// запрос». Двойной тап: барьер диалога + single-flight `forceNew`.
+  Future<void> _openNewLizaRequest(BuildContext context) async {
+    final client = Matrix.of(context).client;
+    final title = L10n.of(context).newLizaRequest;
+    final created = await showFutureLoadingDialog(
+      context: context,
+      future: () =>
+          startLizaRequestChat(client, MatrixState.lizaMxid, title: title),
+    );
+    final result = created.result;
+    if (result == null || !context.mounted) return;
+    context.go('/rooms/${result.$1}');
+  }
+
   /// Открывает Лизу ИИ с карточкой «Подключить своего агента».
   ///
   /// Шлём callback кнопки `agent.start` (контракт карточек бота, как
@@ -260,7 +280,7 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
       final created = await showFutureLoadingDialog(
         context: context,
         future: () async {
-          final id = await client.ensureDirectChat(lizaMxid);
+          final id = await ensureLizaAssistantDm(client, lizaMxid);
           return (id, await waitForMemberJoin(client, id, lizaMxid));
         },
       );

@@ -7,6 +7,7 @@ import 'package:liza/pages/invitation_selection/invitation_selection.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/layouts/max_width_body.dart';
 import 'package:liza/widgets/matrix.dart';
+import 'package:liza/widgets/search_people_bots_sections.dart';
 import 'package:liza/widgets/user_identifier.dart';
 import 'package:liza/utils/user_role_service.dart';
 import 'package:liza/widgets/user_role_badge.dart';
@@ -87,27 +88,35 @@ class InvitationSelectionView extends StatelessWidget {
                     .map((user) => user.id)
                     .toSet();
                 return controller.foundProfiles.isNotEmpty
-                    ? ListView.builder(
-                        physics: const NeverScrollableScrollPhysics(),
-                        shrinkWrap: true,
-                        itemCount: controller.foundProfiles.length,
-                        itemBuilder: (BuildContext context, int i) =>
-                            _InviteContactListTile(
-                              profile: controller.foundProfiles[i],
-                              isMember: participants.contains(
-                                controller.foundProfiles[i].userId,
-                              ),
-                              onTap: () => controller.inviteAction(
-                                context,
-                                controller.foundProfiles[i].userId,
-                                searchResultLabel(
-                                  controller.foundProfiles[i],
-                                  handles:
-                                      Matrix.of(context).userHandleService,
-                                  unknown: L10n.of(context).user,
-                                ).title,
-                              ),
-                            ),
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: peopleAndBotsSections(
+                          context,
+                          controller.foundProfiles,
+                          buildBody: (profiles) => Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              for (final profile in profiles)
+                                _InviteContactListTile(
+                                  key: ValueKey(profile.userId),
+                                  profile: profile,
+                                  isMember: participants.contains(
+                                    profile.userId,
+                                  ),
+                                  onTap: () => controller.inviteAction(
+                                    context,
+                                    profile.userId,
+                                    searchResultLabel(
+                                      profile,
+                                      handles:
+                                          Matrix.of(context).userHandleService,
+                                      unknown: L10n.of(context).user,
+                                    ).title,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
                       )
                     : FutureBuilder<List<User>>(
                         future: controller.getContacts(context),
@@ -169,6 +178,7 @@ class _InviteContactListTile extends StatelessWidget {
     this.user,
     required this.isMember,
     required this.onTap,
+    super.key,
   });
 
   @override

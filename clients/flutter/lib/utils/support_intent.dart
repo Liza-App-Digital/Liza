@@ -8,16 +8,23 @@ const supportIntentStateType = 'com.liza.support.intent';
 
 /// Намерение, с которым пользователь пришёл в поддержку.
 enum SupportIntent {
-  /// «Создать компанию» (rail-«+», плашка на чипе «Компании»).
-  createCompany('create_company');
+  /// «Создать компанию» → «Оставить заявку» в попапе (rail-«+», плашка на чипе
+  /// «Компании»). `next: request` — бот пропускает вступление (его пользователь
+  /// уже прочитал в попапе) и сразу просит описать заявку. Старый бот поле
+  /// игнорирует и присылает вступление с карточкой.
+  createCompanyRequest('create_company', next: 'request');
 
-  const SupportIntent(this.wireValue);
+  const SupportIntent(this.wireValue, {this.next});
 
   /// Значение `content.intent` — контракт с `servers/liza-bot-api/support`.
   final String wireValue;
 
+  /// Значение `content.next` — шаг, с которого бот начинает сценарий.
+  final String? next;
+
   Map<String, Object?> get content => {
     'intent': wireValue,
+    if (next != null) 'next': next,
     'ts': DateTime.now().millisecondsSinceEpoch,
   };
 }

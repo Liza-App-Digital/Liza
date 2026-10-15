@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:go_router/go_router.dart';
+import 'package:matrix/matrix.dart';
 import 'package:pretty_qr_code/pretty_qr_code.dart';
 
 import 'package:liza/config/app_config.dart';
@@ -17,6 +18,7 @@ import 'package:liza/widgets/matrix.dart';
 import 'package:liza/widgets/user_identifier.dart';
 import 'package:liza/utils/user_role_service.dart';
 import 'package:liza/widgets/user_role_badge.dart';
+import 'package:liza/widgets/search_people_bots_sections.dart';
 import '../../widgets/qr_code_viewer.dart';
 
 class NewPrivateChatView extends StatelessWidget {
@@ -287,51 +289,23 @@ class NewPrivateChatView extends StatelessWidget {
                               ],
                             );
                           }
-                          return ListView.builder(
-                            itemCount: result.length,
-                            itemBuilder: (context, i) {
-                              final contact = result[i];
-                              final handles =
-                                  Matrix.of(context).userHandleService;
-                              // Имя → @ник → localpart (LABA-2552).
-                              final label = searchResultLabel(
-                                contact,
-                                handles: handles,
-                                unknown: contact.userId,
-                              );
-                              return ListTile(
-                                leading: Avatar(
-                                  name: label.avatarName,
-                                  mxContent: contact.avatarUrl,
-                                  presenceUserId: contact.userId,
-                                  isHexagonal: Matrix.of(
-                                    context,
-                                  ).isAiUser(contact.userId),
-                                ),
-                                title: Wrap(
-                                  spacing: 6,
-                                  runSpacing: 2,
-                                  crossAxisAlignment: WrapCrossAlignment.center,
-                                  children: [
-                                    Text(label.title),
-                                    UserRoleBadge(
-                                      userId: contact.userId,
-                                      hideRoleCodes: const {
-                                        UserRoleService.adminRole,
-                                        UserRoleService.moderatorRole,
-                                      },
+                          return ListView(
+                            children: peopleAndBotsSections(
+                              context,
+                              result,
+                              buildBody: (profiles) => Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  for (final contact in profiles)
+                                    _ContactSearchTile(
+                                      key: ValueKey(contact.userId),
+                                      contact: contact,
+                                      onTap: () =>
+                                          controller.openUserModal(contact),
                                     ),
-                                  ],
-                                ),
-                                subtitle: Text(
-                                  userIdentifier(
-                                    contact.userId,
-                                    handles: handles,
-                                  ),
-                                ),
-                                onTap: () => controller.openUserModal(contact),
-                              );
-                            },
+                                ],
+                              ),
+                            ),
                           );
                         },
                       ),
@@ -340,6 +314,54 @@ class NewPrivateChatView extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Строка находки в выдаче поиска: имя → @ник → localpart (LABA-2552).
+class _ContactSearchTile extends StatelessWidget {
+  const _ContactSearchTile({
+    required this.contact,
+    required this.onTap,
+    super.key,
+  });
+
+  final Profile contact;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final handles = Matrix.of(context).userHandleService;
+    // Имя → @ник → localpart (LABA-2552).
+    final label = searchResultLabel(
+      contact,
+      handles: handles,
+      unknown: contact.userId,
+    );
+    return ListTile(
+      leading: Avatar(
+        name: label.avatarName,
+        mxContent: contact.avatarUrl,
+        presenceUserId: contact.userId,
+        isHexagonal: Matrix.of(context).isAiUser(contact.userId),
+      ),
+      title: Wrap(
+        spacing: 6,
+        runSpacing: 2,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(label.title),
+          UserRoleBadge(
+            userId: contact.userId,
+            hideRoleCodes: const {
+              UserRoleService.adminRole,
+              UserRoleService.moderatorRole,
+            },
+          ),
+        ],
+      ),
+      subtitle: Text(userIdentifier(contact.userId, handles: handles)),
+      onTap: onTap,
     );
   }
 }
