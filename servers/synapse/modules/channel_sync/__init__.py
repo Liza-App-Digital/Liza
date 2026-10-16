@@ -31,6 +31,8 @@ from synapse_modules.channel_sync._logic import (
     is_public_channel,
     is_root_post,
     join_rule_of,
+    join_rules_content,
+    pick_discussion_actor,
     plan_discussion_migration,
     plan_is_noop,
     should_cleanup_mappings,
@@ -101,6 +103,40 @@ class ChannelSyncModule:
         create = await self._state.get_current_state_event(room_id, "m.room.create", "")
         return getattr(create, "sender", None) if create is not None else None
 
+    async def _discussion_actor(self, discussion_id: str) -> str | None:
+        """Локальный участник чата, от чьего имени пишет модуль
+        (см. pick_discussion_actor): создатель, а после его ухода — свой
+        участник с наибольшим PL."""
+        creator = await self._room_creator(discussion_id)
+        if self._main_store is None:
+            return creator
+        try:
+            joined = await self._main_store.get_users_in_room(discussion_id)
+        except Exception:
+            logger.exception("channel_sync: участники %s не прочитаны", discussion_id)
+            return creator
+        local = [u for u in joined if self._api.is_mine(u)]
+        pl = await self._state.get_current_state_event(
+            discussion_id, "m.room.power_levels", ""
+        )
+        actor = pick_discussion_actor(
+            creator, local, getattr(pl, "content", None) if pl is not None else None
+        )
+        if actor is None:
+            logger.warning(
+                "channel_sync: в чате %s нет своего участника с правами — "
+                "запись с этого сервера пропущена",
+                discussion_id,
+            )
+        elif actor != creator:
+            logger.info(
+                "channel_sync: создателя %s нет в чате %s, пишем от %s",
+                creator,
+                discussion_id,
+                actor,
+            )
+        return actor
+
     async def _is_ai(self, user_id: str) -> bool:
         localpart = user_id.split(":", 1)[0].lstrip("@")
         if localpart in _AI_LOCALPARTS:
@@ -120,8 +156,8 @@ class ChannelSyncModule:
 
         Порядок как в channel_stories._add_member: AI-фильтр → привязанный
         чат → мьют (только локальным) → owner → инвайт. Инвайт нужен только
-        для ЗАКРЫТОГО канала: у открытого чат public и подписчик войдёт сам
-        при первой отправке комментария (тихий join на клиенте).
+        чату с правилом invite: public и restricted (закрытый канал с
+        2026-10-15) подписчик проходит сам тихим join на клиенте.
         """
         if await self._is_ai(member):
             return
@@ -130,10 +166,12 @@ class ChannelSyncModule:
             return  # комментарии у канала выключены
         if self._api.is_mine(member):
             await self._mute_for_subscriber(member, discussion_id)
-        join_rule = await self._channel_join_rule(channel_id)
-        if is_public_channel(join_rule):
+        # Ветвимся по ФАКТИЧЕСКОМУ правилу чата, а не по приватности канала:
+        # restricted пускает подписчика сам, а invite-чат (создан старым
+        # клиентом, ещё не мигрирован) по-прежнему требует приглашения.
+        if await self._channel_join_rule(discussion_id) != "invite":
             return
-        owner = await self._room_creator(discussion_id)
+        owner = await self._discussion_actor(discussion_id)
         if owner is None:
             return
         remote_hosts = None if self._api.is_mine(member) else [member.split(":", 1)[1]]
@@ -162,12 +200,12 @@ class ChannelSyncModule:
         discussion_id = await self._discussion_room(channel_id)
         if discussion_id is None:
             return  # комментарии у канала выключены
-        owner = await self._room_creator(discussion_id)
+        owner = await self._discussion_actor(discussion_id)
         if owner is None:
             return
-        settings = discussion_settings_for(join_rule)
+        settings = discussion_settings_for(join_rule, channel_id)
         for event_type, content in (
-            (JOIN_RULES_STATE, {"join_rule": settings["join_rule"]}),
+            (JOIN_RULES_STATE, join_rules_content(settings)),
             (
                 HISTORY_VISIBILITY_STATE,
                 {"history_visibility": settings["history_visibility"]},
@@ -210,30 +248,20 @@ class ChannelSyncModule:
         return (content or {}).get("history_visibility")
 
     async def _channel_snapshot(self, channel_id: str, discussion_id: str) -> dict:
-        """Снимок состояния канала и его чата для plan_discussion_migration.
-
-        channel_members фильтруем от AI ЗДЕСЬ, а не в плане: _is_ai async
-        (ходит в account data), а планировщик — чистая функция.
-        """
-        channel_members = await self._main_store.get_users_in_room(channel_id)
-        human_members = [m for m in channel_members if not await self._is_ai(m)]
-
-        # join + invite привязанного чата: приглашённого, но не принявшего
-        # инвайт повторно звать нельзя — Synapse не отклоняет дубликат, а
-        # переиздаёт m.room.member, и человек получает новое уведомление на
-        # КАЖДЫЙ рестарт Synapse.
-        joined = await self._main_store.get_users_in_room(discussion_id)
-        invited = await self._main_store.get_invited_users_in_room(discussion_id)
-
+        """Снимок состояния канала и его чата для plan_discussion_migration."""
+        rules = await self._state.get_current_state_event(
+            discussion_id, JOIN_RULES_STATE, ""
+        )
         return {
+            "channel_id": channel_id,
             "channel_join_rule": await self._channel_join_rule(channel_id),
-            "discussion_join_rule": await self._channel_join_rule(discussion_id),
+            "discussion_join_rules": dict(getattr(rules, "content", None) or {})
+            if rules is not None
+            else {},
             "discussion_history_visibility": await self._history_visibility(
                 discussion_id
             ),
             "discussion_hidden": await self._discussion_hidden(discussion_id),
-            "channel_members": human_members,
-            "discussion_members": list(joined) + list(invited),
         }
 
     async def _migrate_channel_visibility(self, channel_id: str) -> bool:
@@ -296,14 +324,18 @@ class ChannelSyncModule:
         Реактивные колбэки (_sync_discussion_privacy, _on_channel_join) чинят
         это только для БУДУЩИХ событий, существующие каналы надо обойти явно.
 
-        Пишем от имени создателя ЧАТА: у @synapse_admin нет прав на state
+        С 2026-10-15 закрытый канал получает restricted по членству в канале
+        вместо инвайтов (см. discussion_settings_for), миграция никого не зовёт.
+
+        Пишем от имени исполнителя (создатель ЧАТА, а если его нет в чате —
+        свой участник с наибольшим PL): у @synapse_admin нет прав на state
         чужих комнат (клиентский API отдаёт 403, а admin API писать state не
         умеет вовсе) — ровно поэтому миграция и живёт в модуле.
         """
         discussion_id = await self._discussion_room(channel_id)
         if discussion_id is None:
             return False  # комментарии у канала выключены
-        owner = await self._room_creator(discussion_id)
+        owner = await self._discussion_actor(discussion_id)
         if owner is None:
             logger.warning(
                 "channel_sync: миграция %s пропущена — у чата %s нет создателя",
@@ -318,21 +350,18 @@ class ChannelSyncModule:
             return False
 
         logger.info(
-            "channel_sync: миграция канала %s -> чат %s: join_rule=%s "
-            "history_visibility=%s hidden=%s инвайтов=%s",
+            "channel_sync: миграция канала %s -> чат %s: join_rules=%s "
+            "history_visibility=%s hidden=%s",
             channel_id,
             discussion_id,
-            plan["set_join_rule"],
+            plan["set_join_rules"],
             plan["set_history_visibility"],
             plan["set_hidden"],
-            len(plan["invite"]),
         )
 
         state_writes = []
-        if plan["set_join_rule"]:
-            state_writes.append(
-                (JOIN_RULES_STATE, {"join_rule": plan["set_join_rule"]})
-            )
+        if plan["set_join_rules"]:
+            state_writes.append((JOIN_RULES_STATE, plan["set_join_rules"]))
         if plan["set_history_visibility"]:
             state_writes.append(
                 (
@@ -363,22 +392,6 @@ class ChannelSyncModule:
                     discussion_id,
                 )
 
-        for member in plan["invite"]:
-            remote_hosts = (
-                None if self._api.is_mine(member) else [member.split(":", 1)[1]]
-            )
-            try:
-                await self._api.update_room_membership(
-                    owner, member, discussion_id, "invite",
-                    remote_room_hosts=remote_hosts,
-                )
-            except Exception as e:  # уже участник / забанен / гонка
-                logger.debug(
-                    "channel_sync: миграция, invite %s -> %s пропущен: %s",
-                    member,
-                    discussion_id,
-                    e,
-                )
         return True
 
     async def _migrate_channel_discussions(self) -> None:
@@ -450,7 +463,7 @@ class ChannelSyncModule:
         discussion_id = await self._discussion_room(channel_id)
         if discussion_id is None:
             return  # комментарии у канала выключены
-        owner = await self._room_creator(discussion_id)
+        owner = await self._discussion_actor(discussion_id)
         if owner is None:
             return
         try:
@@ -560,6 +573,16 @@ class ChannelSyncModule:
                 discussion_room_of({}, content),
                 channel_deleted_of(content),
             )
+            # Привязка нового (или повторно включённого) чата: приводим его к
+            # модели сразу, а не на следующем рестарте. Старые клиенты (≤3779)
+            # создают чат закрытого канала как invite — без этого подписчики
+            # такого чата не вошли бы до рестарта Synapse.
+            if discussion_room_of({}, content) and not channel_deleted_of(content):
+                self._api.run_as_background_process(
+                    "channel_sync_bind_migrate",
+                    self._migrate_one_channel,
+                    event.room_id,
+                )
             return
         if event.type == JOIN_RULES_STATE:
             if await self._channel_type(event.room_id) != _CHANNEL_TYPE:
@@ -656,7 +679,7 @@ class ChannelSyncModule:
         повторный инвайт уже приглашённому просто отдаёт ошибку, которую мы
         глотаем.
         """
-        owner = await self._room_creator(discussion_id)
+        owner = await self._discussion_actor(discussion_id)
         if owner is None:
             return False
         remote_hosts = [author.split(":", 1)[1]] if ":" in author else None

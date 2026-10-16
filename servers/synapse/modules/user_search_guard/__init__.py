@@ -98,10 +98,19 @@ class UserSearchGuardModule:
                 run_on_all_instances=True,
             )
 
-        # Скрытая компания. Класс инстанса читаем из конфига single_space_guard
-        # (не свой флаг — второй источник истины), id главного пространства
-        # кэшируем навсегда, как и сам single_space_guard.
-        self._is_company = is_company_instance(self._loaded_modules())
+        # Скрытие людей скрытой компании выключено по умолчанию: Надежда 15.10
+        # — «пока мы решили пользователей не скрывать, пока там только свои».
+        # Включает только литерал true: опечатка в конфиге не прячет людей.
+        # Выключенный флаг глушит и свою политику (соседи получат OPEN), и
+        # чужие (_policy_for): иначе этот сервер прятал бы людей соседа, у
+        # которого флаг ещё включён.
+        self.hide_company_members = config.get("hide_company_members") is True
+        # Класс инстанса читаем из конфига single_space_guard (не свой флаг —
+        # второй источник истины), id главного пространства кэшируем навсегда,
+        # как и сам single_space_guard.
+        self._is_company = self.hide_company_members and is_company_instance(
+            self._loaded_modules()
+        )
         self._main_root_id: Optional[str] = None
         self._own_policy: Optional[CompanyPolicy] = None
         self._remote_policies: dict[str, CompanyPolicy] = {}
@@ -127,10 +136,11 @@ class UserSearchGuardModule:
             _UserSearchResource(api, self),
         )
         logger.info(
-            "UserSearchGuardModule loaded (share_over_federation=%s, registry=%s, hidden_users=%d, company=%s)",
+            "UserSearchGuardModule loaded (share_over_federation=%s, registry=%s, hidden_users=%d, hide_company_members=%s, company=%s)",
             self.share_users_over_federation,
             registry_url or "-",
             len(self.deny_list),
+            self.hide_company_members,
             self._is_company,
         )
 
@@ -181,6 +191,8 @@ class UserSearchGuardModule:
         self._remote_policies.update(fetched)
 
     def _policy_for(self, user_id: str) -> Optional[CompanyPolicy]:
+        if not self.hide_company_members:
+            return None
         domain = domain_of(user_id)
         if domain == self._api._hs.hostname:
             return self._own_policy
@@ -208,6 +220,8 @@ class UserSearchGuardModule:
         ищущий неизвестен всегда (RL-private-bots)."""
         if self.is_hidden(user_id, None if federated else searcher):
             return True
+        if not self.hide_company_members:
+            return False
         # Начальный пересчёт идёт фоном: до него (или после его сбоя)
         # _own_policy пуст и колбэк директории пропускал бы людей скрытой
         # компании (fail-open). Своя политика считается лениво на месте.

@@ -1,3 +1,4 @@
+// ledger:RL-channel-discussion-restricted-join
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
 
@@ -39,22 +40,26 @@ void main() {
         channelJoinRule: 'public',
       );
       expect(contentOf(state, 'm.room.join_rules'), {'join_rule': 'public'});
-      expect(
-        contentOf(state, 'm.room.history_visibility'),
-        {'history_visibility': 'world_readable'},
-      );
+      expect(contentOf(state, 'm.room.history_visibility'), {
+        'history_visibility': 'world_readable',
+      });
     });
 
-    test('закрытый канал: чат invite + shared', () {
+    // AC:RL-channel-discussion-restricted-join/6
+    test('закрытый канал: чат restricted по членству в канале + shared', () {
       final state = buildDiscussionInitialState(
         channelId: '!chan:h',
         channelJoinRule: 'invite',
       );
-      expect(contentOf(state, 'm.room.join_rules'), {'join_rule': 'invite'});
-      expect(
-        contentOf(state, 'm.room.history_visibility'),
-        {'history_visibility': 'shared'},
-      );
+      expect(contentOf(state, 'm.room.join_rules'), {
+        'join_rule': 'restricted',
+        'allow': [
+          {'type': 'm.room_membership', 'room_id': '!chan:h'},
+        ],
+      });
+      expect(contentOf(state, 'm.room.history_visibility'), {
+        'history_visibility': 'shared',
+      });
     });
   });
 

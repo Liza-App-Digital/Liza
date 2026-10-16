@@ -150,3 +150,32 @@ List<GroupPlace> groupPlaces(Iterable<Room> rooms) {
   }
   return result;
 }
+
+/// Показывать ли выбор «Где создать» (Надежда 15.10): «Если пользователь
+/// состоит и там, и там — показывать: создать в компании или для себя в общем
+/// пространстве… Если пользователь состоит в компании и больше нигде, то по
+/// сути у него нет выбора».
+///
+/// [companyInstance] — класс домашнего сервера: `false` общий (user.liza.ru,
+/// там «Автоматически» = группа вне пространств, «для себя»), `true` компания
+/// («Автоматически» = главное пространство своей компании), `null` — сервер
+/// ещё не ответил: прежняя формула, не хуже, чем было.
+///
+/// На компании выбор нужен, только если есть место ВНЕ своей компании (её
+/// корень — [ownCompanyRootId]): свои подпространства — то же «в компании».
+bool shouldShowPlacePicker({
+  required List<GroupPlace> places,
+  required bool? companyInstance,
+  required String? ownCompanyRootId,
+  required String? userDomain,
+}) {
+  if (companyInstance == null) return places.length > 1;
+  if (!companyInstance) return places.isNotEmpty;
+  bool isOwn(GroupPlace p) {
+    final rootId = (p.company ?? p.space).id;
+    if (ownCompanyRootId != null) return rootId == ownCompanyRootId;
+    return rootId.split(':').skip(1).join(':') == userDomain;
+  }
+
+  return places.any((p) => !isOwn(p));
+}

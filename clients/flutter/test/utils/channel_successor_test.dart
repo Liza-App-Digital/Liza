@@ -23,26 +23,26 @@ void main() {
     });
   });
 
-  group('pickChannelSuccessor — выбор преемника-админа', () {
+  group('pickOwnerSuccessor — выбор преемника-админа', () {
     test('приоритет — модератор с максимальным PL', () {
-      final id = pickChannelSuccessor(const [
-        ChannelSuccessorCandidate('@u1:x', 0),
-        ChannelSuccessorCandidate('@mod50:x', 50),
-        ChannelSuccessorCandidate('@mod70:x', 70),
+      final id = pickOwnerSuccessor(const [
+        OwnerSuccessorCandidate('@u1:x', 0),
+        OwnerSuccessorCandidate('@mod50:x', 50),
+        OwnerSuccessorCandidate('@mod70:x', 70),
       ]);
       expect(id, '@mod70:x');
     });
 
     test('нет модераторов → детерминированный первый по id', () {
-      final id = pickChannelSuccessor(const [
-        ChannelSuccessorCandidate('@zoe:x', 0),
-        ChannelSuccessorCandidate('@amy:x', 0),
+      final id = pickOwnerSuccessor(const [
+        OwnerSuccessorCandidate('@zoe:x', 0),
+        OwnerSuccessorCandidate('@amy:x', 0),
       ]);
       expect(id, '@amy:x');
     });
 
     test('нет кандидатов → null (канал единственного участника удаляется)', () {
-      expect(pickChannelSuccessor(const []), isNull);
+      expect(pickOwnerSuccessor(const []), isNull);
     });
   });
 }

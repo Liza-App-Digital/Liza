@@ -1,5 +1,7 @@
 """Интеграционные тесты ChannelSyncModule (зеркалирование create).
 
+ledger:RL-channel-discussion-restricted-join
+
 Async-стиль: pytest-asyncio в servers/synapse/src не установлен (урок из
 плана 1) — используем unittest.TestCase + asyncio.run(...), как в
 channel_sync/tests/test_storage.py.
@@ -96,10 +98,11 @@ class _FakeState:
             rule = self._join_rules.get(room_id)
             if rule is None:
                 return None
+            # строка — только join_rule; dict — content целиком (restricted+allow)
             return _FakeEvent(
                 event_type=ev_type,
                 room_id=room_id,
-                content={"join_rule": rule},
+                content=dict(rule) if isinstance(rule, dict) else {"join_rule": rule},
             )
         if ev_type == "m.room.history_visibility":
             visibility = self._history_visibility.get(room_id)
@@ -737,14 +740,38 @@ class ChannelVisibilityMigrationTest(unittest.TestCase):
         self.assertEqual(m._api.state_events, [])
 
 
-class ChannelJoinAutoInviteTest(unittest.TestCase):
-    """join в КАНАЛ → мьют привязанного чата + инвайт (для закрытого канала)."""
+RESTRICTED_DISC = {
+    "join_rule": "restricted",
+    "allow": [{"type": "m.room_membership", "room_id": "!chan:h"}],
+}
 
-    def test_private_channel_join_invites_subscriber_into_discussion(self):
+
+class ChannelJoinAutoInviteTest(unittest.TestCase):
+    """join в КАНАЛ → мьют привязанного чата + инвайт, только если чат
+    фактически invite (создан старым клиентом, ещё не мигрирован)."""
+
+    def test_restricted_discussion_join_does_not_invite(self):
+        """AC:RL-channel-discussion-restricted-join/3 — закрытый канал с чатом
+        restricted: подписчик входит сам, инвайта нет, мьют ставится."""
         main_store = _FakeMainStore()
         m = _make_module(
             room_chat_types={"!chan:h": "channel", "!disc:h": "channel_discussion"},
-            join_rules={"!chan:h": "invite"},
+            join_rules={"!chan:h": "invite", "!disc:h": RESTRICTED_DISC},
+            room_creators={"!disc:h": "@owner:h"},
+            main_store=main_store,
+        )
+        event = _member_event(room_id="!chan:h", state_key="@sub:h")
+        _run_on_new_event(m, event, {})
+
+        self.assertEqual(m._api.memberships, [])
+        self.assertEqual(len(main_store.push_rules_added), 1)
+
+    def test_private_channel_join_invites_subscriber_into_discussion(self):
+        """AC:RL-channel-discussion-restricted-join/3 — старый invite-чат по-прежнему инвайтит."""
+        main_store = _FakeMainStore()
+        m = _make_module(
+            room_chat_types={"!chan:h": "channel", "!disc:h": "channel_discussion"},
+            join_rules={"!chan:h": "invite", "!disc:h": "invite"},
             room_creators={"!disc:h": "@owner:h"},
             main_store=main_store,
         )
@@ -797,7 +824,7 @@ class ChannelJoinAutoInviteTest(unittest.TestCase):
         main_store = _FakeMainStore()
         m = _make_module(
             room_chat_types={"!chan:h": "channel", "!disc:h": "channel_discussion"},
-            join_rules={"!chan:h": "invite"},
+            join_rules={"!chan:h": "invite", "!disc:h": "invite"},
             room_creators={"!disc:h": "@owner:h"},
             main_store=main_store,
         )
@@ -1082,9 +1109,9 @@ class DiscussionPrivacySyncTest(unittest.TestCase):
         _run_on_new_event(m, _join_rules_event(join_rule="invite"), {})
 
         by_type = {e["type"]: e for e in m._api.state_events}
-        self.assertEqual(
-            by_type["m.room.join_rules"]["content"], {"join_rule": "invite"}
-        )
+        # AC:RL-channel-discussion-restricted-join/1 — restricted с allow в
+        # КАЖДОЙ записи: restricted без allow не пустил бы никого.
+        self.assertEqual(by_type["m.room.join_rules"]["content"], RESTRICTED_DISC)
         self.assertEqual(
             by_type["m.room.history_visibility"]["content"],
             {"history_visibility": "shared"},
@@ -1099,9 +1126,7 @@ class DiscussionPrivacySyncTest(unittest.TestCase):
         _run_on_new_event(m, _join_rules_event(join_rule="knock"), {})
 
         by_type = {e["type"]: e for e in m._api.state_events}
-        self.assertEqual(
-            by_type["m.room.join_rules"]["content"], {"join_rule": "invite"}
-        )
+        self.assertEqual(by_type["m.room.join_rules"]["content"], RESTRICTED_DISC)
         self.assertEqual(
             by_type["m.room.history_visibility"]["content"],
             {"history_visibility": "shared"},
@@ -1494,20 +1519,62 @@ class MigrationTest(unittest.TestCase):
 
         self.assertEqual(m._api.memberships, [])
 
-    def test_private_channel_invites_missing_subscribers(self):
+    def test_private_channel_migrates_invite_chat_to_restricted_without_invites(self):
+        """AC:RL-channel-discussion-restricted-join/2 — старый invite-чат закрытого
+        канала становится restricted по членству в канале; подписчиков больше не
+        зовут (войдут сами), уже приглашённых не трогаем."""
         m = self._module(
             channel_join_rule="invite",
             channel_members=("@a:h", "@b:h", "@c:h"),
-            discussion_joined=("@a:h",),
+            discussion_joined=("@owner:h", "@a:h"),
             discussion_invited=("@b:h",),
         )
 
         asyncio.run(m._migrate_channel_discussions())
 
-        # @a уже в чате, @b уже приглашён — зовём только @c.
-        self.assertEqual(
-            m._api.memberships, [("@owner:h", "@c:h", "!disc:h", "invite", None)]
+        self.assertEqual(self._state_written(m)["m.room.join_rules"], RESTRICTED_DISC)
+        self.assertEqual(m._api.memberships, [])
+
+    def test_creator_left_chat_actor_is_local_member(self):
+        """AC:RL-channel-discussion-restricted-join/5 — создатель чата ушёл
+        (кик при выходе из канала): миграция пишет от своего участника чата."""
+        m = self._with_levels(
+            self._module(
+                channel_join_rule="invite",
+                discussion_joined=("@mod:h", "@a:h", "@far:other"),
+            ),
+            {"@mod:h": 50, "@far:other": 100},
         )
+
+        asyncio.run(m._migrate_channel_discussions())
+
+        self.assertTrue(m._api.state_events)
+        for ev in m._api.state_events:
+            self.assertEqual(ev["sender"], "@mod:h")
+
+    def test_creator_left_no_local_member_with_rights_writes_nothing(self):
+        """AC:RL-channel-discussion-restricted-join/5 — свои есть, но все
+        рядовые: запись от них упала бы 403 молча — не пишем вовсе."""
+        m = self._with_levels(
+            self._module(channel_join_rule="invite", discussion_joined=("@a:h",)),
+            {"@far:other": 100},
+        )
+
+        asyncio.run(m._migrate_channel_discussions())
+
+        self.assertEqual(m._api.state_events, [])
+
+    @staticmethod
+    def _with_levels(m, users):
+        original = m._state.get_current_state_event
+
+        async def _state(room_id, ev_type, state_key):
+            if room_id == "!disc:h" and ev_type == "m.room.power_levels":
+                return _FakeEvent(event_type=ev_type, content={"users": users})
+            return await original(room_id, ev_type, state_key)
+
+        m._state.get_current_state_event = _state
+        return m
 
     def test_private_channel_keeps_chat_private(self):
         m = self._module(
@@ -1519,7 +1586,7 @@ class MigrationTest(unittest.TestCase):
         asyncio.run(m._migrate_channel_discussions())
 
         written = self._state_written(m)
-        self.assertEqual(written["m.room.join_rules"], {"join_rule": "invite"})
+        self.assertEqual(written["m.room.join_rules"], RESTRICTED_DISC)
         self.assertEqual(
             written["m.room.history_visibility"], {"history_visibility": "shared"}
         )
@@ -1566,7 +1633,7 @@ class MigrationTest(unittest.TestCase):
         # реальный Synapse.
         for ev in m._api.state_events:
             if ev["type"] == "m.room.join_rules":
-                m._state._join_rules["!disc:h"] = ev["content"]["join_rule"]
+                m._state._join_rules["!disc:h"] = ev["content"]
             elif ev["type"] == "m.room.history_visibility":
                 m._state._history_visibility["!disc:h"] = ev["content"][
                     "history_visibility"
@@ -1592,39 +1659,6 @@ class MigrationTest(unittest.TestCase):
 
         self.assertEqual(
             self._state_written(m)["com.liza.chat.topology"], {"hidden": True}
-        )
-
-    def test_ai_accounts_are_not_invited(self):
-        m = self._module(
-            channel_join_rule="invite",
-            channel_members=("@a:h", "@liza:h", "@gpt:h", "@deepseek:h"),
-        )
-
-        asyncio.run(m._migrate_channel_discussions())
-
-        invited = [target for _, target, _, _, _ in m._api.memberships]
-        self.assertEqual(invited, ["@a:h"])
-
-    def test_ai_by_role_is_not_invited(self):
-        """AI определяется и по роли в account data, не только по localpart."""
-        m = self._module(channel_join_rule="invite", channel_members=("@a:h", "@bot:h"))
-        m._api.account_data["@bot:h"] = {"role": "ai"}
-
-        asyncio.run(m._migrate_channel_discussions())
-
-        invited = [target for _, target, _, _, _ in m._api.memberships]
-        self.assertEqual(invited, ["@a:h"])
-
-    def test_remote_member_invited_with_remote_hosts(self):
-        """Федеративного подписчика зовём с remote_room_hosts, иначе инвайт
-        не доедет до его сервера."""
-        m = self._module(channel_join_rule="invite", channel_members=("@far:other",))
-
-        asyncio.run(m._migrate_channel_discussions())
-
-        self.assertEqual(
-            m._api.memberships,
-            [("@owner:h", "@far:other", "!disc:h", "invite", ["other"])],
         )
 
     def test_channel_without_discussion_is_skipped(self):
@@ -1676,10 +1710,10 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(m._api.memberships, [])
 
     def test_state_write_failure_does_not_stop_the_rest(self):
-        """Отказ ОДНОЙ записи state не отменяет ни остальные записи, ни инвайты.
+        """Отказ ОДНОЙ записи state не отменяет остальные записи.
 
         Без try вокруг каждой записи чат завис бы в полусостоянии (например,
-        public без world_readable), а подписчики остались бы без инвайтов.
+        public без world_readable).
         """
         m = self._module(
             channel_join_rule="invite",
@@ -1701,31 +1735,7 @@ class MigrationTest(unittest.TestCase):
         written = self._state_written(m)
         self.assertNotIn("m.room.join_rules", written)  # эта упала
         self.assertIn("com.liza.chat.topology", written)  # эта прошла
-        self.assertEqual(
-            m._api.memberships, [("@owner:h", "@a:h", "!disc:h", "invite", None)]
-        )
-
-    def test_failed_invite_does_not_stop_other_invites(self):
-        """Один сбойный инвайт (забанен/уже участник) не отменяет остальные."""
-        m = self._module(
-            channel_join_rule="invite", channel_members=("@a:h", "@b:h", "@c:h")
-        )
-
-        original = m._api.update_room_membership
-
-        async def _boom(sender, target, room_id, action, remote_room_hosts=None):
-            if target == "@b:h":
-                raise RuntimeError("boom")
-            return await original(
-                sender, target, room_id, action, remote_room_hosts=remote_room_hosts
-            )
-
-        m._api.update_room_membership = _boom
-
-        asyncio.run(m._migrate_channel_discussions())
-
-        invited = [target for _, target, _, _, _ in m._api.memberships]
-        self.assertEqual(invited, ["@a:h", "@c:h"])
+        self.assertEqual(m._api.memberships, [])
 
     def test_lookup_failure_is_swallowed(self):
         """Упавший поиск каналов не роняет старт Synapse."""
@@ -1783,3 +1793,38 @@ class MigrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BindingMigratesDiscussionTest(unittest.TestCase):
+    """AC:RL-channel-discussion-restricted-join/4 — привязка чата к каналу сразу
+    приводит его к модели: старые клиенты (≤3779) создают чат закрытого канала
+    как invite, и без реакции на привязку подписчики не вошли бы до рестарта."""
+
+    def _module(self, content):
+        event, stored = _unlink_event(prev_discussion=None, new_content=content)
+        main_store = _FakeMainStore(events={stored.event_id: stored})
+        m = _make_module(
+            room_chat_types={"!chan:h": "channel", "!disc:h": "channel_discussion"},
+            join_rules={"!chan:h": "invite", "!disc:h": "invite"},
+            room_creators={"!disc:h": "@owner:h", "!chan:h": "@owner:h"},
+            history_visibility={"!disc:h": "shared", "!chan:h": "shared"},
+            main_store=main_store,
+        )
+        return m, event
+
+    def test_привязка_invite_чата_делает_его_restricted(self):
+        m, event = self._module({"room_id": "!disc:h"})
+
+        _run_on_new_event(m, event, {})
+
+        written = {ev["type"]: ev for ev in m._api.state_events}
+        self.assertEqual(written["m.room.join_rules"]["content"], RESTRICTED_DISC)
+        self.assertEqual(written["m.room.join_rules"]["room_id"], "!disc:h")
+
+    def test_маркер_удаления_и_отвязка_не_мигрируют(self):
+        for content in ({"room_id": "!disc:h", "deleted": True}, {}):
+            m, event = self._module(content)
+
+            _run_on_new_event(m, event, {})
+
+            self.assertEqual(m._api.state_events, [], content)

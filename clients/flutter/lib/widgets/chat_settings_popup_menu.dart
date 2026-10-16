@@ -13,6 +13,7 @@ import 'package:liza/utils/company_membership.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
+import 'package:liza/utils/owner_leave.dart';
 import 'matrix.dart';
 
 enum ChatPopupMenuActions {
@@ -77,13 +78,17 @@ class ChatSettingsPopupMenuState extends State<ChatSettingsPopupMenu> {
             switch (choice) {
               case ChatPopupMenuActions.leave:
                 final router = GoRouter.of(context);
-                // Выход единственного админа канала (п.7): назначить преемника
-                // или удалить канал единственного участника. Возвращает true,
-                // если случай обработан — обычный выход тогда не нужен.
-                if (widget.room.isChannel &&
-                    await _handleSoleAdminChannelLeave(router)) {
-                  break;
+                // Уходит единственный владелец канала, группы или
+                // пространства — передать владение (или удалить канал
+                // единственного участника). Остальное — обычный выход ниже.
+                final ownerOutcome = await handleSoleOwnerLeave(
+                  context,
+                  widget.room,
+                );
+                if (ownerOutcome == OwnerLeaveOutcome.left) {
+                  router.go('/rooms');
                 }
+                if (ownerOutcome != OwnerLeaveOutcome.notHandled) break;
                 if (!mounted) return;
                 final leaveKind = _leaveKind(context);
                 final leaveLabel = leaveActionLabel(
@@ -287,99 +292,6 @@ class ChatSettingsPopupMenuState extends State<ChatSettingsPopupMenu> {
         ),
       ],
     );
-  }
-
-  /// Выход из канала с передачей владения, если уходит ЕДИНСТВЕННЫЙ владелец
-  /// (п.7; с 2026-10-14 «админ» здесь = владелец PL 100, см. ownerPowerLevel).
-  ///
-  /// `true` — случай канала обработан (преемник назначен ИЛИ канала
-  /// единственного участника удалён), обычный выход не нужен. `false` — я не
-  /// единственный админ, пусть отработает штатная ветка с подтверждением.
-  ///
-  /// setPower преемнику ОБЯЗАН доехать ДО leave: после выхода прав на
-  /// `m.room.power_levels` уже нет (event_auth). Провал setPower всплывает в
-  /// `result.error`, и `leave` НЕ выполняется — админ остаётся, канал цел.
-  Future<bool> _handleSoleAdminChannelLeave(GoRouter router) async {
-    final room = widget.room;
-    final client = Matrix.of(context).client;
-    final myId = client.userID;
-    final l10n = L10n.of(context);
-
-    // requestParticipants форсит полную загрузку: lazy-loaded список мог не
-    // содержать всех, и «единственный админ» посчитался бы ложно.
-    List<User> participants;
-    try {
-      participants = await room.requestParticipants();
-    } catch (_) {
-      participants = room.getParticipants();
-    }
-    if (!mounted) return true;
-
-    final joined = participants
-        .where((u) => u.membership == Membership.join)
-        .toList();
-    // «Единственный» считаем по владельцам (PL 100), а не по админам-99:
-    // уход владельца при живых админах иначе оставил бы канал без того, кто
-    // может снять админа. Преемником тогда станет админ с наибольшим PL.
-    final owners = joined.where((u) => isOwnerLevel(u.powerLevel)).toList();
-    final iAmSoleAdmin = owners.length == 1 && owners.first.id == myId;
-    if (!iAmSoleAdmin) return false;
-
-    final hidden = room.hiddenMemberIds;
-    final successorId = pickChannelSuccessor(
-      joined
-          .where(
-            (u) =>
-                u.id != myId &&
-                !isServiceAccountId(u.id) &&
-                !hidden.contains(u.id),
-          )
-          .map((u) => ChannelSuccessorCandidate(u.id, u.powerLevel)),
-    );
-
-    if (successorId == null) {
-      // Кандидатов нет → я единственный участник → канал будет удалён.
-      final confirmed = await showOkCancelAlertDialog(
-        context: context,
-        title: l10n.channelLeave,
-        message: l10n.channelLeaveSoleMemberMessage,
-        okLabel: l10n.channelLeave,
-        cancelLabel: l10n.cancel,
-        isDestructive: true,
-      );
-      if (confirmed != OkCancelResult.ok || !mounted) return true;
-      final result = await showFutureLoadingDialog(
-        context: context,
-        future: () async {
-          await room.leave();
-          await room.forget();
-        },
-      );
-      if (result.error == null) router.go('/rooms');
-      return true;
-    }
-
-    final successorName = room
-        .unsafeGetUserFromMemoryOrFallback(successorId)
-        .calcDisplayname();
-    final confirmed = await showOkCancelAlertDialog(
-      context: context,
-      title: l10n.channelLeave,
-      message: l10n.channelLeaveSoleAdminMessage(successorName),
-      okLabel: l10n.channelLeave,
-      cancelLabel: l10n.cancel,
-      isDestructive: true,
-    );
-    if (confirmed != OkCancelResult.ok || !mounted) return true;
-    final result = await showFutureLoadingDialog(
-      context: context,
-      future: () async {
-        await room.setPower(successorId, ownerPowerLevel);
-        await room.leave();
-      },
-    );
-    if (result.error == null) router.go('/rooms');
-    return true;
   }
 
   void _showChatDetails() {

@@ -1,5 +1,7 @@
+# ledger:RL-channel-discussion-restricted-join
 from synapse_modules.channel_sync._logic import (
     POST_REF_KEY,
+    join_rules_content,
     build_mirror_content,
     channel_deleted_of,
     discussion_room_of,
@@ -10,10 +12,17 @@ from synapse_modules.channel_sync._logic import (
     is_public_channel,
     is_root_post,
     join_rule_of,
+    pick_discussion_actor,
     plan_discussion_migration,
     plan_is_noop,
     should_cleanup_mappings,
 )
+
+CHAN = "!chan:h"
+RESTRICTED = {
+    "join_rule": "restricted",
+    "allow": [{"type": "m.room_membership", "room_id": CHAN}],
+}
 
 
 def test_is_root_post_true_for_plain_message():
@@ -86,32 +95,23 @@ def test_join_rule_of():
 
 def test_discussion_settings_for_public_channel():
     """Открытый канал: чат читается без членства (peek) и открыт на вход."""
-    out = discussion_settings_for("public")
+    out = discussion_settings_for("public", CHAN)
     assert out == {
         "join_rule": "public",
         "history_visibility": "world_readable",
     }
+    assert join_rules_content(out) == {"join_rule": "public"}
 
 
-def test_discussion_settings_for_private_channel():
-    """Закрытый канал: чат только по инвайту, история — членам."""
-    out = discussion_settings_for("invite")
-    assert out == {
-        "join_rule": "invite",
-        "history_visibility": "shared",
-    }
-
-
-def test_discussion_settings_unknown_join_rule_is_private():
-    """Неизвестное правило трактуем как закрытое (fail-safe приватности)."""
-    assert discussion_settings_for("knock") == {
-        "join_rule": "invite",
-        "history_visibility": "shared",
-    }
-    assert discussion_settings_for(None) == {
-        "join_rule": "invite",
-        "history_visibility": "shared",
-    }
+def test_discussion_settings_closed_channel_is_restricted_to_subscribers():
+    """AC:RL-channel-discussion-restricted-join/1 — закрытый канал: вход в чат по
+    членству в КАНАЛЕ, без инвайта (механика Telegram, Надежда 15.10). Любое
+    не-public правило, включая неизвестное, — fail-safe в приватность: чат
+    никогда не становится public."""
+    for rule in ("invite", "knock", "restricted", "knock_restricted", None, "weird"):
+        out = discussion_settings_for(rule, CHAN)
+        assert out == {**RESTRICTED, "history_visibility": "shared"}, rule
+        assert join_rules_content(out) == RESTRICTED, rule
 
 
 def test_is_membership_leave_true_for_leave_and_ban():
@@ -134,26 +134,24 @@ def test_is_membership_leave_false_for_non_member_event():
 def _migrated_public_snapshot(**overrides):
     """Уже мигрированный ОТКРЫТЫЙ канал: план по нему обязан быть пустым."""
     snapshot = {
+        "channel_id": CHAN,
         "channel_join_rule": "public",
-        "discussion_join_rule": "public",
+        "discussion_join_rules": {"join_rule": "public"},
         "discussion_history_visibility": "world_readable",
         "discussion_hidden": True,
-        "channel_members": ["@a:h", "@b:h"],
-        "discussion_members": [],
     }
     snapshot.update(overrides)
     return snapshot
 
 
 def _migrated_private_snapshot(**overrides):
-    """Уже мигрированный ЗАКРЫТЫЙ канал: подписчики уже в чате."""
+    """Уже мигрированный ЗАКРЫТЫЙ канал: чат restricted по членству в канале."""
     snapshot = {
+        "channel_id": CHAN,
         "channel_join_rule": "invite",
-        "discussion_join_rule": "invite",
+        "discussion_join_rules": dict(RESTRICTED),
         "discussion_history_visibility": "shared",
         "discussion_hidden": True,
-        "channel_members": ["@a:h", "@b:h"],
-        "discussion_members": ["@a:h", "@b:h"],
     }
     snapshot.update(overrides)
     return snapshot
@@ -162,15 +160,15 @@ def _migrated_private_snapshot(**overrides):
 def test_plan_migration_noop_when_public_channel_already_correct():
     plan = plan_discussion_migration(_migrated_public_snapshot())
     assert plan == {
-        "set_join_rule": None,
+        "set_join_rules": None,
         "set_history_visibility": None,
         "set_hidden": False,
-        "invite": [],
     }
     assert plan_is_noop(plan) is True
 
 
 def test_plan_migration_noop_when_private_channel_already_correct():
+    """AC:RL-channel-discussion-restricted-join/2 — повторный прогон ничего не пишет."""
     assert plan_is_noop(plan_discussion_migration(_migrated_private_snapshot())) is True
 
 
@@ -178,63 +176,54 @@ def test_plan_migration_legacy_public_channel_opens_chat():
     """Чат создан клиентом как privateChat — открытый канал должен его открыть."""
     plan = plan_discussion_migration(
         _migrated_public_snapshot(
-            discussion_join_rule="invite",
+            discussion_join_rules={"join_rule": "invite"},
             discussion_history_visibility="shared",
             discussion_hidden=None,
         )
     )
-    assert plan["set_join_rule"] == "public"
+    assert plan["set_join_rules"] == {"join_rule": "public"}
     assert plan["set_history_visibility"] == "world_readable"
     assert plan["set_hidden"] is True
 
 
-def test_plan_migration_public_channel_never_invites():
-    """У открытого канала чат public — подписчик войдёт сам, инвайты не нужны.
+def test_plan_migration_closed_channel_cases():
+    """AC:RL-channel-discussion-restricted-join/2 — ∀ состояние чата закрытого
+    канала план приводит его к restricted с allow ровно на этот канал."""
+    cases = {
+        "invite-чат (старая модель)": {"join_rule": "invite"},
+        "restricted без allow": {"join_rule": "restricted"},
+        "restricted на чужую комнату": {
+            "join_rule": "restricted",
+            "allow": [{"type": "m.room_membership", "room_id": "!other:h"}],
+        },
+        "public (был открытым каналом)": {"join_rule": "public"},
+        "нет события": {},
+    }
+    for name, rules in cases.items():
+        plan = plan_discussion_migration(
+            _migrated_private_snapshot(discussion_join_rules=rules)
+        )
+        assert plan["set_join_rules"] == RESTRICTED, name
+        assert plan_is_noop(plan) is False, name
 
-    Ловит инверсию условия is_public_channel в планировщике: при инверсии
-    сюда попал бы список подписчиков.
-    """
+
+def test_plan_migration_closed_to_open_channel():
+    """AC:RL-channel-discussion-restricted-join/2 — канал открыли: чат public."""
     plan = plan_discussion_migration(
-        _migrated_public_snapshot(channel_members=["@a:h", "@b:h"], discussion_members=[])
+        _migrated_private_snapshot(channel_join_rule="public")
     )
-    assert plan["invite"] == []
+    assert plan["set_join_rules"] == {"join_rule": "public"}
+    assert plan["set_history_visibility"] == "world_readable"
 
 
-def test_plan_migration_private_channel_invites_only_missing():
-    """Закрытый канал: зовём лишь тех, кого в чате ещё нет."""
+def test_plan_migration_ignores_extra_allow_on_public():
+    """Хвост allow у public-чата не порождает вечной перезаписи."""
     plan = plan_discussion_migration(
-        _migrated_private_snapshot(
-            channel_members=["@a:h", "@b:h", "@c:h"],
-            discussion_members=["@a:h"],
+        _migrated_public_snapshot(
+            discussion_join_rules={"join_rule": "public", "allow": []}
         )
     )
-    assert plan["invite"] == ["@b:h", "@c:h"]
-
-
-def test_plan_migration_does_not_reinvite_pending_invitee():
-    """Приглашённый, но не принявший инвайт, повторно не зовётся.
-
-    Synapse дубликат не отклоняет, а переиздаёт m.room.member — иначе человек
-    получал бы новое уведомление на каждый рестарт Synapse.
-    """
-    plan = plan_discussion_migration(
-        _migrated_private_snapshot(
-            channel_members=["@a:h", "@b:h"],
-            discussion_members=["@a:h", "@b:h"],  # b тут в статусе invite
-        )
-    )
-    assert plan["invite"] == []
-    assert plan_is_noop(plan) is True
-
-
-def test_plan_migration_unknown_join_rule_treated_as_private():
-    """knock/restricted — fail-safe в приватность: чат закрывается и инвайтит."""
-    plan = plan_discussion_migration(
-        _migrated_public_snapshot(channel_join_rule="knock", discussion_members=[])
-    )
-    assert plan["set_join_rule"] == "invite"
-    assert plan["set_history_visibility"] == "shared"
-    assert plan["invite"] == ["@a:h", "@b:h"]
+    assert plan["set_join_rules"] is None
 
 
 def test_plan_migration_explicit_hidden_false_is_rewritten():
@@ -247,22 +236,46 @@ def test_plan_migration_explicit_hidden_false_is_rewritten():
     assert plan_is_noop(plan) is False
 
 
-def test_plan_is_noop_false_when_only_invites_pending():
+def test_plan_is_noop_false_for_each_field():
     """Каждое поле плана в одиночку обязано делать его не-пустым."""
     for field, value in (
-        ("set_join_rule", "public"),
+        ("set_join_rules", {"join_rule": "public"}),
         ("set_history_visibility", "shared"),
         ("set_hidden", True),
-        ("invite", ["@a:h"]),
     ):
         plan = {
-            "set_join_rule": None,
+            "set_join_rules": None,
             "set_history_visibility": None,
             "set_hidden": False,
-            "invite": [],
             field: value,
         }
         assert plan_is_noop(plan) is False, field
+
+
+class TestPickDiscussionActor:
+    """AC:RL-channel-discussion-restricted-join/5 — уход создателя чата не
+    обрывает работу модуля: пишет свой участник с наибольшим PL."""
+
+    PL = {"users": {"@owner:h": 100, "@mod:h": 50, "@b:h": 50}, "users_default": 0}
+
+    def test_создатель_в_чате(self):
+        assert pick_discussion_actor("@owner:h", ["@a:h", "@owner:h"], self.PL) == "@owner:h"
+
+    def test_создатель_ушёл_берём_наибольший_pl(self):
+        assert pick_discussion_actor("@owner:h", ["@a:h", "@mod:h"], self.PL) == "@mod:h"
+
+    def test_равные_pl_первый_по_mxid(self):
+        assert pick_discussion_actor("@owner:h", ["@mod:h", "@b:h"], self.PL) == "@b:h"
+        pl = {"users": {"@ab:h": 50, "@a:h": 50}}
+        assert pick_discussion_actor("@x:h", ["@ab:h", "@a:h"], pl) == "@a:h"
+
+    def test_свои_без_прав_никого(self):
+        """Рядовой (PL < 50) не исполнитель: его запись упала бы 403 молча."""
+        assert pick_discussion_actor("@owner:h", ["@a:h"], self.PL) is None
+        assert pick_discussion_actor("@x:h", ["@ab:h", "@a:h"], None) is None
+
+    def test_своих_в_чате_нет_остаётся_создатель(self):
+        assert pick_discussion_actor("@owner:h", [], self.PL) == "@owner:h"
 
 
 # Спек 2026-07-30 §3.2. Отвязка чата НЕ должна стирать связь пост→зеркало:

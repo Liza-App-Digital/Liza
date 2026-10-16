@@ -54,13 +54,15 @@ PROD_PEER = f"@petr:{PROD}"      # человек открытой компан�
 COMPANY = [(SingleSpaceGuardModule, {})]
 COMMON = [(SingleSpaceGuardModule, {"auto_add_new": False})]
 NAD_ROWS = [_row(ANNA, "Анна Петрова"), _row(BOSS, "Анна Босс")]
+# Скрытие людей включается только явно (по умолчанию выключено, 15.10).
+HIDE = {"hide_company_members": True}
 
 
 def _nadezhda(*, public=False, loaded=COMPANY, main_root=ROOT, rows=NAD_ROWS):
     api = _FakeApi(rows, hostname=NAD, loaded=loaded, main_root=main_root)
     api._store.rooms[ROOT] = (public, True)
     api._store.memberships[GUEST] = {ROOT, "!other:x"}
-    module = UserSearchGuardModule({}, api)
+    module = UserSearchGuardModule(dict(HIDE), api)
     return module, api
 
 
@@ -68,7 +70,7 @@ def _prod(policies, rows=()):
     """prod: соседские политики приходят из опроса federation."""
     api = _FakeApi(rows, hostname=PROD, loaded=COMPANY, main_root=None)
     api._store.memberships[GUEST] = {ROOT}
-    module = UserSearchGuardModule({}, api)
+    module = UserSearchGuardModule(dict(HIDE), api)
     module._federation_whitelist = lambda: [PROD, NAD, CYBER]
     module._fed_client = _FedClient([], policies)
     asyncio.run(module.refresh_policies())
@@ -257,3 +259,43 @@ class TestPure:
         assert parse_policy_payload({"hidden_company": True, "room_id": "bad"}) == CompanyPolicy(True, None)
         assert parse_policy_payload({"hidden_company": "yes"}) is None
         assert parse_policy_payload([]) is None
+
+
+class TestHideFlagDefaultOff:
+    """Надежда 15.10: «пока мы решили пользователей не скрывать». Код скрытия
+    остаётся, но работает только при явном hide_company_members: true."""
+
+    def _nad_default(self, config):
+        api = _FakeApi(NAD_ROWS, hostname=NAD, loaded=COMPANY, main_root=ROOT)
+        api._store.rooms[ROOT] = (False, True)
+        return UserSearchGuardModule(dict(config), api), api
+
+    def test_без_флага_люди_скрытой_компании_видны_всем_путям(self):
+        """AC:RL-hidden-company-members-search/9"""
+        for config in ({}, {"hide_company_members": False}, {"hide_company_members": "true"}):
+            module, _ = self._nad_default(config)
+            assert module.hide_company_members is False
+            assert _fed_search(module, "Анна", PROD, STRANGER) == [ANNA, BOSS]
+            assert _fed_search(module, "Анна", PROD) == [ANNA, BOSS]
+            assert _spam(module, ANNA, STRANGER) is False
+            policy = asyncio.run(
+                _servlet(UserSearchPolicyFederationServlet, module).on_GET(PROD, None, {})
+            )
+            assert policy == (200, OPEN.to_json())
+
+    def test_без_флага_чужая_скрытая_политика_не_применяется(self):
+        """AC:RL-hidden-company-members-search/9 — сосед с включённым флагом
+        не прячет у нас своих людей, пока у нас флаг выключен."""
+        api = _FakeApi((), hostname=PROD, loaded=COMPANY, main_root=None)
+        module = UserSearchGuardModule({}, api)
+        module._federation_whitelist = lambda: [PROD, NAD]
+        module._fed_client = _FedClient([], {NAD: HIDDEN})
+        asyncio.run(module.refresh_policies())
+        assert _spam(module, ANNA, STRANGER) is False
+        assert api._store.membership_calls == []
+
+    def test_без_флага_приватный_бот_всё_равно_скрыт(self):
+        """AC:RL-hidden-company-members-search/9 — RL-private-bots не зависит от флага."""
+        api = _FakeApi(ROWS, REGISTRY, hostname=BOTS, loaded=COMMON)
+        module = UserSearchGuardModule(dict(BOTS_CONFIG), api)
+        assert BOT not in _fed_search(module, "Упр", PROD, STRANGER)

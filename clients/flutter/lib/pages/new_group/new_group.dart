@@ -54,15 +54,37 @@ class NewGroupController extends State<NewGroup> {
   /// Выбранное место; `null` — «Автоматически», поведение как до выбора.
   GroupPlace? place;
 
-  /// Выбор показывается, только если есть из чего выбирать.
+  /// Класс домашнего сервера для выбора места: `false` общий, `true`
+  /// компания, `null` — сервер ещё не ответил (см. [shouldShowPlacePicker]).
+  bool? get companyInstance {
+    final service = Matrix.of(context).singleSpaceService;
+    if (!service.instanceClassKnown) return null;
+    return !service.guardDisabled && service.isCompanyInstance;
+  }
+
   bool get showPlacePicker =>
-      createGroupType == CreateGroupType.group && places.length > 1;
+      createGroupType == CreateGroupType.group &&
+      shouldShowPlacePicker(
+        places: places,
+        companyInstance: companyInstance,
+        ownCompanyRootId: Matrix.of(context).singleSpaceService.mainRootSpaceId,
+        userDomain: Matrix.of(context).client.userID?.domain,
+      );
 
   @override
   void initState() {
     super.initState();
     if (createGroupType == CreateGroupType.group) {
       places = groupPlaces(Matrix.of(context).client.rooms);
+      // Класс сервера знает только SingleSpaceService, а на телефоне его до
+      // этого экрана мог никто не спросить (fetch зовут боковая панель и
+      // экран пространства). Мест нет — выбора не будет при любом классе.
+      final service = Matrix.of(context).singleSpaceService;
+      if (places.isNotEmpty && !service.instanceClassKnown) {
+        service.fetch().whenComplete(() {
+          if (mounted) setState(() {});
+        });
+      }
     }
   }
 

@@ -73,26 +73,20 @@ String? roomRenameTarget(String? input, {required String currentName}) {
 /// initialState привязанного чата-обсуждения канала.
 ///
 /// Приватность наследуется от канала: открытый канал → чат public +
-/// world_readable (комментарии читаются без членства), закрытый → invite +
-/// shared. Чат всегда помечается скрытым: подписчик не должен видеть его в
+/// world_readable (комментарии читаются без членства), закрытый → restricted
+/// по членству в канале + shared. Чат всегда помечается скрытым: подписчик не должен видеть его в
 /// списке чатов отдельной строкой (телеграмная модель).
 List<StateEvent> buildDiscussionInitialState({
   required String channelId,
   required String? channelJoinRule,
 }) {
-  final settings = discussionSettingsFor(channelJoinRule);
+  final settings = discussionSettingsFor(channelJoinRule, channelId);
   return [
-    StateEvent(
-      type: channelParentState,
-      content: {'room_id': channelId},
-    ),
-    StateEvent(
-      type: 'com.liza.chat.topology',
-      content: {'hidden': true},
-    ),
+    StateEvent(type: channelParentState, content: {'room_id': channelId}),
+    StateEvent(type: 'com.liza.chat.topology', content: {'hidden': true}),
     StateEvent(
       type: 'm.room.join_rules',
-      content: {'join_rule': settings['join_rule']},
+      content: discussionJoinRulesContent(settings),
     ),
     StateEvent(
       type: 'm.room.history_visibility',
@@ -279,12 +273,14 @@ class ChatDetailsController extends State<ChatDetails> {
       ),
     );
     if (success.error == null && mounted) {
-      room.setState(StrippedStateEvent(
-        type: callLinkEventType,
-        content: trimmed.isEmpty ? {} : {'url': trimmed},
-        stateKey: '',
-        senderId: room.client.userID!,
-      ));
+      room.setState(
+        StrippedStateEvent(
+          type: callLinkEventType,
+          content: trimmed.isEmpty ? {} : {'url': trimmed},
+          stateKey: '',
+          senderId: room.client.userID!,
+        ),
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -301,23 +297,21 @@ class ChatDetailsController extends State<ChatDetails> {
     final room = Matrix.of(context).client.getRoomById(roomId!)!;
     final success = await showFutureLoadingDialog(
       context: context,
-      future: () => room.client.setRoomStateWithKey(
-        room.id,
-        callLinkEventType,
-        '',
-        {},
-      ),
+      future: () =>
+          room.client.setRoomStateWithKey(room.id, callLinkEventType, '', {}),
     );
     if (success.error == null && mounted) {
-      room.setState(StrippedStateEvent(
-        type: callLinkEventType,
-        content: {},
-        stateKey: '',
-        senderId: room.client.userID!,
-      ));
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(L10n.of(context).callLinkDeleted)),
+      room.setState(
+        StrippedStateEvent(
+          type: callLinkEventType,
+          content: {},
+          stateKey: '',
+          senderId: room.client.userID!,
+        ),
       );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(L10n.of(context).callLinkDeleted)));
     }
   }
 
@@ -408,16 +402,9 @@ class ChatDetailsController extends State<ChatDetails> {
     final knownRooms = [
       for (final r in client.rooms)
         if (r.getState(channelParentState)?.content['room_id'] == channel.id)
-          {
-            'room_id': r.id,
-            'chat_type': r.lizaChatType,
-            'parent': channel.id,
-          },
+          {'room_id': r.id, 'chat_type': r.lizaChatType, 'parent': channel.id},
     ];
-    final existingDiscussionId = findDetachedDiscussion(
-      knownRooms,
-      channel.id,
-    );
+    final existingDiscussionId = findDetachedDiscussion(knownRooms, channel.id);
     final success = await showFutureLoadingDialog(
       context: context,
       future: () async {
@@ -603,7 +590,11 @@ class ChatDetailsController extends State<ChatDetails> {
           try {
             await channel.kick(user.id);
           } catch (e, s) {
-            Logs().w('deleteChannelAction: не удалось кикнуть ${user.id}', e, s);
+            Logs().w(
+              'deleteChannelAction: не удалось кикнуть ${user.id}',
+              e,
+              s,
+            );
           }
         }
         if (discussionId != null) {
@@ -631,7 +622,11 @@ class ChatDetailsController extends State<ChatDetails> {
               {'room_id': discussionId, channelDeletedKey: true},
             );
           } catch (e, s) {
-            Logs().w('deleteChannelAction: маркер удаления ${channel.id}', e, s);
+            Logs().w(
+              'deleteChannelAction: маркер удаления ${channel.id}',
+              e,
+              s,
+            );
           }
           try {
             await client.leaveRoom(discussionId);

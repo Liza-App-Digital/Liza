@@ -84,14 +84,22 @@ extension ClientDownloadContentExtension on Client {
           )
         : await mxc.getDownloadUri(this);
 
-    final response = await httpClient.get(
-      httpUri,
-      headers: accessToken == null
-          ? null
-          : {'authorization': 'Bearer $accessToken'},
-    );
+    final headers = accessToken == null
+        ? null
+        : {'authorization': 'Bearer $accessToken'};
+    var requestUri = httpUri;
+    var response = await httpClient.get(requestUri, headers: headers);
+    // 400 на /thumbnail — сервер не может отдать превью, хотя оригинал цел:
+    // Synapse без dynamic_thumbnails генерирует превью один раз при загрузке, и
+    // если процесс упал в этот момент, превью нет навсегда (GlitchTip #2111,
+    // сегфолт d3n8it 14.10). Ретраи бьют в тот же 400 → вечный спиннер и
+    // give-up, поэтому сразу берём оригинал.
+    if (isThumbnail && response.statusCode == 400) {
+      requestUri = await mxc.getDownloadUri(this);
+      response = await httpClient.get(requestUri, headers: headers);
+    }
     if (response.statusCode != 200) {
-      throw Exception('Failed to download $httpUri: ${response.statusCode}');
+      throw Exception('Failed to download $requestUri: ${response.statusCode}');
     }
     var imageData = response.bodyBytes;
 

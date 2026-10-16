@@ -132,44 +132,75 @@ def is_membership_leave(event_type: str, content: dict) -> bool:
     )
 
 
-def discussion_settings_for(channel_join_rule: str | None) -> dict:
+def discussion_settings_for(channel_join_rule: str | None, channel_id: str) -> dict:
     """Настройки привязанного чата под приватность канала.
 
     Открытый канал: чат public + world_readable — комментарии видны без
-    членства (peek), войти можно самому при первой отправке. Закрытый:
-    invite + shared, членство раздаёт авто-инвайт при join в канал.
+    членства (peek), войти можно самому при первой отправке.
+
+    Закрытый: restricted с allow по членству в КАНАЛЕ + shared — механика
+    Telegram (Надежда 15.10: «возьми механику у тг»): доступ к обсуждению
+    даёт сама подписка, без приглашений. Подписчик входит тихим join при
+    первом комментарии, как в открытом канале. Раньше здесь был invite, и
+    подписчики, вступившие до включения комментариев (или до смены
+    открытый → закрытый), получали отказ до ближайшего рестарта Synapse.
+
+    allow указывает на канал, который можно покинуть, а не на корень
+    компании с вечным членством (LABA-2539 — другой механизм).
 
     Любое НЕизвестное правило (knock/restricted/None) трактуем как закрытый
     канал: ошибка в сторону приватности не раскрывает чужие комментарии.
     """
     if is_public_channel(channel_join_rule):
         return {"join_rule": "public", "history_visibility": "world_readable"}
-    return {"join_rule": "invite", "history_visibility": "shared"}
+    return {
+        "join_rule": "restricted",
+        "allow": [{"type": "m.room_membership", "room_id": channel_id}],
+        "history_visibility": "shared",
+    }
+
+
+def join_rules_content(settings: dict) -> dict:
+    """content события m.room.join_rules из discussion_settings_for.
+
+    restricted без allow означает «войти не может никто», поэтому allow
+    обязан ехать в КАЖДОЙ записи правила, а не только при создании.
+    """
+    content = {"join_rule": settings["join_rule"]}
+    if "allow" in settings:
+        content["allow"] = settings["allow"]
+    return content
 
 
 def plan_discussion_migration(snapshot: dict) -> dict:
     """Что надо изменить в привязанном чате канала, чтобы он соответствовал
-    целевой модели (см. docs/superpowers/specs/2026-07-24-channels-fixes-design.md,
-    «Миграция существующих каналов»).
+    целевой модели (см. docs/superpowers/specs/2026-07-24-channels-fixes-design.md
+    и 2026-10-15-nadya-answers-discussion-place-search-owner-leave-design.md).
 
     Чистая функция: снимок состояния собирает вызывающий (модуль читает его из
     Synapse), решение принимается здесь и тестируется без Synapse.
 
-    Ключи снимка: channel_join_rule, discussion_join_rule,
-    discussion_history_visibility, discussion_hidden, channel_members,
-    discussion_members (join + invite привязанного чата).
+    Ключи снимка: channel_id, channel_join_rule, discussion_join_rules
+    (content m.room.join_rules чата), discussion_history_visibility,
+    discussion_hidden.
 
-    Возвращает {"set_join_rule", "set_history_visibility", "set_hidden",
-    "invite"}; уже правильное — None/False/[], поэтому повторный прогон не
-    порождает записей (идемпотентность считается ЗДЕСЬ, а не в вызывающем).
+    Возвращает {"set_join_rules", "set_history_visibility", "set_hidden"};
+    уже правильное — None/False, поэтому повторный прогон не порождает
+    записей (идемпотентность считается ЗДЕСЬ, а не в вызывающем).
+
+    Инвайтов больше нет: закрытый канал пускает в чат по членству (allow).
+    Уже висящие инвайты не отзываем — они по-прежнему принимаются.
     """
-    wanted = discussion_settings_for(snapshot.get("channel_join_rule"))
-
-    set_join_rule = (
-        wanted["join_rule"]
-        if snapshot.get("discussion_join_rule") != wanted["join_rule"]
-        else None
+    wanted = discussion_settings_for(
+        snapshot.get("channel_join_rule"), snapshot.get("channel_id") or ""
     )
+    wanted_rules = join_rules_content(wanted)
+    current = snapshot.get("discussion_join_rules") or {}
+    current_rules = {k: current[k] for k in ("join_rule", "allow") if k in current}
+    if current_rules.get("join_rule") != "restricted":
+        current_rules.pop("allow", None)
+
+    set_join_rules = wanted_rules if current_rules != wanted_rules else None
     set_history = (
         wanted["history_visibility"]
         if snapshot.get("discussion_history_visibility")
@@ -179,35 +210,58 @@ def plan_discussion_migration(snapshot: dict) -> dict:
 
     # Чаты, созданные до этой ветки, топологию не несут вовсе: без неё
     # isHiddenChat=False, и обсуждение вылезает отдельной строкой в списке
-    # чатов у каждого, кого доинвайтили. hidden:true — «скрыто у всех по
-    # умолчанию»; персональное раскрытие живёт в room account data и этой
-    # простановкой не затрагивается.
+    # чатов. hidden:true — «скрыто у всех по умолчанию»; персональное
+    # раскрытие живёт в room account data и этой простановкой не затрагивается.
     set_hidden = snapshot.get("discussion_hidden") is not True
 
-    # Инвайты нужны только ЗАКРЫТОМУ каналу: у открытого чат public и
-    # подписчик войдёт сам при первой отправке комментария.
-    invite: list[str] = []
-    if not is_public_channel(snapshot.get("channel_join_rule")):
-        # discussion_members включает и join, и invite: приглашённого, но ещё
-        # не принявшего инвайт повторно звать нельзя — Synapse дубликат не
-        # отклоняет, а переиздаёт m.room.member, и живой человек получает
-        # второе уведомление при каждом рестарте Synapse.
-        already = set(snapshot.get("discussion_members") or ())
-        invite = [m for m in (snapshot.get("channel_members") or ()) if m not in already]
-
     return {
-        "set_join_rule": set_join_rule,
+        "set_join_rules": set_join_rules,
         "set_history_visibility": set_history,
         "set_hidden": set_hidden,
-        "invite": invite,
     }
 
 
 def plan_is_noop(plan: dict) -> bool:
     """True, если по плану делать нечего — канал уже мигрирован."""
     return (
-        plan["set_join_rule"] is None
+        plan["set_join_rules"] is None
         and plan["set_history_visibility"] is None
         and not plan["set_hidden"]
-        and not plan["invite"]
     )
+
+
+# Порог прав исполнителя: state_default/kick пресета private_chat.
+ACTOR_MIN_LEVEL = 50
+
+
+def pick_discussion_actor(
+    creator: str | None,
+    joined_local: list[str],
+    power_levels: dict | None,
+) -> str | None:
+    """От чьего имени модуль пишет в чат обсуждения.
+
+    Раньше — всегда создатель чата. Но уход создателя из КАНАЛА кикает его и
+    из чата (_on_channel_leave), и после этого инвайты, миграция, кик
+    отписавшихся и зеркала постов молча падали: отправителя нет в комнате.
+    Передача владения при выходе (Надежда 15.10) делает такой уход частым.
+
+    Создатель — если он локальный участник чата. Иначе локальный участник с
+    наибольшим PL не ниже [ACTOR_MIN_LEVEL] (state/kick по умолчанию), при
+    равенстве — первый по mxid. Свои есть, но прав ни у кого нет — None:
+    запись от рядового упала бы 403 молча. Своих в чате не видно — создатель,
+    как раньше: запись упадёт и залогируется, хуже прежнего не станет.
+    """
+    joined = sorted(set(joined_local))
+    if not joined or creator in joined:
+        return creator
+    content = power_levels or {}
+    users = content.get("users") or {}
+    default = content.get("users_default", 0)
+
+    def level(user_id: str) -> int:
+        value = users.get(user_id, default)
+        return value if isinstance(value, int) else 0
+
+    best = min(joined, key=lambda u: (-level(u), u))
+    return best if level(best) >= ACTOR_MIN_LEVEL else None

@@ -28,13 +28,11 @@ class NewGroupView extends StatelessWidget {
             onPressed: controller.loading ? null : Navigator.of(context).pop,
           ),
         ),
-        title: Text(
-          switch (controller.createGroupType) {
-            CreateGroupType.space => L10n.of(context).createCompany,
-            CreateGroupType.channel => L10n.of(context).createChannel,
-            CreateGroupType.group => L10n.of(context).createGroup,
-          },
-        ),
+        title: Text(switch (controller.createGroupType) {
+          CreateGroupType.space => L10n.of(context).createCompany,
+          CreateGroupType.channel => L10n.of(context).createChannel,
+          CreateGroupType.group => L10n.of(context).createGroup,
+        }),
       ),
       body: MaxWidthBody(
         child: Column(
@@ -101,7 +99,11 @@ class NewGroupView extends StatelessWidget {
                   items: [
                     DropdownMenuItem<GroupPlace?>(
                       value: null,
-                      child: Text(L10n.of(context).groupPlaceAuto),
+                      child: Text(switch (controller.companyInstance) {
+                        false => L10n.of(context).groupPlacePersonal,
+                        true => L10n.of(context).groupPlaceOwnCompany,
+                        null => L10n.of(context).groupPlaceAuto,
+                      }),
                     ),
                     for (final p in controller.places)
                       DropdownMenuItem<GroupPlace?>(
@@ -125,7 +127,9 @@ class NewGroupView extends StatelessWidget {
                 secondary: const Icon(Icons.public_outlined),
                 title: Text(L10n.of(context).publicCompany),
                 value: controller.publicGroup,
-                onChanged: controller.loading ? null : controller.setPublicGroup,
+                onChanged: controller.loading
+                    ? null
+                    : controller.setPublicGroup,
               ),
               Padding(
                 padding: const EdgeInsets.symmetric(
@@ -154,7 +158,9 @@ class NewGroupView extends StatelessWidget {
                       : L10n.of(context).groupIsPublic,
                 ),
                 value: controller.publicGroup,
-                onChanged: controller.loading ? null : controller.setPublicGroup,
+                onChanged: controller.loading
+                    ? null
+                    : controller.setPublicGroup,
               ),
               AnimatedSize(
                 duration: LizaThemes.animationDuration,
@@ -239,16 +245,17 @@ class NewGroupView extends StatelessWidget {
                       : controller.submitAction,
                   child: controller.loading
                       ? const LinearProgressIndicator()
-                      : Text(
-                          switch (controller.createGroupType) {
-                            CreateGroupType.space =>
-                              L10n.of(context).createCompany,
-                            CreateGroupType.channel =>
-                              L10n.of(context).createChannel,
-                            CreateGroupType.group =>
-                              L10n.of(context).createGroupAndInviteUsers,
-                          },
-                        ),
+                      : Text(switch (controller.createGroupType) {
+                          CreateGroupType.space => L10n.of(
+                            context,
+                          ).createCompany,
+                          CreateGroupType.channel => L10n.of(
+                            context,
+                          ).createChannel,
+                          CreateGroupType.group => L10n.of(
+                            context,
+                          ).createGroupAndInviteUsers,
+                        }),
                 ),
               ),
             ),

@@ -265,6 +265,11 @@ class ChatAccessSettingsController extends State<ChatAccessSettings> {
   /// `join_rules`, но применяется к обычной группе.
   bool get isPublicGroup => room.joinRules == JoinRules.public;
 
+  /// Виден ли выбор «Кто может вступить» (radio join_rules). У чата обсуждения
+  /// канала правило ведёт сервер (`channel_sync`): restricted по членству в
+  /// канале; ручная смена записала бы allow без канала.
+  bool get showJoinRulesPicker => !room.isChannelDiscussion;
+
   /// Виден ли простой тумблер «Тип группы» для этой комнаты. Только обычная
   /// группа (не канал/обсуждение/личка/пространство) И только в бинарных
   /// состояниях `join_rules` ∈ {public, invite}: тумблер бинарен и не может
@@ -346,8 +351,7 @@ class ChatAccessSettingsController extends State<ChatAccessSettings> {
   /// Публичная ли КОМПАНИЯ. Гейт [isCompany] ОБЯЗАТЕЛЕН (как [isChannel] у
   /// [isPublicChannel]): без него геттер = «join_rules публичный» для любой
   /// комнаты и логика компании протекла бы на обычную группу/канал.
-  bool get isPublicCompany =>
-      isCompany && room.joinRules == JoinRules.public;
+  bool get isPublicCompany => isCompany && room.joinRules == JoinRules.public;
 
   /// Виден ли простой тумблер «Тип компании». Только СВОЯ компания И только в
   /// бинарных состояниях join_rules ∈ {public, invite}: тумблер бинарен и не

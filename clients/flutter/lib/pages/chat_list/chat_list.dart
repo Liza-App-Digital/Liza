@@ -40,6 +40,7 @@ import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/phone_number.dart';
 import 'package:liza/utils/company_deletion.dart';
 import 'package:liza/utils/company_membership.dart';
+import 'package:liza/utils/owner_leave.dart';
 import 'package:liza/utils/federated_user_search_service.dart';
 import 'package:liza/utils/single_space_service.dart';
 
@@ -164,8 +165,7 @@ class ChatListController extends State<ChatList>
       case ActiveFilter.messages:
         return (room) => !room.isSpace && room.isDirectChat;
       case ActiveFilter.groups:
-        return (room) =>
-            !room.isSpace && !room.isDirectChat && !room.isChannel;
+        return (room) => !room.isSpace && !room.isDirectChat && !room.isChannel;
       case ActiveFilter.unread:
         return (room) => room.isUnreadOrInvited;
       case ActiveFilter.spaces:
@@ -176,9 +176,7 @@ class ChatListController extends State<ChatList>
   }
 
   List<Room> get filteredRooms {
-    final rooms = Matrix.of(context)
-        .client
-        .rooms
+    final rooms = Matrix.of(context).client.rooms
         .where((r) => !r.isHiddenChat)
         .where(getRoomFilterByActiveFilter(activeFilter))
         .toList();
@@ -277,14 +275,15 @@ class ChatListController extends State<ChatList>
       AuthProxyService()
           .resolveChannelHandle(normalizeChannelHandle(searchQuery))
           .then((resolved) {
-        if (!mounted || !isSearchMode) return;
-        // Пока резолв шёл, пользователь мог дописать символы — не показываем
-        // результат для устаревшего запроса.
-        if (searchController.text.trim() != searchQuery) return;
-        setState(() => handleSearchResult = resolved);
-      }).catchError((Object e, StackTrace s) {
-        Logs().v('Резолв ника канала не удался', e, s);
-      });
+            if (!mounted || !isSearchMode) return;
+            // Пока резолв шёл, пользователь мог дописать символы — не показываем
+            // результат для устаревшего запроса.
+            if (searchController.text.trim() != searchQuery) return;
+            setState(() => handleSearchResult = resolved);
+          })
+          .catchError((Object e, StackTrace s) {
+            Logs().v('Резолв ника канала не удался', e, s);
+          });
     }
     // Комнаты и люди ищутся независимо: раньше searchUserDirectory стоял в
     // одном try ПОСЛЕ queryPublicRooms, и упавший/зависший поиск комнат
@@ -329,8 +328,9 @@ class ChatListController extends State<ChatList>
     // локальному directory и федерации (тот же приём, что у fetchCompanies
     // и резолва ника канала выше). Сервис сам возвращает пустой список при
     // коротком запросе и при любой ошибке — гейта здесь не нужно.
-    final handleSearchFuture =
-        matrix.userHandleService.searchHandles(searchQuery);
+    final handleSearchFuture = matrix.userHandleService.searchHandles(
+      searchQuery,
+    );
     try {
       userSearchResult = await client.searchUserDirectory(
         searchController.text,
@@ -430,12 +430,7 @@ class ChatListController extends State<ChatList>
     // отдельным setState, не задерживая остальные разделы поиска.
     if (userSearchResult != null) {
       unawaited(
-        _hydrateUserSearchResult(
-          matrix,
-          client,
-          userSearchResult,
-          searchQuery,
-        ),
+        _hydrateUserSearchResult(matrix, client, userSearchResult, searchQuery),
       );
     }
   }
@@ -443,12 +438,11 @@ class ChatListController extends State<ChatList>
   PeopleAndBots _partitionUserSearch(
     MatrixState matrix,
     SearchUserDirectoryResponse published,
-  ) =>
-      partitionPeopleAndBots(
-        published.results,
-        isBotOrAi: matrix.isBotOrAiUser,
-        lizaMxid: MatrixState.lizaMxid,
-      );
+  ) => partitionPeopleAndBots(
+    published.results,
+    isBotOrAi: matrix.isBotOrAiUser,
+    lizaMxid: MatrixState.lizaMxid,
+  );
 
   /// Роли пришли после таймаута ожидания: переразбить УЖЕ показанную выдачу,
   /// если она всё ещё актуальна. Ответ устаревшего запроса (пользователь
@@ -997,12 +991,13 @@ class ChatListController extends State<ChatList>
       case ChatContextAction.block:
         final targetId = room.directChatMatrixID;
         if (targetId == null) return;
-        context.go(
-          '/rooms/settings/security/ignorelist',
-          extra: targetId,
-        );
+        context.go('/rooms/settings/security/ignorelist', extra: targetId);
         return;
       case ChatContextAction.leave:
+        // Уходит единственный владелец — передача владения (как в ⋮ шапки).
+        final ownerOutcome = await handleSoleOwnerLeave(context, room);
+        if (ownerOutcome != OwnerLeaveOutcome.notHandled) return;
+        if (!mounted) return;
         final leaveLabel = leaveActionLabel(L10n.of(context), leaveKind);
         final confirmed = await showOkCancelAlertDialog(
           context: context,

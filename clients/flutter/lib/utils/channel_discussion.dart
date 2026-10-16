@@ -340,14 +340,34 @@ bool isChannelPublic(String? joinRule) => joinRule == 'public';
 /// `channel_sync._logic.discussion_settings_for` — клиент выставляет их при
 /// создании чата, сервер поддерживает при смене приватности канала.
 ///
+/// Закрытый канал → `restricted` по членству в КАНАЛЕ: доступ к обсуждению
+/// даёт сама подписка, без приглашений (механика Telegram, Надежда 15.10).
 /// Неизвестное правило трактуем как закрытый канал: ошибка в сторону
 /// приватности не раскрывает чужие комментарии.
-Map<String, dynamic> discussionSettingsFor(String? channelJoinRule) {
+Map<String, dynamic> discussionSettingsFor(
+  String? channelJoinRule,
+  String channelId,
+) {
   if (isChannelPublic(channelJoinRule)) {
     return {'join_rule': 'public', 'history_visibility': 'world_readable'};
   }
-  return {'join_rule': 'invite', 'history_visibility': 'shared'};
+  return {
+    'join_rule': 'restricted',
+    'allow': [
+      {'type': 'm.room_membership', 'room_id': channelId},
+    ],
+    'history_visibility': 'shared',
+  };
 }
+
+/// content `m.room.join_rules` из [discussionSettingsFor]: `restricted` без
+/// `allow` не пустил бы никого, поэтому `allow` едет вместе с правилом.
+Map<String, dynamic> discussionJoinRulesContent(
+  Map<String, dynamic> settings,
+) => {
+  'join_rule': settings['join_rule'],
+  if (settings.containsKey('allow')) 'allow': settings['allow'],
+};
 
 /// Серверы, у которых можно спросить о чате-обсуждении при join.
 ///

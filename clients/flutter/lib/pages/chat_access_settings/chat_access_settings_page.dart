@@ -239,41 +239,47 @@ class ChatAccessSettingsPageView extends StatelessWidget {
                     ],
                   ),
                 ),
-                Divider(color: theme.dividerColor),
-                ListTile(
-                  title: Text(
-                    room.isChannel
-                        ? L10n.of(context).whoIsAllowedToJoinThisChannel
-                        : L10n.of(context).whoIsAllowedToJoinThisGroup,
-                    style: TextStyle(
-                      color: theme.colorScheme.secondary,
-                      fontWeight: FontWeight.bold,
+                // Чат обсуждения закрытого канала пускает по членству в канале
+                // (restricted + allow на канал, задаёт сервер channel_sync).
+                // Radio записал бы allow = родители-пространства без канала и
+                // молча закрыл бы вход всем подписчикам — поэтому прячем.
+                if (controller.showJoinRulesPicker) ...[
+                  Divider(color: theme.dividerColor),
+                  ListTile(
+                    title: Text(
+                      room.isChannel
+                          ? L10n.of(context).whoIsAllowedToJoinThisChannel
+                          : L10n.of(context).whoIsAllowedToJoinThisGroup,
+                      style: TextStyle(
+                        color: theme.colorScheme.secondary,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
-                ),
-                RadioGroup(
-                  groupValue: room.joinRules,
-                  onChanged: controller.setJoinRule,
-                  child: Column(
-                    mainAxisSize: .min,
-                    children: [
-                      for (final joinRule in controller.availableJoinRules)
-                        if (joinRule != JoinRules.private)
-                          RadioListTile<JoinRules>.adaptive(
-                            enabled:
-                                !controller.joinRulesLoading &&
-                                room.canChangeJoinRules,
-                            title: Text(
-                              joinRule.localizedString(
-                                L10n.of(context),
-                                controller.knownSpaceParents,
+                  RadioGroup(
+                    groupValue: room.joinRules,
+                    onChanged: controller.setJoinRule,
+                    child: Column(
+                      mainAxisSize: .min,
+                      children: [
+                        for (final joinRule in controller.availableJoinRules)
+                          if (joinRule != JoinRules.private)
+                            RadioListTile<JoinRules>.adaptive(
+                              enabled:
+                                  !controller.joinRulesLoading &&
+                                  room.canChangeJoinRules,
+                              title: Text(
+                                joinRule.localizedString(
+                                  L10n.of(context),
+                                  controller.knownSpaceParents,
+                                ),
                               ),
+                              value: joinRule,
                             ),
-                            value: joinRule,
-                          ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
+                ],
                 // Публичные адреса/directory — ТОЛЬКО для НЕ-канала (у канала
                 // публичность управляется блоком «Тип канала» + ником выше).
                 // После переноса «Тип канала» наверх единый if/else-if

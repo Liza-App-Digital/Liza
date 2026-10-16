@@ -139,4 +139,54 @@ void main() {
   test('мест нет — пустой список', () {
     expect(groupPlaces([space('!g:x', 'Группа', isSpace: false)]), isEmpty);
   });
+
+  // AC:RL-new-group-place-picker/9 — матрица показа по ответу Надежды 15.10
+  // («состоит и там, и там — показывать; в компании и больше нигде — нет»).
+  group('shouldShowPlacePicker', () {
+    const own = '!own:home.liza.ru';
+    const foreign = '!b:other.liza.ru';
+    GroupPlace place(String id, {String? root}) => GroupPlace(
+      space: space(id, id),
+      company: root == null ? null : space(root, root),
+    );
+    bool show(List<GroupPlace> places, bool? company, {String? root = own}) =>
+        shouldShowPlacePicker(
+          places: places,
+          companyInstance: company,
+          ownCompanyRootId: root,
+          userDomain: 'home.liza.ru',
+        );
+
+    test('общий сервер: любое место компании — выбор («для себя» или там)', () {
+      expect(show([], false, root: null), isFalse);
+      expect(show([place(foreign)], false, root: null), isTrue);
+    });
+
+    test(
+      'компания: только своя компания и её подпространства — выбора нет',
+      () {
+        expect(show([place(own)], true), isFalse);
+        expect(
+          show([place(own), place('!sub:home.liza.ru', root: own)], true),
+          isFalse,
+        );
+      },
+    );
+
+    test('компания: есть место в чужой компании (вопрос 9) — выбор есть', () {
+      expect(show([place(foreign)], true), isTrue);
+      expect(show([place(own), place(foreign)], true), isTrue);
+      expect(show([place('!bsub:other.liza.ru', root: foreign)], true), isTrue);
+    });
+
+    test('компания без известного главного пространства — свой по домену', () {
+      expect(show([place('!x:home.liza.ru')], true, root: null), isFalse);
+      expect(show([place(foreign)], true, root: null), isTrue);
+    });
+
+    test('класс сервера неизвестен — прежняя формула «мест больше одного»', () {
+      expect(show([place(foreign)], null), isFalse);
+      expect(show([place(own), place(foreign)], null), isTrue);
+    });
+  });
 }

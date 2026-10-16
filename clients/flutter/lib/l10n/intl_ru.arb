@@ -3052,6 +3052,10 @@
   "@groupPlace": {"description": "Экран «Создать группу»: выбор компании/подпространства (newInterface 10)"},
   "groupPlaceAuto": "Автоматически",
   "@groupPlaceAuto": {"description": "Пункт выбора места по умолчанию: группа создаётся как раньше, без явного родителя"},
+  "groupPlacePersonal": "Для себя (друзья, семья)",
+  "@groupPlacePersonal": {},
+  "groupPlaceOwnCompany": "В своей компании",
+  "@groupPlaceOwnCompany": {},
   "databaseMigrationTitle": "База данных оптимизированна",
   "@databaseMigrationTitle": {},
   "searchChatsRooms": "Поиск #чатов, @людей...",
@@ -4423,6 +4427,17 @@
   },
   "channelLeaveSoleMemberMessage": "Вы единственный участник этого канала. После вашего выхода канал будет удалён.",
   "@channelLeaveSoleMemberMessage": {},
+  "ownerLeaveHandoverMessage": "Вы владелец. После вашего выхода владельцем станет {username}.",
+  "@ownerLeaveHandoverMessage": {
+    "type": "String",
+    "placeholders": {
+      "username": {
+        "type": "String"
+      }
+    }
+  },
+  "ownerLeaveLastMemberMessage": "Вы последний участник. После вашего выхода здесь никого не останется.",
+  "@ownerLeaveLastMemberMessage": {},
   "channelSubscribe": "Подписаться",
   "@channelSubscribe": {
     "description": "Кнопка подписки на канал внизу экрана для читателя без подписки"

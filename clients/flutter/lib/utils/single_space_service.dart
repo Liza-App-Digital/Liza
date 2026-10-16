@@ -84,6 +84,11 @@ class SingleSpaceService {
   /// «одно главное пространство» нет, создавать пространства можно.
   bool get guardDisabled => _guardDisabled;
 
+  /// Сервер ответил, какого он класса. До ответа (или после сбоя сети)
+  /// [isCompanyInstance] = false неотличим от «общий сервер» — потребителям,
+  /// для которых это важно (выбор места на «Новой группе»), нужен этот флаг.
+  bool get instanceClassKnown => _cachedExists != null || _guardDisabled;
+
   Future<({bool exists, String? roomId})> fetch() async {
     if (_cachedExists == true) {
       return (exists: true, roomId: _cachedRoomId);

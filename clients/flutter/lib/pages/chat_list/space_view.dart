@@ -21,6 +21,7 @@ import 'package:liza/utils/create_subspace.dart';
 import 'package:liza/utils/hierarchy_displayname.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_locals.dart';
+import 'package:liza/utils/owner_leave.dart';
 import 'package:liza/utils/room_name_limit.dart';
 import 'package:liza/utils/space_children_merge.dart';
 import 'package:liza/utils/space_move.dart';
@@ -306,6 +307,13 @@ class _SpaceViewState extends State<SpaceView> {
         await requestCompanyDeletion(context, space);
         return;
       case SpaceActions.leave:
+        // Уходит единственный владелец пространства — передача владения.
+        if (space != null) {
+          final ownerOutcome = await handleSoleOwnerLeave(context, space);
+          if (!mounted) return;
+          if (ownerOutcome == OwnerLeaveOutcome.left) widget.onBack();
+          if (ownerOutcome != OwnerLeaveOutcome.notHandled) return;
+        }
         // LABA-2540: пространство — не чат, и текст про «чат в архиве» здесь
         // был неверен; у чужой компании выход — это отписка.
         final leaveKind = space == null

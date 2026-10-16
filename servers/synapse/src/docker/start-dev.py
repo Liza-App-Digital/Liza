@@ -12,14 +12,27 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-def copy_rust_module():
-    """Копирует скомпилированный Rust модуль в editable источники."""
-    rust_backup = Path("/synapse_rust.abi3.so.bak")
-    rust_target = Path("/editable-src/synapse/synapse_rust.abi3.so")
-    
+def copy_rust_module(
+    rust_backup=Path("/synapse_rust.abi3.so.bak"),
+    rust_target=Path("/editable-src/synapse/synapse_rust.abi3.so"),
+):
+    """Копирует скомпилированный Rust модуль в editable источники.
+
+    Только через временный файл + os.replace (новый inode). Целевой .so в
+    общем /editable-src загружен (mmap) в работающие Synapse соседних
+    контейнеров; copy2 поверх него усекал тот же inode, ядро сбрасывало
+    у соседей страницы с уже исправленными загрузчиком адресами, и они
+    падали SIGSEGV на первом вызове в Rust (14–15.10: ~150 падений, у тихих
+    инстансов — ровно через 30 мин, на истечении TTL кэша; GlitchTip #2111).
+    """
     if rust_backup.exists():
         print(f"Copying Rust module from {rust_backup} to {rust_target}")
-        shutil.copy2(rust_backup, rust_target)
+        tmp = rust_target.with_name(f".{rust_target.name}.{os.getpid()}.tmp")
+        try:
+            shutil.copy2(rust_backup, tmp)
+            os.replace(tmp, rust_target)
+        finally:
+            tmp.unlink(missing_ok=True)
     else:
         print("Warning: Rust module backup not found, may need recompilation")
 

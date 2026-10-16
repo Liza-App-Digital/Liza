@@ -1,3 +1,4 @@
+// ledger:RL-sole-owner-leave-all-exits
 import 'dart:convert';
 import 'dart:io';
 
@@ -242,16 +243,38 @@ Text(
         reason: 'chatDeleteChat («Удалить чат» на leave()) удалён из обоих',
       );
 
-      // Канал не задет: его ветка по-прежнему перехватывается раньше.
-      expect(
-        menu.contains(
-          _normalize('''
-if (widget.room.isChannel &&
-    await _handleSoleAdminChannelLeave(router))'''),
+      // Передача владения (канал, группа, пространство) перехватывает выход
+      // раньше общей ветки — во ВСЕХ трёх точках.
+      // AC:RL-sole-owner-leave-all-exits/6
+      for (final (name, path, leaveMarker) in [
+        (
+          'chat_settings_popup_menu.dart',
+          'lib/widgets/chat_settings_popup_menu.dart',
+          'case ChatPopupMenuActions.leave:',
         ),
-        isTrue,
-        reason: 'канальная ветка выхода должна перехватывать до общей',
-      );
+        (
+          'chat_list.dart',
+          'lib/pages/chat_list/chat_list.dart',
+          'case ChatContextAction.leave:',
+        ),
+        (
+          'space_view.dart',
+          'lib/pages/chat_list/space_view.dart',
+          'case SpaceActions.leave:',
+        ),
+      ]) {
+        final src = _normalize(_read(path));
+        final branch = src.indexOf(_normalize(leaveMarker));
+        final handoff = src.indexOf('handleSoleOwnerLeave(context,', branch);
+        final dialog = src.indexOf('showOkCancelAlertDialog(', branch);
+        expect(branch, isNonNegative, reason: name);
+        expect(handoff, isNonNegative, reason: '$name: нет передачи владения');
+        expect(
+          handoff,
+          lessThan(dialog),
+          reason: '$name: передача владения должна идти ДО обычного выхода',
+        );
+      }
     });
 
     // ledger:RL-delete-company-via-support

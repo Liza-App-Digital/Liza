@@ -3178,6 +3178,10 @@
   "@groupPlace": {"description": "Экран «Создать группу»: выбор компании/подпространства (newInterface 10)"},
   "groupPlaceAuto": "Automatically",
   "@groupPlaceAuto": {"description": "Пункт выбора места по умолчанию: группа создаётся как раньше, без явного родителя"},
+  "groupPlacePersonal": "For myself (friends, family)",
+  "@groupPlacePersonal": {},
+  "groupPlaceOwnCompany": "In my company",
+  "@groupPlaceOwnCompany": {},
   "createGroupAndInviteUsers": "Create a group and invite users",
   "@createGroupAndInviteUsers": {},
   "groupCanBeFoundViaSearch": "Group can be found via search",
@@ -4500,6 +4504,17 @@
   },
   "channelLeaveSoleMemberMessage": "You are the only member of this channel. After you leave, the channel will be deleted.",
   "@channelLeaveSoleMemberMessage": {},
+  "ownerLeaveHandoverMessage": "You are the owner. After you leave, {username} will become the owner.",
+  "@ownerLeaveHandoverMessage": {
+    "type": "String",
+    "placeholders": {
+      "username": {
+        "type": "String"
+      }
+    }
+  },
+  "ownerLeaveLastMemberMessage": "You are the last member. After you leave, no one will remain here.",
+  "@ownerLeaveLastMemberMessage": {},
   "channelSubscribe": "Subscribe",
   "@channelSubscribe": {
     "description": "Кнопка подписки на канал внизу экрана для читателя без подписки"

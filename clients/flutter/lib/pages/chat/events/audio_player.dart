@@ -797,12 +797,14 @@ class AudioPlayerState extends State<AudioPlayerWidget> {
                       constraints: const BoxConstraints(
                         maxWidth: LizaThemes.columnWidth,
                       ),
+                      // Текст расшифровки стоит как текст сообщения: 16 от краёв
+                      // пузыря (12 плеера + 4), зазор до времени 4 — как у
+                      // Padding(16, 8, 16, 2) + CornerTimeLayout в
+                      // message_content.dart. Было 12 + 16 = 28 — «текст съезжает»
+                      // (Роман, 15.10). Ширину держит columnWidth ряда: иначе
+                      // пузырь менял бы ширину при появлении текста.
                       child: Padding(
-                        padding: const EdgeInsets.only(
-                          left: 16,
-                          right: 16,
-                          top: 4,
-                        ),
+                        padding: const EdgeInsets.fromLTRB(4, 4, 4, 2),
                         // Владелец канала запретил вынос контента — расшифровка
                         // голосового тоже контент поста, поэтому невыделяемый
                         // Text вместо SelectableText.
@@ -826,8 +828,9 @@ class AudioPlayerState extends State<AudioPlayerWidget> {
                   if (fileDescription != null) ...[
                     const SizedBox(height: 8),
                     Padding(
+                      // 12 плеера + 4 = 16 от края, как подпись фото/файла.
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
+                        horizontal: 4,
                         vertical: 8,
                       ),
                       // Подпись аудио с разметкой (XL formatted_body) → HTML
@@ -849,7 +852,12 @@ class AudioPlayerState extends State<AudioPlayerWidget> {
                         maxWidth: LizaThemes.columnWidth,
                       ),
                       child: Padding(
-                        padding: const EdgeInsets.only(top: 2, right: 4),
+                        // С расшифровкой время в том же углу, что у текста
+                        // (12 от края); у голого голосового — прежние 16.
+                        padding: EdgeInsets.only(
+                          top: 2,
+                          right: _transcriptionText == null ? 4 : 0,
+                        ),
                         child: Align(
                           alignment: Alignment.centerRight,
                           child: widget.trailing!,

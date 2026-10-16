@@ -1,3 +1,4 @@
+// ledger:RL-channel-discussion-restricted-join
 import 'package:flutter_test/flutter_test.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/channel_discussion.dart';
@@ -13,28 +14,50 @@ void main() {
 
   group('discussionSettingsFor', () {
     test('открытый канал: чат public + world_readable', () {
-      expect(discussionSettingsFor('public'), {
+      expect(discussionSettingsFor('public', '!chan:h'), {
         'join_rule': 'public',
         'history_visibility': 'world_readable',
       });
     });
 
-    test('закрытый канал: чат invite + shared', () {
-      expect(discussionSettingsFor('invite'), {
-        'join_rule': 'invite',
-        'history_visibility': 'shared',
-      });
-    });
+    // AC:RL-channel-discussion-restricted-join/6 — та же таблица, что у
+    // серверного discussion_settings_for (test_logic.py).
+    test(
+      'закрытый канал (любое не-public правило): restricted по членству в канале',
+      () {
+        for (final rule in [
+          'invite',
+          'knock',
+          'restricted',
+          'knock_restricted',
+          null,
+          'weird',
+        ]) {
+          expect(discussionSettingsFor(rule, '!chan:h'), {
+            'join_rule': 'restricted',
+            'allow': [
+              {'type': 'm.room_membership', 'room_id': '!chan:h'},
+            ],
+            'history_visibility': 'shared',
+          }, reason: '$rule');
+        }
+      },
+    );
 
-    test('неизвестное правило трактуем как закрытый канал', () {
-      expect(discussionSettingsFor('knock'), {
-        'join_rule': 'invite',
-        'history_visibility': 'shared',
-      });
-      expect(discussionSettingsFor(null), {
-        'join_rule': 'invite',
-        'history_visibility': 'shared',
-      });
+    test('content join_rules несёт allow только у restricted', () {
+      expect(
+        discussionJoinRulesContent(discussionSettingsFor('public', '!c:h')),
+        {'join_rule': 'public'},
+      );
+      expect(
+        discussionJoinRulesContent(discussionSettingsFor('invite', '!c:h')),
+        {
+          'join_rule': 'restricted',
+          'allow': [
+            {'type': 'm.room_membership', 'room_id': '!c:h'},
+          ],
+        },
+      );
     });
   });
 

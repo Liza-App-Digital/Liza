@@ -179,6 +179,30 @@ Future<String> promoteMemberToAdmin(Room room, String userId) =>
       (current) => promoteToAdminContent(current, userId),
     );
 
+/// Тело ОДНОГО события «владелец уходит»: преемнику 100, себя убрать из
+/// `users` (0). Не 99, как в «Передать владение»: вернувшись в публичную
+/// комнату, ушедший молча снова стал бы админом.
+Map<String, Object?> leaveOwnershipContent(
+  Map<String, Object?> content, {
+  required String ownerId,
+  required String recipientId,
+}) {
+  final result = _withUsers(content, {recipientId: ownerPowerLevel});
+  (result['users'] as Map).remove(ownerId);
+  return result;
+}
+
+/// Передача владения перед выходом — см. [leaveOwnershipContent].
+Future<String> handOverOwnershipOnLeave(Room room, String recipientId) =>
+    _putOwnerModelPowerLevels(
+      room,
+      (current) => leaveOwnershipContent(
+        current,
+        ownerId: room.client.userID!,
+        recipientId: recipientId,
+      ),
+    );
+
 /// «Передать владение»: получателю 100, себе 99, одним событием.
 Future<String> transferRoomOwnership(Room room, String recipientId) =>
     _putOwnerModelPowerLevels(
@@ -509,11 +533,12 @@ bool isServiceAccountId(String userId) {
   return serviceAccountLocalparts.contains(localpart);
 }
 
-/// Кандидат-преемник админа при выходе единственного администратора канала.
-class ChannelSuccessorCandidate {
+/// Кандидат в преемники при выходе единственного владельца канала, группы
+/// или пространства.
+class OwnerSuccessorCandidate {
   final String id;
   final int powerLevel;
-  const ChannelSuccessorCandidate(this.id, this.powerLevel);
+  const OwnerSuccessorCandidate(this.id, this.powerLevel);
 }
 
 /// Выбор преемника-админа среди УЖЕ отфильтрованных кандидатов (join, не я, не
@@ -522,14 +547,19 @@ class ChannelSuccessorCandidate {
 ///
 /// «Рандом» из тикета заменён детерминированным выбором (первый по id): любой
 /// участник годится, а детерминизм делает правило тестируемым без флаки.
-/// Возвращает `null`, если кандидатов нет (тогда канал единственного участника
-/// удаляется).
-String? pickChannelSuccessor(Iterable<ChannelSuccessorCandidate> candidates) {
+/// Правило одно для канала, группы и пространства (Надежда 15.10 про группу:
+/// «Да. Я бы сделала так же»). Возвращает `null`, если кандидатов нет.
+String? pickOwnerSuccessor(Iterable<OwnerSuccessorCandidate> candidates) {
   final list = candidates.toList();
   if (list.isEmpty) return null;
+  // При равном PL — первый по id: List.sort не стабилен, без этого выбор
+  // между двумя админами-99 зависел бы от порядка загрузки участников.
   final moderators =
-      list.where((c) => c.powerLevel >= moderatorPowerLevel).toList()
-        ..sort((a, b) => b.powerLevel.compareTo(a.powerLevel));
+      list.where((c) => c.powerLevel >= moderatorPowerLevel).toList()..sort(
+        (a, b) => b.powerLevel != a.powerLevel
+            ? b.powerLevel.compareTo(a.powerLevel)
+            : a.id.compareTo(b.id),
+      );
   if (moderators.isNotEmpty) return moderators.first.id;
   list.sort((a, b) => a.id.compareTo(b.id));
   return list.first.id;

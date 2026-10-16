@@ -18,12 +18,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
+import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/new_group/new_group.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/create_group_in_space.dart';
+import 'package:liza/utils/single_space_service.dart';
 import 'package:liza/widgets/matrix.dart';
 
 import '../../utils/test_client.dart';
@@ -34,6 +36,45 @@ const _subB = '!beta-sub:example.invalid';
 const _createdEncoded = '!1234%3AfakeServer.notExisting';
 
 final _picker = find.byKey(const ValueKey('newGroupPlacePicker'));
+
+/// Класс сервера известен: общий (company=false) или компания с главным
+/// пространством [mainId].
+class _KnownClassService extends SingleSpaceService {
+  _KnownClassService(super.client, {required this.company, this.mainId});
+
+  final bool company;
+  final String? mainId;
+
+  @override
+  Future<({bool exists, String? roomId})> fetch() async =>
+      (exists: mainId != null, roomId: mainId);
+
+  @override
+  bool get instanceClassKnown => true;
+
+  @override
+  bool get isCompanyInstance => company;
+
+  @override
+  String? get mainRootSpaceId => mainId;
+}
+
+class _TestMatrixState extends MatrixState {
+  _TestMatrixState(this._client, this._spaces, this._store);
+
+  final Client _client;
+  final SingleSpaceService _spaces;
+  final SharedPreferences _store;
+
+  @override
+  Client get client => _client;
+
+  @override
+  SingleSpaceService get singleSpaceService => _spaces;
+
+  @override
+  SharedPreferences get store => _store;
+}
 
 void main() {
   late Client client;
@@ -324,5 +365,69 @@ void main() {
 
     expect(groupCreateBodies(), hasLength(1));
     await teardownScreen(tester);
+  });
+
+  // AC:RL-new-group-place-picker/10 — реальный экран, класс сервера известен.
+  group('класс сервера: показ и подпись первого пункта', () {
+    Future<void> pumpWithClass(
+      WidgetTester tester, {
+      required bool company,
+      String? mainId,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('ru'),
+          localizationsDelegates: const [
+            L10n.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: L10n.supportedLocales,
+          home: Provider<MatrixState>.value(
+            value: _TestMatrixState(
+              client,
+              _KnownClassService(client, company: company, mainId: mainId),
+              store,
+            ),
+            child: const NewGroup(),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    const ownRoot = '!own:fakeServer.notExisting';
+
+    testWidgets('общий сервер + место в компании: выбор с «Для себя»', (
+      tester,
+    ) async {
+      addSpace(_companyB, 'Бета');
+      await pumpWithClass(tester, company: false);
+      expect(_picker, findsOneWidget);
+      expect(find.text('Для себя (друзья, семья)'), findsOneWidget);
+      expect(find.text('Автоматически'), findsNothing);
+      await teardownScreen(tester);
+    });
+
+    testWidgets('компания, места только свои — выбора нет', (tester) async {
+      addSpace(ownRoot, 'Своя', children: [_subB]);
+      addSpace(_subB, 'Отдел');
+      await pumpWithClass(tester, company: true, mainId: ownRoot);
+      expect(_picker, findsNothing);
+      await teardownScreen(tester);
+    });
+
+    testWidgets('компания + место в чужой: выбор с «В своей компании»', (
+      tester,
+    ) async {
+      addSpace(ownRoot, 'Своя');
+      addSpace(_companyB, 'Бета');
+      await pumpWithClass(tester, company: true, mainId: ownRoot);
+      expect(_picker, findsOneWidget);
+      expect(find.text('В своей компании'), findsOneWidget);
+      await teardownScreen(tester);
+    });
   });
 }

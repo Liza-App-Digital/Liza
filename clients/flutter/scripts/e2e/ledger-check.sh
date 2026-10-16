@@ -15,7 +15,7 @@ LEDGER_DIR="tests/registry"
 # Сканим и серверные тесты: стражи с тегом ledger:RL-* живут не только во Flutter
 # (авто-аудит 2026-07-30 нашёл теги в servers/auth-proxy/tests, невидимые скану).
 # Глоб synapse-модулей разворачивается при подстановке без кавычек ниже.
-TEST_DIRS="clients/flutter/test clients/flutter/integration_test servers/liza-bot-api/tests servers/miniapp-store/backend/tests servers/auth-proxy/tests servers/version-gate/tests servers/sygnal/tests servers/transcribe/tests servers/synapse/modules/*/tests servers/bots servers/pf2-demo-bot/tests servers/monitoring-notifier deploy/tests deploy/scripts"
+TEST_DIRS="clients/flutter/test clients/flutter/integration_test servers/liza-bot-api/tests servers/miniapp-store/backend/tests servers/auth-proxy/tests servers/version-gate/tests servers/sygnal/tests servers/transcribe/tests servers/synapse/modules/*/tests servers/synapse/src/docker servers/bots servers/pf2-demo-bot/tests servers/monitoring-notifier deploy/tests deploy/scripts"
 
 [ -d "$LEDGER_DIR" ] || { echo "Нет $LEDGER_DIR — реестр не заведён"; exit 0; }
 
