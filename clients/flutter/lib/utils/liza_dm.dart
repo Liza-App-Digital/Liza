@@ -1,8 +1,13 @@
+import 'package:flutter/material.dart';
+
 import 'package:collection/collection.dart';
+import 'package:go_router/go_router.dart';
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/direct_chat_ensure.dart';
 import 'package:liza/utils/miniapp_room.dart';
+import 'package:liza/widgets/future_loading_dialog.dart';
 
 /// State-событие комнаты-запроса к Лизе («+» → «Новый запрос»). Ставится в
 /// `initialState` при создании; `placeholder` — начальное имя комнаты: бот
@@ -37,6 +42,28 @@ Room? findLizaAssistantDm(Client client, String lizaMxid) =>
                   .tryGet<String>('membership') ==
               'join',
     );
+
+/// Живой личный чат с ботом [botMxid] (BotFather): я и бот в комнате, кроме
+/// нас никого. По member-стейту, а не `getDirectChatFromUserId`: тот вернёт и
+/// брошенный DM, где бот уже вышел, — команда ушла бы в пустоту.
+Room? findBotDm(Client client, String botMxid) => client.rooms
+    .where(
+      (r) =>
+          !r.isSpace &&
+          r.membership == Membership.join &&
+          (r.summary.mJoinedMemberCount ?? 0) +
+                  (r.summary.mInvitedMemberCount ?? 0) ==
+              2 &&
+          r
+                  .getState(EventTypes.RoomMember, botMxid)
+                  ?.content
+                  .tryGet<String>('membership') ==
+              'join',
+    )
+    .sortedBy<num>(
+      (r) => -(r.lastEvent?.originServerTs.millisecondsSinceEpoch ?? 0),
+    )
+    .firstOrNull;
 
 /// Ждёт, пока [userId] вступит в комнату. Нужна свежему DM с ботом: событие,
 /// отправленное до его join, бот увидит вперемешку с историей и приветствием.
@@ -97,4 +124,59 @@ Future<(String, bool)> startLizaRequestChat(
     ],
   );
   return (id, await waitForMemberJoin(client, id, lizaMxid));
+}
+
+/// Открывает основной чат с Лизой и нажимает в нём кнопку её карточки
+/// [buttonId] (`agent.start` — мастер «Подключить своего агента»). Входы: пункт
+/// «+» и кнопка `bf.agent` стартового меню BotFather.
+///
+/// Шлём callback кнопки (контракт карточек бота), а НЕ текст-фразу: на шаге
+/// «название чата» мастер принял бы фразу за название и создал бота, а открытая
+/// сессия подбора товара забрала бы её себе. Кнопка всегда начинает мастер
+/// заново. [body] — человекочитаемый fallback события.
+Future<void> openLizaAssistantWithCallback(
+  BuildContext context,
+  Client client,
+  String lizaMxid, {
+  required String buttonId,
+  required String body,
+}) async {
+  var roomId = findLizaAssistantDm(client, lizaMxid)?.id;
+  if (roomId == null) {
+    final created = await showFutureLoadingDialog(
+      context: context,
+      future: () async {
+        final id = await ensureLizaAssistantDm(client, lizaMxid);
+        return (id, await waitForMemberJoin(client, id, lizaMxid));
+      },
+    );
+    final result = created.result;
+    if (result == null || !context.mounted) return;
+    final (id, joined) = result;
+    // Лиза не вступила за таймаут — callback пришёл бы ей вперемешку с
+    // историей и приветствием; просто открываем чат, приветствие придёт само.
+    if (!joined) {
+      context.go('/rooms/$id');
+      return;
+    }
+    roomId = id;
+  }
+  final errorText = L10n.of(context).oopsSomethingWentWrong;
+  final messenger = ScaffoldMessenger.of(context);
+  var sent = false;
+  try {
+    await client.getRoomById(roomId)?.sendEvent({
+      'msgtype': 'com.liza.miniapp.callback',
+      'body': body,
+      'button_id': buttonId,
+    });
+    sent = true;
+  } catch (e, s) {
+    Logs().w('[LizaDm] $buttonId не отправлен', e, s);
+  }
+  // В чат переходим и при сбое, но не молча: без карточки пользователь иначе
+  // решил бы, что кнопка не работает.
+  if (!sent) messenger.showSnackBar(SnackBar(content: Text(errorText)));
+  if (!context.mounted) return;
+  context.go('/rooms/$roomId');
 }

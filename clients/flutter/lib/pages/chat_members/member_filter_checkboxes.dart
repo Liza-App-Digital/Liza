@@ -2,13 +2,19 @@ import 'package:flutter/material.dart';
 
 import 'package:liza/l10n/l10n.dart';
 
-/// Строка чекбоксов «На сервере {server}» / «В компании» под табами ролей.
+/// Чекбоксы «На сервере {домен}» / «В компании {имя}» под табами ролей.
 /// Рисует только полезные чекбоксы (см. memberFilterUsefulness); если не
-/// полезен ни один — плашку «все пользователи с сервера … и из компании».
+/// полезен ни один — плашку «все пользователи с сервера … и из компании …».
+///
+/// [serverName] — всегда домен: имя сервера и имя компании различаются
+/// (Надежда, 18.10), а домен не бывает чужим. [spaceName] — имя открытого
+/// пространства, членство в котором проверяет «В компании»; у
+/// подпространства подпись «В пространстве {имя}».
 class MemberFilterCheckboxes extends StatelessWidget {
-  final String serverLabel;
-  final bool hasServerName;
+  final String serverName;
+  final String spaceName;
   final bool isSpace;
+  final bool isCompanyRoot;
   final bool showServer;
   final bool showCompany;
   final bool onServerOnly;
@@ -17,9 +23,10 @@ class MemberFilterCheckboxes extends StatelessWidget {
   final ValueChanged<bool> onCompanyChanged;
 
   const MemberFilterCheckboxes({
-    required this.serverLabel,
-    required this.hasServerName,
+    required this.serverName,
+    required this.spaceName,
     required this.isSpace,
+    required this.isCompanyRoot,
     required this.showServer,
     required this.showCompany,
     required this.onServerOnly,
@@ -32,35 +39,47 @@ class MemberFilterCheckboxes extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = L10n.of(context);
+    final hasServerName = serverName.isNotEmpty;
     if (!showServer && !showCompany) {
-      final text = isSpace
-          ? (hasServerName
-                ? l10n.memberFiltersAllFromServerAndCompany(serverLabel)
-                : l10n.memberFiltersAllFromCompany)
-          : (hasServerName
-                ? l10n.memberFiltersAllFromServer(serverLabel)
-                : null);
+      final String? text;
+      if (!isSpace) {
+        text = hasServerName
+            ? l10n.memberFiltersAllFromServer(serverName)
+            : null;
+      } else if (isCompanyRoot) {
+        text = hasServerName
+            ? l10n.memberFiltersAllFromServerAndCompany(serverName, spaceName)
+            : l10n.memberFiltersAllFromCompany(spaceName);
+      } else {
+        text = hasServerName
+            ? l10n.memberFiltersAllFromServerAndSpace(serverName, spaceName)
+            : l10n.memberFiltersAllFromSpace(spaceName);
+      }
       if (text == null) return const SizedBox.shrink();
       return _AllMembersNote(text);
     }
 
-    final server = MembershipCheckbox(
-      label: l10n.memberFilterOnServer(serverLabel),
-      value: onServerOnly,
-      onChanged: onServerChanged,
-    );
-    final company = MembershipCheckbox(
-      label: l10n.memberFilterInCompany,
-      value: inCompanyOnly,
-      onChanged: onCompanyChanged,
-    );
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0),
-      child: Row(
+      // Столбиком: домен и имя компании длинные, в одну строку на телефоне
+      // обе подписи обрезались бы.
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Один чекбокс — на всю строку: длинному имени сервера нужна ширина.
-          if (showServer) Expanded(child: server),
-          if (showCompany) Expanded(child: company),
+          if (showServer)
+            MembershipCheckbox(
+              label: l10n.memberFilterOnServer(serverName),
+              value: onServerOnly,
+              onChanged: onServerChanged,
+            ),
+          if (showCompany)
+            MembershipCheckbox(
+              label: isCompanyRoot
+                  ? l10n.memberFilterInCompany(spaceName)
+                  : l10n.memberFilterInSpace(spaceName),
+              value: inCompanyOnly,
+              onChanged: onCompanyChanged,
+            ),
         ],
       ),
     );
@@ -122,12 +141,9 @@ class MembershipCheckbox extends StatelessWidget {
           onChanged: (checked) => onChanged(checked ?? false),
           visualDensity: VisualDensity.compact,
         ),
+        // Без «…»: домен и имя компании нужны целиком, длинное переносится.
         Flexible(
-          child: Text(
-            label,
-            style: Theme.of(context).textTheme.bodyMedium,
-            overflow: TextOverflow.ellipsis,
-          ),
+          child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
         ),
       ],
     ),

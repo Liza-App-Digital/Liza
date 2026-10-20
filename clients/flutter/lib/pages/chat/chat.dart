@@ -31,6 +31,7 @@ import 'package:liza/utils/adaptive_bottom_sheet.dart';
 import 'package:liza/utils/bot_commands_registry.dart';
 import 'package:liza/utils/channel_discussion.dart';
 import 'package:liza/utils/clipboard_paste.dart';
+import 'package:liza/utils/composer_enter_key.dart';
 import 'package:liza/utils/channel_peek.dart';
 import 'package:liza/pages/chat/events/gallery.dart';
 import 'package:liza/utils/chat_topology.dart';
@@ -660,26 +661,18 @@ class ChatController extends State<ChatPageWithRoom>
       }
     }
 
-    // Проверяем Enter по logicalKey, а не по keyLabel: keyLabel зависит
-    // от раскладки/IME — на macOS c RU-раскладкой может прийти не "Enter".
     final isEnter =
         evt.logicalKey == LogicalKeyboardKey.enter ||
         evt.logicalKey == LogicalKeyboardKey.numpadEnter;
     if (!isEnter) return KeyEventResult.ignored;
 
-    // Любой модификатор + Enter — перенос строки. Возвращаем ignored до
-    // других проверок, чтобы TextField сам вставил \n.
-    final hasModifier =
-        HardwareKeyboard.instance.isShiftPressed ||
-        HardwareKeyboard.instance.isAltPressed ||
-        HardwareKeyboard.instance.isMetaPressed ||
-        HardwareKeyboard.instance.isControlPressed;
-    if (hasModifier) return KeyEventResult.ignored;
-
-    if (!PlatformInfos.isMobile) {
-      if (evt is KeyDownEvent) send();
-      return KeyEventResult.handled;
-    }
+    final enterResult = composerEnterKey(
+      evt,
+      sendController.value,
+      isMobile: PlatformInfos.isMobile,
+      onSend: send,
+    );
+    if (enterResult != null) return enterResult;
 
     if (evt is KeyDownEvent) {
       final currentLineNum =

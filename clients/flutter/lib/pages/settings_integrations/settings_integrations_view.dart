@@ -20,10 +20,14 @@ class SettingsIntegrationsView extends StatelessWidget {
   Widget build(BuildContext context) {
     final l10n = L10n.of(context);
     final client = Matrix.of(context).client;
+    final isColumnMode = LizaThemes.isColumnMode(context);
 
     return Scaffold(
+      // В колоночном режиме слева уже список чатов — «назад» уводил бы в
+      // пустую правую панель (как settings_security_view.dart).
       appBar: AppBar(
-        leading: const BackButton(),
+        leading: isColumnMode ? null : const BackButton(),
+        automaticallyImplyLeading: !isColumnMode,
         title: Text(l10n.settingsMcpTitle),
       ),
       // Ключ XL живёт в account_data и может смениться НЕ с этого экрана

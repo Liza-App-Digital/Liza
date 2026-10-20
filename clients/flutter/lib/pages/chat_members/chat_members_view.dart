@@ -265,10 +265,10 @@ class ChatMembersView extends StatelessWidget {
                         if (controller.membershipFiltersReady &&
                             !controller.filterBaseEmpty)
                           MemberFilterCheckboxes(
-                            serverLabel: controller.serverLabel,
-                            hasServerName:
-                                controller.companyServerName.isNotEmpty,
+                            serverName: controller.companyServerName,
+                            spaceName: controller.spaceLabel,
                             isSpace: room.isSpace,
+                            isCompanyRoot: controller.isCompanyRoom,
                             showServer: controller.serverFilterUseful,
                             showCompany: controller.companyFilterUseful,
                             onServerOnly: controller.onServerOnly,

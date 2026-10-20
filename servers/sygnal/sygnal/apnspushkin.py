@@ -37,6 +37,7 @@ from sygnal._clean_body import (
     is_story,
     media_caption,
 )
+from sygnal._news_audience import device_platform
 from sygnal.exceptions import (
     NotificationDispatchException,
     PushkinSetupException,
@@ -76,6 +77,18 @@ CERTIFICATE_EXPIRATION_GAUGE = Gauge(
     "The expiry date of the client certificate in seconds since the epoch",
     labelnames=["pushkin"],
 )
+
+
+def _without_mutable_content(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Копия payload без aps.mutable-content. aps у payload бывает тем же
+    объектом, что и default_payload pusher'а, — его не мутируем."""
+    aps = payload.get("aps")
+    if not isinstance(aps, dict) or "mutable-content" not in aps:
+        return payload
+    return {
+        **payload,
+        "aps": {k: v for k, v in aps.items() if k != "mutable-content"},
+    }
 
 
 class ApnsPushkin(ConcurrencyLimitedPushkin):
@@ -376,6 +389,15 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                 shaved_payload = self._get_payload_event_id_only(
                     n, default_payload, send_badge_counts
                 )
+
+            # Расширение уведомлений Лизы на macOS не стартует ни на одном Маке:
+            # usernoted убивает его за «sluggish startup», а через 120 с ПОВТОРНО
+            # показывает тот же баннер — уже по прочитанному (жалобы «пуш на Маке
+            # через 2 минуты»). mutable-content кладёт в default_payload сам
+            # клиент, и для Мака тоже; без него usernoted расширение не будит и
+            # показывает оригинал сразу. howItWoks/pushes/pushes.md §24.
+            if shaved_payload and device_platform(device) == "macos":
+                shaved_payload = _without_mutable_content(shaved_payload)
 
             # Приоритет доставки APNs считаем по СОДЕРЖИМОМУ итогового payload,
             # а НЕ по n.prio. Synapse шлёт prio="low" для всех обычных (не-highlight,

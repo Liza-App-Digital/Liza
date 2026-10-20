@@ -29,7 +29,6 @@
 		54CC7F1BBA1B856291A68182 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87AED59460EBA7792F688A75 /* NotificationService.swift */; };
 		88999EA951C728B253E483C3 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = B1D59A19E160C4452C371EE5 /* GoogleService-Info.plist */; };
 		B33C76D5BB2C68CCBDB55BD3 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D84C6A3AB8197A1D56AA92CA /* Cocoa.framework */; };
-		C0A68F2A2715B3DD2736BCDB /* NotificationServiceExtensionMacOS.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 34C8B6BDEEF3653CCBFFD595 /* NotificationServiceExtensionMacOS.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		C3D76C60B18582F437CB5D64 /* liza_ding.aiff in Resources */ = {isa = PBXBuildFile; fileRef = CC7B00042F4B000000000003 /* liza_ding.aiff */; };
 		CC7A00012F4A000000000001 /* notification.caf in Resources */ = {isa = PBXBuildFile; fileRef = CC7A00002F4A000000000001 /* notification.caf */; };
 		CC7A00032F4A000000000002 /* MacApnsPushPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC7A00022F4A000000000002 /* MacApnsPushPlugin.swift */; };
@@ -48,13 +47,6 @@
 			remoteGlobalIDString = 33CC111A2044C6BA0003C045;
 			remoteInfo = FLX;
 		};
-		ACBF7DB789486F65326AA97E /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 33CC10E52044A3C60003C045 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BDB439751206388AD7C20B20;
-			remoteInfo = NotificationServiceExtensionMacOS;
-		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -64,7 +56,6 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				C0A68F2A2715B3DD2736BCDB /* NotificationServiceExtensionMacOS.appex in Embed App Extensions */,
 			);
 			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -278,7 +269,6 @@
 			);
 			dependencies = (
 				33CC11202044C79F0003C045 /* PBXTargetDependency */,
-				4C0039CDF5B65525FA7FC0CD /* PBXTargetDependency */,
 			);
 			name = Runner;
 			productName = Runner;
@@ -481,12 +471,6 @@
 			isa = PBXTargetDependency;
 			target = 33CC111A2044C6BA0003C045 /* Flutter Assemble */;
 			targetProxy = 33CC111F2044C79F0003C045 /* PBXContainerItemProxy */;
-		};
-		4C0039CDF5B65525FA7FC0CD /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			name = NotificationServiceExtensionMacOS;
-			target = BDB439751206388AD7C20B20 /* NotificationServiceExtensionMacOS */;
-			targetProxy = ACBF7DB789486F65326AA97E /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 

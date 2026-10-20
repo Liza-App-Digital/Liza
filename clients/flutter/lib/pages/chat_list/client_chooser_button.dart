@@ -9,9 +9,21 @@ import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/support_chat.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/widgets/avatar.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/matrix.dart';
 import '../../utils/liza_share.dart';
 import 'chat_list.dart';
+
+/// Что показать в нижней части меню аватара. С одним аккаунтом строка со своим
+/// именем ни на что не переключает и читается как дубль (задание Надежды 18.10,
+/// В4), поэтому строки аккаунтов — только при двух и более вошедших.
+({bool accounts, bool divider}) accountMenuBlock({
+  required int loggedInClients,
+  required bool canAddAccount,
+}) {
+  final accounts = loggedInClients > 1;
+  return (accounts: accounts, divider: accounts || canAddAccount);
+}
 
 class ClientChooserButton extends StatelessWidget {
   final ChatListController controller;
@@ -28,6 +40,13 @@ class ClientChooserButton extends StatelessWidget {
             ? -1
             : 1,
       );
+    // В локальной сборке (APP_ENV=local) тоже показываем «Добавить аккаунт»:
+    // нужно, чтобы залогиниться в локальный Synapse (testuser) рядом с dev-аккаунтом.
+    final canAddAccount = matrix.isCurrentUserDeveloper || AppConfig.isLocal;
+    final block = accountMenuBlock(
+      loggedInClients: matrix.widget.clients.where((c) => c.isLogged()).length,
+      canAddAccount: canAddAccount,
+    );
     return <PopupMenuEntry<Object>>[
       PopupMenuItem(
         value: SettingsAction.invite,
@@ -70,6 +89,8 @@ class ClientChooserButton extends StatelessWidget {
               const Icon(Icons.apps_outlined),
               const SizedBox(width: 18),
               Text(L10n.of(context).miniAppCatalogTitle),
+              const SizedBox(width: 8),
+              const DeveloperMark(),
             ],
           ),
         ),
@@ -93,82 +114,60 @@ class ClientChooserButton extends StatelessWidget {
           ],
         ),
       ),
-      const PopupMenuDivider(),
-      for (final bundle in bundles) ...[
-        if (matrix.accountBundles[bundle]!.length != 1 ||
-            matrix.accountBundles[bundle]!.single!.userID != bundle)
-          PopupMenuItem(
-            value: null,
-            child: Column(
-              crossAxisAlignment: .start,
-              mainAxisSize: .min,
-              children: [
-                Text(
-                  bundle!,
-                  style: TextStyle(
-                    color: Theme.of(context).textTheme.titleMedium!.color,
-                    fontSize: 14,
+      if (block.divider) const PopupMenuDivider(),
+      if (block.accounts)
+        for (final bundle in bundles) ...[
+          if (matrix.accountBundles[bundle]!.length != 1 ||
+              matrix.accountBundles[bundle]!.single!.userID != bundle)
+            PopupMenuItem(
+              value: null,
+              child: Column(
+                crossAxisAlignment: .start,
+                mainAxisSize: .min,
+                children: [
+                  Text(
+                    bundle!,
+                    style: TextStyle(
+                      color: Theme.of(context).textTheme.titleMedium!.color,
+                      fontSize: 14,
+                    ),
                   ),
-                ),
-                const Divider(height: 1),
-              ],
+                  const Divider(height: 1),
+                ],
+              ),
             ),
-          ),
-        ...matrix.accountBundles[bundle]!
-            .whereType<Client>()
-            .where((client) => client.isLogged())
-            .map(
-              (client) => PopupMenuItem(
-                value: client,
-                child: FutureBuilder<Profile?>(
-                  future: client.fetchOwnProfile(),
-                  builder: (context, snapshot) => Row(
-                    children: [
-                      Avatar(
-                        mxContent: snapshot.data?.avatarUrl,
-                        name:
-                            snapshot.data?.displayName ??
-                            client.userID!.localpart,
-                        size: 32,
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          snapshot.data?.displayName ??
-                              client.userID!.localpart!,
-                          overflow: TextOverflow.ellipsis,
+          ...matrix.accountBundles[bundle]!
+              .whereType<Client>()
+              .where((client) => client.isLogged())
+              .map(
+                (client) => PopupMenuItem(
+                  value: client,
+                  child: FutureBuilder<Profile?>(
+                    future: client.fetchOwnProfile(),
+                    builder: (context, snapshot) => Row(
+                      children: [
+                        Avatar(
+                          mxContent: snapshot.data?.avatarUrl,
+                          name:
+                              snapshot.data?.displayName ??
+                              client.userID!.localpart,
+                          size: 32,
                         ),
-                      ),
-                      const SizedBox(width: 12),
-                      IconButton(
-                        icon: const Icon(Icons.edit_outlined),
-                        onPressed: () {
-                          // Меню само не закроется: IconButton перехватывает
-                          // хит-тест раньше PopupMenuItem. А itemBuilder строит
-                          // СНИМОК на момент открытия — появление или исчезновение
-                          // пакета в уже открытом меню отрисовать нельзя, из-за
-                          // чего и требовалась перезагрузка страницы (LABA-2542).
-                          //
-                          // Здесь context — билдер FutureBuilder ниже по дереву,
-                          // он затеняет пришедший в _bundleMenuItems контекст
-                          // кнопки и лежит ВНУТРИ попап-роута. Поэтому pop
-                          // закрывает именно меню, синхронно, до любого await.
-                          Navigator.of(context).pop();
-                          controller.editBundlesForAccount(
-                            client.userID,
-                            bundle,
-                          );
-                        },
-                      ),
-                    ],
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            snapshot.data?.displayName ??
+                                client.userID!.localpart!,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
-      ],
-      // В локальной сборке (APP_ENV=local) тоже показываем «Добавить аккаунт»:
-      // нужно, чтобы залогиниться в локальный Synapse (testuser) рядом с dev-аккаунтом.
-      if (matrix.isCurrentUserDeveloper || AppConfig.isLocal)
+        ],
+      if (canAddAccount)
         PopupMenuItem(
           value: SettingsAction.addAccount,
           child: Row(
@@ -176,6 +175,8 @@ class ClientChooserButton extends StatelessWidget {
               const Icon(Icons.person_add_outlined),
               const SizedBox(width: 18),
               Text(L10n.of(context).addAccount),
+              const SizedBox(width: 8),
+              const DeveloperMark(),
             ],
           ),
         ),
@@ -186,8 +187,6 @@ class ClientChooserButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final matrix = Matrix.of(context);
 
-    var clientCount = 0;
-    matrix.accountBundles.forEach((key, value) => clientCount += value.length);
     return FutureBuilder<Profile>(
       future: matrix.client.isLogged() ? matrix.client.fetchOwnProfile() : null,
       builder: (context, snapshot) => Material(
@@ -223,9 +222,6 @@ class ClientChooserButton extends StatelessWidget {
         case SettingsAction.addAccount:
           context.go('/rooms/settings/addaccount');
           break;
-        case SettingsAction.newChannel:
-          context.go('/rooms/newchannel');
-          break;
         case SettingsAction.invite:
           LizaShare.shareInviteLink(context);
           break;
@@ -251,7 +247,6 @@ class ClientChooserButton extends StatelessWidget {
 
 enum SettingsAction {
   addAccount,
-  newChannel,
   invite,
   contacts,
   support,

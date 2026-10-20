@@ -3,7 +3,7 @@
 // ledger:RL-auth-otp-channel-switching
 // AC:RL-auth-otp-channel-switching/14 AC:RL-auth-otp-channel-switching/15
 // AC:RL-auth-otp-channel-switching/16 AC:RL-auth-otp-channel-switching/17
-// AC:RL-auth-otp-channel-switching/18
+// AC:RL-auth-otp-channel-switching/18 AC:RL-auth-otp-channel-switching/20
 //
 // Тот же файл — страж AC-1/AC-2 записи RL-auth-orphan-after-oidc: «экран „нет
 // доступа“ не живёт на первом экране» там сформулировано как отдельный критерий,
@@ -14,6 +14,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:liza/l10n/l10n.dart';
@@ -25,8 +27,10 @@ void main() {
     Widget child, {
     Locale locale = const Locale('ru'),
     TextScaler textScaler = TextScaler.noScaling,
+    ThemeData? theme,
   }) => MaterialApp(
     key: ValueKey(locale),
+    theme: theme,
     localizationsDelegates: L10n.localizationsDelegates,
     supportedLocales: L10n.supportedLocales,
     locale: locale,
@@ -108,31 +112,46 @@ void main() {
   });
 
   // AC:RL-auth-otp-channel-switching/14
-  testWidgets('RU: слоган сохранён, подзаголовок совпадает с утверждённым', (
+  testWidgets('RU: заголовок и подзаголовок совпадают с утверждёнными 18.10', (
     tester,
   ) async {
     await tester.pumpWidget(wrap(const LoginEntryDescription(compact: true)));
     await tester.pumpAndSettle();
 
-    expect(find.text('Платформа для вашего общения'), findsOneWidget);
+    expect(find.text('Ваш ассистент для бизнес-задач'), findsOneWidget);
     expect(
       find.text(
-        'Ставьте задачи Лизе лично или вместе с другими. Создавайте общие чаты, приглашайте людей — ИИ-ассистент поможет каждому участнику',
+        'Лиза соберёт лендинг, контент-план, отчёт по продажам или ссылку на оплату. Создавайте чаты с людьми и добавляйте в них ИИ-ассистента, чтобы он помогал всем участникам.',
       ),
       findsOneWidget,
     );
   });
 
   // AC:RL-auth-otp-channel-switching/15
-  test('EN: подзаголовок передаёт смысл общения с Liza', () {
-    final en =
-        jsonDecode(File('lib/l10n/intl_en.arb').readAsStringSync())
+  test('EN: слоган про бизнес-задачи, без отсылки к мессенджеру', () {
+    Map<String, dynamic> arb(String locale) =>
+        jsonDecode(File('lib/l10n/intl_$locale.arb').readAsStringSync())
             as Map<String, dynamic>;
-    expect(en['lizaTagline'], 'A platform for your communication');
+    final en = arb('en');
+    expect(en['lizaTagline'], 'Your assistant for business tasks');
     expect(
       en['lizaTaglineDetails'],
-      'Give Liza tasks on your own or together with others. Create group chats, invite people — the AI assistant will help every participant',
+      'Liza will put together a landing page, a content plan, a sales report or a payment link. Create chats with people and add the AI assistant so it helps every participant.',
     );
+    // «Платформа для общения — нельзя, это отсылка на мессенджер» (Надежда, 18.10).
+    for (final locale in ['ru', 'en']) {
+      for (final key in ['lizaTagline', 'lizaTaglineDetails']) {
+        final value = (arb(locale)[key] as String).toLowerCase();
+        for (final banned in [
+          'платформ',
+          'общени',
+          'platform',
+          'communication',
+        ]) {
+          expect(value, isNot(contains(banned)), reason: '$locale/$key');
+        }
+      }
+    }
   });
 
   // AC:RL-auth-otp-channel-switching/16
@@ -182,11 +201,63 @@ void main() {
 
     expect(
       find.text(
-        'Ставьте задачи Лизе лично или вместе с другими. Создавайте общие чаты, приглашайте людей — ИИ-ассистент поможет каждому участнику',
+        'Лиза соберёт лендинг, контент-план, отчёт по продажам или ссылку на оплату. Создавайте чаты с людьми и добавляйте в них ИИ-ассистента, чтобы он помогал всем участникам.',
       ),
       findsOneWidget,
     );
     expect(find.byType(TextField), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+  // AC:RL-auth-otp-channel-switching/20
+  testWidgets(
+    'узкий экран 320 dp: заголовок одной строкой, не мельче прежнего слогана',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(320, 640));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      // Тестовый шрифт по умолчанию даёт ширины, далёкие от реальных, —
+      // меряем системным шрифтом с кириллицей, как mini_app_button_grid_test.
+      const fontPath = '/System/Library/Fonts/Supplemental/Arial Unicode.ttf';
+      String? fontFamily;
+      if (File(fontPath).existsSync()) {
+        final loader = FontLoader('AppCyr')
+          ..addFont(
+            Future.value(File(fontPath).readAsBytesSync().buffer.asByteData()),
+          );
+        await loader.load();
+        fontFamily = 'AppCyr';
+      }
+
+      await tester.pumpWidget(
+        wrap(entryWithPhoneInput(), theme: ThemeData(fontFamily: fontFamily)),
+      );
+      await tester.pumpAndSettle();
+
+      final title = find.text('Ваш ассистент для бизнес-задач');
+      expect(title, findsOneWidget);
+      final paragraph = tester.renderObject<RenderParagraph>(title);
+      expect(paragraph.didExceedMaxLines, isFalse);
+
+      // FittedBox ужимает слоган вместо переноса, поэтому одна строка есть
+      // всегда; читаемость держим относительно принятого до 18.10 слогана
+      // «Платформа для вашего общения»: новый не должен ужиматься заметно
+      // сильнее.
+      double naturalWidth(String text) {
+        final painter = TextPainter(
+          text: TextSpan(text: text, style: paragraph.text.style),
+          textDirection: TextDirection.ltr,
+          maxLines: 1,
+        )..layout();
+        final width = painter.width;
+        painter.dispose();
+        return width;
+      }
+
+      final ratio =
+          naturalWidth('Ваш ассистент для бизнес-задач') /
+          naturalWidth('Платформа для вашего общения');
+      expect(ratio, lessThanOrEqualTo(1.03), reason: 'ratio=$ratio');
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

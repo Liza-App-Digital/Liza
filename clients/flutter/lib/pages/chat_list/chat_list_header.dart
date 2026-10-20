@@ -6,15 +6,16 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/config/routes.dart';
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
-import 'package:liza/utils/stories/story_media_picker.dart';
 import 'package:liza/pages/chat_list/chat_list.dart';
 import 'package:liza/pages/chat_list/create_menu_sections.dart';
 import 'package:liza/utils/direct_chat_ensure.dart';
 import 'package:liza/utils/liza_dm.dart';
+import 'package:liza/utils/liza_new_request.dart';
 import 'package:liza/pages/chat_list/client_chooser_button.dart';
 import 'package:liza/utils/liza_share.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/sync_status_localization.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import '../../widgets/matrix.dart';
 
@@ -140,7 +141,7 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
                     color: theme.colorScheme.secondaryContainer,
                     shape: const CircleBorder(),
                     child: PopupMenuButton<CreateMenuAction>(
-                      tooltip: L10n.of(context).createGroup,
+                      tooltip: L10n.of(context).create,
                       icon: Icon(
                         Icons.add_outlined,
                         color: theme.colorScheme.onPrimaryContainer,
@@ -149,7 +150,6 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
                       itemBuilder: (context) {
                         final roles = Matrix.of(context).userRoleService;
                         final sections = createMenuSections(
-                          isAdmin: roles.isCurrentUserAdmin,
                           isDeveloper: roles.isCurrentUserDeveloper,
                           isMobile: PlatformInfos.isMobile,
                         );
@@ -159,7 +159,18 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
                             for (final action in section)
                               PopupMenuItem(
                                 value: action,
-                                child: Text(_createMenuLabel(context, action)),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(_createMenuLabel(context, action)),
+                                    if (developerOnlyActions.contains(
+                                      action,
+                                    )) ...[
+                                      const SizedBox(width: 8),
+                                      const DeveloperMark(),
+                                    ],
+                                  ],
+                                ),
                               ),
                           ],
                         ];
@@ -184,10 +195,7 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
       CreateMenuAction.newRequest => l10n.newLizaRequest,
       CreateMenuAction.group => l10n.createGroup,
       CreateMenuAction.channel => l10n.createChannel,
-      CreateMenuAction.story => l10n.createStory,
-      CreateMenuAction.bot => l10n.createBot,
-      CreateMenuAction.miniApp => l10n.createMiniApp,
-      CreateMenuAction.agent => l10n.connectAiAgent,
+      CreateMenuAction.developers => l10n.forDevelopers,
       CreateMenuAction.mcp => l10n.settingsMcpAddShort,
       // «Пригласить контакт» и «Контакты» дублируют пункты меню аватара —
       // единое место добавления людей рядом с созданием (референс Макса).
@@ -205,7 +213,7 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
   ) async {
     switch (action) {
       case CreateMenuAction.newRequest:
-        await _openNewLizaRequest(context);
+        await openNewLizaRequest(context);
         return;
       case CreateMenuAction.group:
         context.go('/rooms/newgroup');
@@ -213,31 +221,12 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
       case CreateMenuAction.channel:
         context.go('/rooms/newchannel');
         return;
-      case CreateMenuAction.story:
-        final composer = await pickStoryMediaComposer(context);
-        if (composer == null || !context.mounted) return;
-        await Navigator.of(
-          context,
-        ).push(MaterialPageRoute(builder: (_) => composer));
-      case CreateMenuAction.bot:
-      case CreateMenuAction.miniApp:
-        final client = Matrix.of(context).client;
-        const botFatherId = '@botfather:bots.liza.ru';
-        final existing = client.getDirectChatFromUserId(botFatherId);
-        final roomId =
-            existing ??
-            (await showFutureLoadingDialog(
-              context: context,
-              future: () => client.ensureDirectChat(botFatherId),
-            )).result;
-        if (roomId == null || !context.mounted) return;
-        context.go('/rooms/$roomId');
-        return;
-      case CreateMenuAction.agent:
-        await _openAgentConnect(context);
+      case CreateMenuAction.developers:
+        await _openBotFatherMenu(context);
         return;
       case CreateMenuAction.mcp:
-        context.go(AppRoutes.settingsMcp);
+        context.go(AppRoutes.mcp);
+        return;
       case CreateMenuAction.invite:
         // Нативный share-лист приглашения (НЕ QR-визитка из меню аватара —
         // консистентно с настройками/списком/поиском).
@@ -249,69 +238,40 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
     }
   }
 
-  /// «Новый запрос»: отдельный чат с Лизой (P1 встречи 05.10). Название
-  /// «Лиза: <суть>» ставит бот после первого сообщения; до того — «Новый
-  /// запрос». Двойной тап: барьер диалога + single-flight `forceNew`.
-  Future<void> _openNewLizaRequest(BuildContext context) async {
+  static const _botFatherMxid = '@botfather:bots.liza.ru';
+
+  /// «Разработчику»: главное меню BotFather — создание бота, mini-app и
+  /// подключение агента живут там. В существующий DM шлём /menu, BotFather
+  /// отвечает карточкой меню. Свежему DM /menu не шлём: бот сам присылает
+  /// карточку при входе (`send_welcome_on_join`), иначе их было бы две.
+  Future<void> _openBotFatherMenu(BuildContext context) async {
     final client = Matrix.of(context).client;
-    final title = L10n.of(context).newLizaRequest;
+    final existing = findBotDm(client, _botFatherMxid);
+    if (existing != null) {
+      try {
+        await existing.sendTextEvent('/menu');
+      } catch (e, s) {
+        Logs().w('[CreateMenu] /menu в BotFather не отправлен', e, s);
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(L10n.of(context).oopsSomethingWentWrong)),
+          );
+        }
+      }
+      if (!context.mounted) return;
+      context.go('/rooms/${existing.id}');
+      return;
+    }
     final created = await showFutureLoadingDialog(
       context: context,
-      future: () =>
-          startLizaRequestChat(client, MatrixState.lizaMxid, title: title),
+      future: () async {
+        final roomId = await client.ensureDirectChat(_botFatherMxid);
+        await waitForMemberJoin(client, roomId, _botFatherMxid);
+        return roomId;
+      },
     );
-    final result = created.result;
-    if (result == null || !context.mounted) return;
-    context.go('/rooms/${result.$1}');
-  }
-
-  /// Открывает Лизу ИИ с карточкой «Подключить своего агента».
-  ///
-  /// Шлём callback кнопки `agent.start` (контракт карточек бота, как
-  /// `BotFatherPanel._handoff`), а НЕ текст-фразу: на шаге «название чата» мастер
-  /// принял бы фразу за название и создал бота, а открытая сессия подбора товара
-  /// забрала бы её себе. Кнопка всегда начинает мастер заново.
-  Future<void> _openAgentConnect(BuildContext context) async {
-    final client = Matrix.of(context).client;
-    final lizaMxid = MatrixState.lizaMxid;
-    final body = L10n.of(context).connectAiAgent;
-    var roomId = findLizaAssistantDm(client, lizaMxid)?.id;
-    if (roomId == null) {
-      final created = await showFutureLoadingDialog(
-        context: context,
-        future: () async {
-          final id = await ensureLizaAssistantDm(client, lizaMxid);
-          return (id, await waitForMemberJoin(client, id, lizaMxid));
-        },
-      );
-      final result = created.result;
-      if (result == null || !context.mounted) return;
-      final (id, joined) = result;
-      // Лиза не вступила за таймаут — callback пришёл бы ей вперемешку с
-      // историей и приветствием; просто открываем чат, приветствие придёт само.
-      if (!joined) {
-        context.go('/rooms/$id');
-        return;
-      }
-      roomId = id;
-    }
-    final errorText = L10n.of(context).oopsSomethingWentWrong;
-    final messenger = ScaffoldMessenger.of(context);
-    var sent = false;
-    try {
-      await client.getRoomById(roomId)?.sendEvent({
-        'msgtype': 'com.liza.miniapp.callback',
-        'body': body,
-        'button_id': 'agent.start',
-      });
-      sent = true;
-    } catch (e, s) {
-      Logs().w('[CreateMenu] agent.start не отправлен', e, s);
-    }
-    // В чат переходим и при сбое, но не молча: без карточки пользователь иначе
-    // решил бы, что пункт меню не работает.
-    if (!sent) messenger.showSnackBar(SnackBar(content: Text(errorText)));
-    if (!context.mounted) return;
+    final roomId = created.result;
+    if (roomId == null || !context.mounted) return;
     context.go('/rooms/$roomId');
   }
 }

@@ -114,6 +114,14 @@ class PermissionsListTile extends StatelessWidget {
           return l10n.enableEncryption;
         case 'm.room.server_acl':
           return l10n.editBlockedServers;
+        case EventTypes.SpaceChild:
+          return l10n.addRemoveSpaceChildren;
+        case EventTypes.SpaceParent:
+          return l10n.setSpaceParent;
+        case companyCreateChatKey:
+          return l10n.createChatsInCompany;
+        case companyCreateChannelKey:
+          return l10n.createChannelsInCompany;
       }
     }
     return permissionKey;

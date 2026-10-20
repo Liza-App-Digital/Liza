@@ -12,7 +12,13 @@ enum SupportIntent {
   /// «Компании»). `next: request` — бот пропускает вступление (его пользователь
   /// уже прочитал в попапе) и сразу просит описать заявку. Старый бот поле
   /// игнорирует и присылает вступление с карточкой.
-  createCompanyRequest('create_company', next: 'request');
+  createCompanyRequest('create_company', next: 'request'),
+
+  /// «Создать компанию» → «Узнать подробности» в том же попапе. `next: question`
+  /// — бот ставит подтему «Вопрос» и просит описать вопрос, вступление не
+  /// повторяет; заявка появится, только если пользователь сам нажмёт
+  /// «Отправить». Бот без поддержки `question` присылает вступление с карточкой.
+  createCompanyQuestion('create_company', next: 'question');
 
   const SupportIntent(this.wireValue, {this.next});
 

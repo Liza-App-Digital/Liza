@@ -177,6 +177,87 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             }
         }
         observeScreenLock()
+        observeSleep()
+    }
+
+    // MARK: - Диагностика для push-report
+
+    /// Бандл старой Liza (до Apple-миграции). Две установленные копии — два
+    /// набора баннеров, два бейджа и две строки в «Уведомлениях» (runbook
+    /// `pushesMonitoring.md` Шаг 4: дубли в LaunchServices гасят баннеры).
+    static let legacyBundleId = "com.prodamus.laba.liza"
+
+    /// Копии приложения в LaunchServices. Наружу — только числа и КЛАСС пути:
+    /// полный путь содержит имя пользователя.
+    static func appCopies() -> [String: Any] {
+        let ws = NSWorkspace.shared
+        let ownId = Bundle.main.bundleIdentifier ?? ""
+        let own = ws.urlsForApplications(withBundleIdentifier: ownId)
+        let legacy = ownId == legacyBundleId
+            ? []
+            : ws.urlsForApplications(withBundleIdentifier: legacyBundleId)
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: ownId).count
+            + (ownId == legacyBundleId
+                ? 0
+                : NSRunningApplication.runningApplications(withBundleIdentifier: legacyBundleId).count)
+        return [
+            "copies": own.count,
+            "legacyCopies": legacy.count,
+            "running": running,
+            "location": locationClass(Bundle.main.bundlePath),
+        ]
+    }
+
+    static func locationClass(_ path: String) -> String {
+        if path.contains("/AppTranslocation/") { return "translocated" }
+        if path.hasPrefix("/Applications/") { return "applications" }
+        if path.hasPrefix("/Volumes/") { return "volumes" }
+        if path.contains("/Downloads/") { return "downloads" }
+        if path.contains("/Applications/") { return "user_applications" }
+        if path.contains("/DerivedData/") || path.contains("/build/") { return "dev_build" }
+        return "other"
+    }
+
+    /// Запись в журнал пушей Dart (`PushJournal.recordNative`). Время берём
+    /// ЗДЕСЬ: событие сна Dart обработает уже после пробуждения. Вызывать
+    /// только ПОСЛЕ ответа системе (completionHandler) — журнал не должен
+    /// задерживать показ (RL-macos-push-active-one-banner).
+    static func journal(stage: String, reason: String? = nil, eventId: String? = nil) {
+        var args: [String: Any] = [
+            "stage": stage,
+            "timeMs": Int(Date().timeIntervalSince1970 * 1000),
+        ]
+        if let reason = reason { args["reason"] = reason }
+        if let eventId = eventId { args["eventId"] = eventId }
+        DispatchQueue.main.async {
+            queue.sync { channel }?.invokeMethod("onJournal", arguments: args)
+        }
+    }
+
+    private static var sleepObserved = false
+
+    /// Сон/пробуждение Мака и дисплея. Без этого «APNs пришёл через 40 минут»
+    /// неотличимо от «Мак спал 40 минут» (разбор 2026-10-16: iMac засыпал
+    /// циклами по ~15 мин, пуши доходили до процесса только после пробуждения).
+    private static func observeSleep() {
+        queue.sync {
+            guard !sleepObserved else { return }
+            sleepObserved = true
+        }
+        // Именно NSWorkspace.notificationCenter — в NotificationCenter.default
+        // эти события не приходят.
+        let center = NSWorkspace.shared.notificationCenter
+        let pairs: [(Notification.Name, String, String)] = [
+            (NSWorkspace.willSleepNotification, "sleep", "system"),
+            (NSWorkspace.didWakeNotification, "wake", "system"),
+            (NSWorkspace.screensDidSleepNotification, "sleep", "screens"),
+            (NSWorkspace.screensDidWakeNotification, "wake", "screens"),
+        ]
+        for (name, stage, reason) in pairs {
+            center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                journal(stage: stage, reason: reason)
+            }
+        }
     }
 
     // MARK: - Блокировка экрана
@@ -319,6 +400,8 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             MacApnsPushPlugin.retractDelivered(eventId: eventId) { ms in
                 DispatchQueue.main.async { result(ms) }
             }
+        case "getAppCopies":
+            result(MacApnsPushPlugin.appCopies())
         case "getScreenLocked":
             result(MacApnsPushPlugin.isScreenLocked())
         case "getNotificationSettings":
@@ -331,11 +414,17 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             // спрашиваем САМУ ОС (диагностика 2026-09-09).
             UNUserNotificationCenter.current().getNotificationSettings { s in
                 DispatchQueue.main.async {
+                    // alertStyle/notificationCenter — для когорт push-report:
+                    // `alert=enabled` при `alertStyle=none` = «разрешено, но
+                    // баннер не всплывает», ровно «пуши идут, баннеров нет».
                     result([
                         "authorization": s.authorizationStatus.rawValue,
                         "alert": s.alertSetting.rawValue,
                         "badge": s.badgeSetting.rawValue,
                         "sound": s.soundSetting.rawValue,
+                        "alertStyle": s.alertStyle.rawValue,
+                        "notificationCenter": s.notificationCenterSetting.rawValue,
+                        "lockScreen": s.lockScreenSetting.rawValue,
                     ])
                 }
             }

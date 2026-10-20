@@ -6,6 +6,17 @@ SPACE_PARENT_MARKER = "io.liza.has_space_parent"
 MEMBER_EVENT = "m.room.member"
 PROTECTED_MEMBERSHIPS = ("leave", "ban")
 
+# Пороги «кто создаёт чаты / каналы в компании» — в power_levels.events
+# ГЛАВНОГО пространства. Ключа нет → модератор (50): «по умолчанию запрещено»
+# рядовым (Надежда, 18.10). Умолчание держит сервер, при создании пространства
+# ключи не пишутся. Зеркало — clients/flutter/lib/utils/chat_topology.dart
+# (canCreateInCompany), общие кейсы — tests/create_rights_cases.json.
+CREATE_CHAT_KEY = "com.liza.space.create_chat"
+CREATE_CHANNEL_KEY = "com.liza.space.create_channel"
+DEFAULT_CREATE_LEVEL = 50
+CHAT_TYPE_KEY = "com.liza.chat.type"
+LIZA_CHANNEL_ROOM_TYPE = "com.liza.channel"
+
 
 def is_root_space_creation(config: dict) -> bool:
     """True если createRoom-конфиг создаёт пространство 1-го уровня (root-space).
@@ -119,6 +130,65 @@ def is_auto_add_candidate(
     if has_space_parent:
         return False
     return True
+
+
+def creation_kind(create_content: dict) -> str:
+    """'channel' или 'chat' — какой порог компании проверять для новой комнаты.
+
+    Канал узнаётся по com.liza.chat.type клиента и по room_type, который ставит
+    channel_guard (что-то одно из двух может не доехать у старых клиентов).
+    """
+    if create_content.get(CHAT_TYPE_KEY) == "channel":
+        return "channel"
+    if create_content.get("type") == LIZA_CHANNEL_ROOM_TYPE:
+        return "channel"
+    return "chat"
+
+
+def _as_level(value):
+    # Старые версии комнат допускают уровни строкой ("50"); bool — не уровень.
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def may_create_in_company(
+    power_content, user_id: str, kind: str, creators=()
+) -> bool:
+    """Хватает ли user_id уровня, чтобы новая комната попала в компанию.
+
+    Уровень пользователя — users[user_id], иначе users_default (0). Порог —
+    events[CREATE_CHAT_KEY | CREATE_CHANNEL_KEY], иначе DEFAULT_CREATE_LEVEL;
+    мусор в пороге тоже даёт умолчание, мусор в уровне — users_default.
+
+    creators — создатели главного пространства в комнатах v12+ (MSC4289): у
+    них бесконечный уровень и в users их нет. Для v≤11 передавать пусто.
+    """
+    if user_id in creators:
+        return True
+    content = power_content if isinstance(power_content, dict) else {}
+    key = CREATE_CHANNEL_KEY if kind == "channel" else CREATE_CHAT_KEY
+
+    events = content.get("events")
+    required = _as_level(events.get(key)) if isinstance(events, dict) else None
+    if required is None:
+        required = DEFAULT_CREATE_LEVEL
+
+    users_default = _as_level(content.get("users_default"))
+    if users_default is None:
+        users_default = 0
+    users = content.get("users")
+    level = _as_level(users.get(user_id)) if isinstance(users, dict) else None
+    if level is None:
+        level = users_default
+    return level >= required
 
 
 def is_local_room(room_id: str, server_name: str) -> bool:

@@ -7,6 +7,7 @@ import 'package:flutter_new_badger/flutter_new_badger.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/utils/chat_topology.dart';
+import 'package:liza/utils/push_journal.dart';
 import 'package:liza/utils/unseen_messages.dart';
 
 /// Бейдж иконки приложения — единая точка для [BackgroundPush] и push_helper.
@@ -70,6 +71,7 @@ abstract final class AppBadge {
   /// случаев, двунаправленно у одного юзера) — то есть измерял собственную гонку.
   static int get writeSeq => _writeSeq;
   static int _writeSeq = 0;
+  static int? _lastJournaledCount;
 
   /// Канал к нативному APNs-плагину (iOS `ApnsPushPlugin` / macOS
   /// `MacApnsPushPlugin`) — по нему число видимых непрочитанных уезжает в App
@@ -222,6 +224,13 @@ abstract final class AppBadge {
       // Успешный вызов — латч самозаживает (не ждём resetDenied на resume).
       _denied = false;
       _writeSeq++;
+      // В журнал — только СМЕНА числа: запись идёт на каждый sync, и без этого
+      // бейдж вытеснил бы из кольца журнала всё остальное. Это факт записи, а
+      // не отрисовки (read-back на macOS тавтологичен).
+      if (count != _lastJournaledCount) {
+        _lastJournaledCount = count;
+        PushJournal.instance.record(PushStage.badge, value: count);
+      }
       // K-A (macOS): dockTile.badgeLabel выставлен, но Dock может не
       // перерисоваться при frontmost-окне — форсим перерисовку нативно.
       if (Platform.isMacOS) await _refreshDockBadge();

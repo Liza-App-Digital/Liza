@@ -9,6 +9,7 @@ import 'package:matrix/encryption.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/utils/account_delete_service.dart';
 import 'package:liza/utils/auth_diagnostics.dart';
 import 'package:liza/utils/auth_proxy_service.dart';
 import 'package:liza/utils/matrix_sdk_extensions/event_extension.dart';
@@ -34,6 +35,12 @@ extension LocalizedExceptionExtension on Object {
     BuildContext context, [
     ExceptionContext? exceptionContext,
   ]) {
+    if (this is AccountDeleteException) {
+      return (this as AccountDeleteException).failure ==
+              AccountDeleteFailure.companyOwner
+          ? L10n.of(context).deleteAccountTransferOwnership
+          : L10n.of(context).deleteAccountFailed;
+    }
     if (this is MediaDownloadException) {
       return L10n.of(context).couldNotLoadMedia;
     }

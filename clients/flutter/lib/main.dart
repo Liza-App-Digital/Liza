@@ -18,6 +18,7 @@ import 'package:liza/utils/adaptive_orientation.dart';
 import 'package:liza/utils/client_manager.dart';
 import 'package:liza/utils/file_logger.dart';
 import 'package:liza/utils/monitoring.dart';
+import 'package:liza/utils/push_journal.dart';
 import 'package:liza/utils/notification_background_handler.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/app_restart.dart';
@@ -61,6 +62,10 @@ void main() async {
     // Initialize file logger early to capture all startup logs
     await FileLogger.instance.init();
     debugPrint('[BOOT] FileLogger initialized');
+    // Журнал пути уведомлений (только главный изолят — единственный писатель
+    // файла). Старт не ждёт чтения файла: записи до готовности держатся в
+    // памяти и уходят на диск после init.
+    unawaited(PushJournal.instance.init());
 
     // Мониторинг ошибок. No-op без build-флагов (обычная разработка/hot-reload).
     await Monitoring.init();

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -34,6 +35,7 @@ import 'package:liza/utils/network_recovery_trigger.dart';
 import 'package:liza/utils/failed_send_retry_service.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/push_client_resolver.dart';
+import 'package:liza/utils/push_journal.dart';
 import 'package:liza/utils/uia_request_manager.dart';
 import 'package:liza/utils/single_space_service.dart';
 import 'package:liza/pages/chat/events/audio_autoplay_service.dart';
@@ -102,6 +104,8 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
   /// the [onLoginStateChanged] handler from treating the resulting
   /// [LoginState.loggedOut] event as a soft logout.
   void markExplicitLogout() => _isExplicitLogout = true;
+
+  void unmarkExplicitLogout() => _isExplicitLogout = false;
 
   SharedPreferences get store => widget.store;
 
@@ -649,13 +653,13 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     Future<void> handleLoginStateChange(LoginState state) async {
       final loggedInWithMultipleClients = widget.clients.length > 1;
       if (state == LoginState.loggedIn && c.userID != null) {
-        Monitoring.setUserIdentity(c.userID!);
+        _syncMonitoringIdentity();
         unawaited(_reportDeviceCapability(c));
       }
       if (state == LoginState.loggedOut) {
         _cancelSubs(c.clientName);
         widget.clients.remove(c);
-        if (widget.clients.isEmpty) Monitoring.clearUser();
+        _syncMonitoringIdentity();
         ClientManager.removeClientNameFromStore(c.clientName, store);
         // Only delete the session backup on an explicit user-initiated logout.
         // Soft logouts caused by network errors, timeouts, or database failures
@@ -727,6 +731,9 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     // Synapse доставляет global account_data владельца в его /sync без broadcast.
     // Это бесплатный push-канал — не нужен поллинг.
     onAccountDataSub[name] ??= c.onSync.stream.listen((sync) {
+      // Пропасть между /sync = процесс стоял (сон Мака, заморозка) — в журнал
+      // пушей, иначе «пуш опоздал» не отличить от «приложение спало».
+      PushJournal.instance.noteSync();
       final uid = c.userID;
       if (uid == null) return;
       for (final event in sync.accountData ?? <BasicEvent>[]) {
@@ -904,6 +911,15 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     for (final c in widget.clients) {
       _registerSubs(c.clientName);
     }
+    // Восстановленные сессии `loggedIn` не получают (см. syncIdentity) —
+    // атрибуцию ставим здесь явно.
+    _syncMonitoringIdentity();
+    _pushReportTimer?.cancel();
+    _pushReportTimer = Timer.periodic(
+      const Duration(hours: 1),
+      (_) => unawaited(_maybeReportPushHealth()),
+    );
+    unawaited(_maybeReportPushHealth());
 
     // Фоновая предзагрузка малых видео (< 5 МБ) из активной комнаты.
     final primaryClient = widget.clients.firstOrNull;
@@ -1074,6 +1090,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
         // (setBadge/getBadge ходят в одну in-process переменную).
         unawaited(_reportPushConfig());
       }
+      unawaited(_maybeReportPushHealth());
       // Сверяем пушер с сервером на КАЖДЫЙ возврат в foreground, а не только
       // когда `pusherRegistered == false`. Причина (LABA-1891): при reject от
       // Sygnal Synapse безвозвратно удаляет пушер (mid-session ротация FCM/APNs-
@@ -1136,6 +1153,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
   Future<void> _reportPushConfig() async {
     final authorization = await AppBadge.logNotificationSettings();
     if (authorization == AppBadge.authorizationDenied) {
+      PushJournal.instance.record(PushStage.config, reason: PushReason.osDenied);
       await Monitoring.reportPushConfig('os_denied');
     }
     // Все аккаунты вышли (в т.ч. сервер отозвал токен) — `client` на пустом
@@ -1145,7 +1163,69 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     if (!c.isLogged()) return;
     final deviations = PushRuleDefaults.deviations(c.globalPushRules);
     if (deviations != null && PushRuleDefaults.anySilencing(deviations)) {
+      PushJournal.instance.record(
+        PushStage.config,
+        reason: PushReason.defaultRuleDisabled,
+      );
       await Monitoring.reportPushConfig('default_rule_disabled');
+    }
+  }
+
+  void _syncMonitoringIdentity() => Monitoring.syncIdentity([
+    for (final c in widget.clients)
+      if (c.isLogged() && c.userID != null)
+        (userId: c.userID!, deviceId: c.deviceID),
+  ]);
+
+  Timer? _pushReportTimer;
+  bool _pushReportInFlight = false;
+
+  /// Суточный `[health] push-report` (спека 2026-10-16-push-telemetry-cohorts):
+  /// теги когорты + счётчики и хвост журнала пушей. Проверка «пора ли» — до
+  /// нативных проб, чтобы не дёргать их на каждом resume.
+  Future<void> _maybeReportPushHealth() async {
+    // Старт, часовой таймер и resume зовут независимо; «пора ли» проверяется до
+    // await-проб, а метка ставится только после отправки — без флага два вызова
+    // подряд отправили бы отчёт дважды.
+    if (_pushReportInFlight) return;
+    _pushReportInFlight = true;
+    try {
+      await _reportPushHealthIfDue();
+    } finally {
+      _pushReportInFlight = false;
+    }
+  }
+
+  Future<void> _reportPushHealthIfDue() async {
+    if (!await Monitoring.pushReportIsDue()) return;
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final logged = widget.clients.where((c) => c.isLogged()).toList();
+      final tags = <String, String>{
+        'liza.env': AppConfig.monitoringEnv,
+        'liza.build': info.buildNumber,
+        'liza.bundle': info.packageName,
+        'liza.accounts': '${logged.length}',
+        if (logged.firstOrNull?.deviceID != null)
+          'liza.device_id': logged.first.deviceID!,
+        if (!kIsWeb) 'liza.os_version': osMajorMinor(Platform.operatingSystemVersion),
+        'liza.lifecycle': WidgetsBinding.instance.lifecycleState?.name ?? 'unknown',
+        ...?await backgroundPush?.apns?.environmentTags(),
+      };
+      final journal = PushJournal.instance;
+      journal.flush();
+      final entries = journal.entries;
+      await Monitoring.reportPushHealth(
+        platform: pushReportPlatform(),
+        tags: tags,
+        counters: PushJournalStats.compute(
+          entries,
+          since: DateTime.now().subtract(const Duration(hours: 24)),
+        ),
+        journalTail: PushJournal.tail(entries, Monitoring.pushReportTailBytes),
+      );
+    } catch (e, s) {
+      Logs().w('[Push] push-report failed', e, s);
     }
   }
 
@@ -1223,6 +1303,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     for (final s in onStoryAutoJoinSub.values) {
       s.cancel();
     }
+    _pushReportTimer?.cancel();
     _networkRecoveryTrigger?.dispose();
     _failedSendRetryService?.dispose();
     client.httpClient.close();

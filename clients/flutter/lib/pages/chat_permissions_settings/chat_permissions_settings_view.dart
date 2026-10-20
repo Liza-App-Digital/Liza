@@ -63,7 +63,17 @@ class ChatPermissionsSettingsView extends StatelessWidget {
               // заданы легитимно и остаются редактируемыми.
               if (room.isChannel) 'm.reaction',
               if (room.isChannel) 'm.room.redaction',
+              // Служебный ключ видимости чата, не право человека.
+              'com.liza.chat.topology',
+              // Пороги создания в компании — своей секцией ниже.
+              companyCreateChatKey,
+              companyCreateChannelKey,
             };
+            // Секция «Создание в компании» — только в главном пространстве
+            // своей компании. mainRootSpaceId == null до fetch() — секции нет.
+            final isOwnCompanyRoot =
+                room.id ==
+                Matrix.of(context).singleSpaceService.mainRootSpaceId;
             final eventsPowerLevels =
                 Map<String, int?>.from(
                   powerLevelsContent.tryGetMap<String, int?>('events') ?? {},
@@ -187,6 +197,53 @@ class ChatPermissionsSettingsView extends StatelessWidget {
                           category: 'events',
                         ),
                       ),
+                    if (isOwnCompanyRoot) ...[
+                      Divider(color: theme.dividerColor),
+                      ListTile(
+                        title: Text(
+                          L10n.of(context).companyCreationSection,
+                          style: TextStyle(
+                            color: theme.colorScheme.primary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      for (final (key, kind) in const [
+                        (companyCreateChatKey, CompanyCreateKind.chat),
+                        (companyCreateChannelKey, CompanyCreateKind.channel),
+                      ])
+                        Builder(
+                          builder: (context) {
+                            // Осознанное исключение из «экран не инъектит
+                            // дефолты» (rightsInChannel.md §2): ключа нет —
+                            // показываем умолчание, которое держит сервер
+                            // (single_space_guard), а не 0.
+                            final value = companyCreateThreshold(
+                              powerLevelsContent,
+                              kind,
+                            );
+                            return PermissionsListTile(
+                              permissionKey: key,
+                              category: 'events',
+                              permission: value,
+                              isChannel: false,
+                              maxLevel: permissionThresholdMaxLevel(
+                                key: key,
+                                category: 'events',
+                                ownPowerLevel: room.ownPowerLevel,
+                              ),
+                              canEdit: room.canChangePowerLevel,
+                              onChanged: (level) => controller.editPowerLevel(
+                                context,
+                                key,
+                                value,
+                                newLevel: level,
+                                category: 'events',
+                              ),
+                            );
+                          },
+                        ),
+                    ],
                   ],
                 ),
               ],

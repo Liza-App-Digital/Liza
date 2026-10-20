@@ -44,10 +44,6 @@ void main() {
       '/rooms/settings/notifications',
       '/rooms/settings/devices',
       '/rooms/settings/security',
-      // Витрина MCP-подключений (бывш. «Интеграции»). Все ТРИ точки входа
-      // (меню «+», раздел настроек, «⋮» в чате с Лизой) ходят сюда одной
-      // константой AppRoutes.settingsMcp — её и сверяем.
-      AppRoutes.settingsMcp,
     ];
 
     for (final target in menuTargets) {
@@ -61,6 +57,16 @@ void main() {
         );
       });
     }
+  });
+
+  // ledger:RL-mcp-showcase-entry-points
+  // AC:RL-mcp-showcase-entry-points/5
+  // Витрина MCP — отдельное окно вне ветки настроек (Надежда, В5 18.10): все
+  // три входа («+», настройки, «⋮» в чате с Лизой) ходят по AppRoutes.mcp.
+  test('витрина MCP: AppRoutes.mcp есть в дереве и не под /rooms/settings', () {
+    expect(paths, contains(AppRoutes.mcp));
+    expect(AppRoutes.mcp.startsWith('/rooms/settings'), isFalse);
+    expect(paths, isNot(contains('/rooms/settings/integrations')));
   });
 
   // ledger:RL-keycloak-id-prod

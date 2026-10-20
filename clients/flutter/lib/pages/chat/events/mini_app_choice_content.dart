@@ -13,6 +13,7 @@ import 'package:liza/pages/chat/external_link_web_view.dart';
 import 'package:liza/pages/chat/mini_app_web_view.dart';
 import 'package:liza/utils/bot_miniapp_registry.dart';
 import 'package:liza/utils/composer_prefill.dart';
+import 'package:liza/utils/liza_dm.dart';
 import 'package:liza/widgets/matrix.dart';
 
 /// Перекодировать выбранное изображение в PNG (даунскейл до 512px) движком
@@ -92,6 +93,11 @@ class _MiniAppButton {
   /// поддержки): клиент кладёт его в композер, пользователь правит и отправляет.
   final String? prefill;
 
+  /// `open_chat`: id кнопки, которую клиент «нажимает» в открытом чате
+  /// (callback-событие). Сейчас — только основной чат с Лизой: `bf.agent`
+  /// стартового меню BotFather шлёт ей `agent.start`.
+  final String? callback;
+
   /// Кнопка половинной ширины: рисуется по две в ряд (грид как в Liza).
   /// По умолчанию false → кнопка занимает всю ширину (вертикальный стек).
   final bool half;
@@ -104,8 +110,44 @@ class _MiniAppButton {
     this.appType,
     this.mxid,
     this.prefill,
+    this.callback,
     this.half = false,
   });
+}
+
+/// Кнопки Лизы, которые карточка ДРУГОГО бота вправе нажать за пользователя.
+/// Карточку с `open_chat` на Лизу может прислать и пользовательский бот: без
+/// списка один тап отправил бы в основной чат с Лизой любой `button_id` её
+/// мастеров. `agent.start` безвреден — сбрасывает мастер и показывает карточку.
+const lizaCardCallbacks = {'agent.start'};
+
+/// `open_chat` кнопки карточки бота: открыть личный чат с [mxid].
+///
+/// Для Лизы — всегда её ОСНОВНОЙ чат: SDK вернул бы самый свежий DM, а им может
+/// быть чат-запрос «Лиза: …». С [callback] в этом чате ещё и нажимается кнопка
+/// её карточки (`bf.agent` стартового меню BotFather → `agent.start`). У других
+/// ботов и вне [lizaCardCallbacks] [callback] игнорируется.
+Future<void> openChatFromCard(
+  BuildContext context,
+  Client client, {
+  required String mxid,
+  String? callback,
+  required String body,
+}) async {
+  final lizaMxid = MatrixState.lizaMxid;
+  if (mxid == lizaMxid && lizaCardCallbacks.contains(callback)) {
+    return openLizaAssistantWithCallback(
+      context,
+      client,
+      lizaMxid,
+      buttonId: callback!,
+      body: body,
+    );
+  }
+  final roomId = mxid == lizaMxid
+      ? await ensureLizaAssistantDm(client, lizaMxid)
+      : await client.ensureDirectChat(mxid);
+  if (context.mounted) context.go('/rooms/$roomId');
 }
 
 /// Карточка настроек кнопок быстрого доступа (`choice_id` вида `btncfg_<app_id>`)
@@ -192,6 +234,7 @@ class _MiniAppChoiceContentState extends State<MiniAppChoiceContent> {
           appType: item['app_type'] as String?,
           mxid: item['mxid'] as String?,
           prefill: item['prefill'] as String?,
+          callback: item['callback'] as String?,
           half: item['half'] == true,
         ),
       );
@@ -271,9 +314,13 @@ class _MiniAppChoiceContentState extends State<MiniAppChoiceContent> {
         // тапах — в `ensureDirectChat` (utils/direct_chat_ensure.dart).
         setState(() => _pending = button.buttonId);
         try {
-          final client = widget.event.room.client;
-          final roomId = await client.ensureDirectChat(button.mxid!);
-          if (mounted) context.go('/rooms/$roomId');
+          await openChatFromCard(
+            context,
+            widget.event.room.client,
+            mxid: button.mxid!,
+            callback: button.callback,
+            body: button.text,
+          );
         } catch (e) {
           Logs().e('[MiniAppChoice] open_chat failed: $e');
           if (mounted) {

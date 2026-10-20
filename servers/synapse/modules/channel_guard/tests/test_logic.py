@@ -1,11 +1,11 @@
 import asyncio
 import unittest
 
-from synapse.api.errors import SynapseError
+import pytest
 
 from synapse_modules.channel_guard._logic import (
+    LIZA_CHANNEL_ROOM_TYPE,
     is_channel_creation,
-    role_may_create_channel,
 )
 
 
@@ -27,38 +27,11 @@ def test_is_channel_creation_false_when_no_creation_content():
     assert not is_channel_creation({})
 
 
-def test_role_may_create_channel_admin():
-    assert role_may_create_channel("admin")
-
-
-def test_role_may_create_channel_moderator():
-    assert role_may_create_channel("moderator")
-
-
-def test_role_may_create_channel_user_denied():
-    assert not role_may_create_channel("user")
-
-
-def test_role_may_create_channel_unknown_denied():
-    assert not role_may_create_channel("developer")
-
-
-class _FakeAccountData:
-    def __init__(self, roles):
-        self._roles = roles
-
-    async def get_global(self, user_id, data_type):
-        assert data_type == "com.liza.user_role"
-        role = self._roles.get(user_id)
-        return {"role": role} if role else None
-
-
 class _FakeApi:
     """Fake ModuleApi: конструктор модуля вызывает register_third_party_rules_callbacks,
     поэтому fake обязан его иметь (иначе __init__ упадёт)."""
 
-    def __init__(self, roles):
-        self.account_data_manager = _FakeAccountData(roles)
+    def __init__(self):
         self.registered = {}
 
     def register_third_party_rules_callbacks(self, **callbacks):
@@ -82,50 +55,39 @@ def _channel_config():
     return {"creation_content": {"com.liza.chat.type": "channel"}}
 
 
-class ChannelGuardModuleTestCase(unittest.TestCase):
-    def test_moderator_may_create_channel(self):
-        from synapse_modules.channel_guard import ChannelGuardModule
+# ledger:RL-create-menu-order-agent-entry AC:RL-create-menu-order-agent-entry/10
+# Канал создаёт любая роль: модуль не читает роль и не бросает 403, а только
+# помечает room_type для каталога.
+@pytest.mark.parametrize("role", ["user", "developer", "ai", "moderator", "admin"])
+@pytest.mark.parametrize("is_requester_admin", [False, True])
+def test_any_role_creates_channel_with_room_type(role, is_requester_admin):
+    from synapse_modules.channel_guard import ChannelGuardModule
 
-        module = ChannelGuardModule({}, _FakeApi({"@m:h": "moderator"}))
-        # Не должно бросить исключение.
-        _run(
-            module._on_create_room(
-                _FakeRequester("@m:h"), _channel_config(), False
-            )
+    module = ChannelGuardModule({}, _FakeApi())
+    config = _channel_config()
+    _run(
+        module._on_create_room(
+            _FakeRequester(f"@{role}:h"), config, is_requester_admin
         )
+    )
+    assert config["creation_content"]["type"] == LIZA_CHANNEL_ROOM_TYPE
 
-    def test_user_may_not_create_channel(self):
-        from synapse_modules.channel_guard import ChannelGuardModule
 
-        module = ChannelGuardModule({}, _FakeApi({"@u:h": "user"}))
-        with self.assertRaises(SynapseError):
-            _run(
-                module._on_create_room(
-                    _FakeRequester("@u:h"), _channel_config(), False
-                )
-            )
+def test_module_registers_on_create_room():
+    from synapse_modules.channel_guard import ChannelGuardModule
 
-    def test_non_channel_create_is_ignored(self):
-        from synapse_modules.channel_guard import ChannelGuardModule
+    api = _FakeApi()
+    ChannelGuardModule({}, api)
+    assert "on_create_room" in api.registered
 
-        module = ChannelGuardModule({}, _FakeApi({"@u:h": "user"}))
-        # Обычная группа (не канал) — гейт не применяется даже к роли user.
-        _run(
-            module._on_create_room(
-                _FakeRequester("@u:h"), {"creation_content": {}}, False
-            )
-        )
 
-    def test_server_admin_bypasses_role_gate(self):
-        from synapse_modules.channel_guard import ChannelGuardModule
+def test_non_channel_create_is_untouched():
+    from synapse_modules.channel_guard import ChannelGuardModule
 
-        module = ChannelGuardModule({}, _FakeApi({"@a:h": "user"}))
-        # is_requester_admin=True — серверный админ Synapse всегда может.
-        _run(
-            module._on_create_room(
-                _FakeRequester("@a:h"), _channel_config(), True
-            )
-        )
+    module = ChannelGuardModule({}, _FakeApi())
+    config = {"creation_content": {}}
+    _run(module._on_create_room(_FakeRequester("@u:h"), config, False))
+    assert config == {"creation_content": {}}
 
 
 def test_mark_channel_room_type_sets_type():

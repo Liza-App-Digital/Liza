@@ -287,6 +287,9 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
         guard let self = self else { return completionHandler([]) }
         if gate == .suppress {
           completionHandler([])
+          MacApnsPushPlugin.journal(
+            stage: "native", reason: "none", eventId: userInfo["event_id"] as? String
+          )
           return
         }
         self.presentRemoteNotification(
@@ -336,13 +339,20 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
         // Чат открыт в видимом окне — сообщение уже на экране: ни звука, ни
         // записи в Notification Center (жалоба 2026-09-15 «пуш в активном чате»).
         // Свёрнутое/скрытое окно — прежнее поведение.
+        let eventId = userInfo["event_id"] as? String
         if let window = mainFlutterWindow, window.isVisible, !window.isMiniaturized,
            MacApnsPushPlugin.isActiveRoom(userInfo) {
           completionHandler([])
+          MacApnsPushPlugin.journal(stage: "native", reason: "activeRoom", eventId: eventId)
           return
         }
         completionHandler(
           pushAheadOfSync ? [.banner, .sound, .list, .badge] : [.sound, .list, .badge]
+        )
+        MacApnsPushPlugin.journal(
+          stage: "native",
+          reason: pushAheadOfSync ? "bannerSoundList" : "soundList",
+          eventId: eventId
         )
       } else {
         // На macOS 26 сюда не попасть: неактивному приложению `willPresent` не
@@ -363,9 +373,17 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
             )
             // Replacement не встал — показываем оригинал, чтобы не потерять баннер.
             completionHandler([.banner, .sound, .list, .badge])
+            MacApnsPushPlugin.journal(
+              stage: "native", reason: "addFailed",
+              eventId: userInfo["event_id"] as? String
+            )
           } else {
             // Replacement поставлен — оригинал подавляем (баннер придёт от него).
             completionHandler([])
+            MacApnsPushPlugin.journal(
+              stage: "native", reason: "formatted",
+              eventId: userInfo["event_id"] as? String
+            )
           }
         }
       }

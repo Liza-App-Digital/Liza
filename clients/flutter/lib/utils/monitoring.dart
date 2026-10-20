@@ -87,6 +87,16 @@ abstract final class Monitoring {
       // true (deep-research 2026-08-31).
       options.enableAutoSessionTracking = false;
       options.beforeSend = _beforeSend;
+      // «Последние шаги» перед сбоем для справки поддержки (спека
+      // 2026-10-19-support-client-diagnostics): только allowlist-категорий, см.
+      // [filterBreadcrumb]. Нативные крошки идут мимо beforeBreadcrumb (подмешиваются
+      // в событие нативным SDK) и несут http-URL с room id — выключены; жизненный
+      // цикл берём Dart-наблюдателем. Клики несут подписи виджетов — выключены.
+      options.maxBreadcrumbs = 50;
+      options.enableAutoNativeBreadcrumbs = false;
+      options.enableAppLifecycleBreadcrumbs = true;
+      options.enableUserInteractionBreadcrumbs = false;
+      options.beforeBreadcrumb = filterBreadcrumb;
     });
     _active = true;
   }
@@ -328,6 +338,122 @@ abstract final class Monitoring {
     );
   }
 
+  /// Категории шагов, которые доезжают до справки поддержки. Всё прочее (http с
+  /// URL комнат, консоль с текстами, клики с подписями) режется: справку читает
+  /// сотрудник, а владелец исключил тексты, имена файлов и собеседников.
+  static const Set<String> breadcrumbCategories = {
+    // Диагностика mpv из `video_player.dart` — в контекст видео-событий; в
+    // справку поддержки не идёт (там свой allowlist сборщика).
+    'media_kit',
+    'app.lifecycle',
+    'nav',
+    'send',
+    'net',
+  };
+
+  @visibleForTesting
+  static Breadcrumb? filterBreadcrumb(Breadcrumb? crumb, Hint hint) =>
+      crumb != null && breadcrumbCategories.contains(crumb.category)
+      ? crumb
+      : null;
+
+  /// Шаг пользователя для справки: [category] из [breadcrumbCategories],
+  /// [message] — из закрытого перечисления (шаблон маршрута, стадия отправки).
+  static void breadcrumb(String category, String message) {
+    if (!_active) return;
+    Sentry.addBreadcrumb(Breadcrumb(category: category, message: message));
+  }
+
+  /// Провал отправки вложений. До 2026-10-19 такие провалы оставались в
+  /// `Logs().w` и SnackBar'е — сервер не видел ничего (заявка №54: видео не
+  /// уходило, в GlitchTip ноль событий). Префикс `[media-` — notifier роутит его в
+  /// «Liza · Медиа» без правки маркеров. Через `captureMessage`, не [capture]:
+  /// `_beforeSend` выбрасывает сетевые исключения, а сеть — главный класс провала.
+  static const String mediaSendFailurePrefix = '[media-send-fail]';
+
+  static const Duration _mediaSendWindow = Duration(minutes: 5);
+  static final Map<String, DateTime> _lastMediaSendByReason = {};
+
+  @visibleForTesting
+  static bool mediaSendThrottleAllows(String reason, DateTime now) {
+    final last = _lastMediaSendByReason[reason];
+    if (last != null && now.difference(last) < _mediaSendWindow) return false;
+    _lastMediaSendByReason[reason] = now;
+    return true;
+  }
+
+  @visibleForTesting
+  static void resetMediaSendThrottle() => _lastMediaSendByReason.clear();
+
+  /// Тип набора по mime: `image`/`video`/`audio`/`file`, разнородный — `mixed`.
+  static String mediaTypeOf(Iterable<String?> mimes) {
+    final types = mimes.map((m) {
+      final top = m?.split('/').first;
+      return const {'image', 'video', 'audio'}.contains(top) ? top! : 'file';
+    }).toSet();
+    if (types.isEmpty) return 'file';
+    return types.length == 1 ? types.single : 'mixed';
+  }
+
+  /// [reason] — стадия (`upload`/`prepare`/`dialog`/`share`), [kind] — класс
+  /// причины из `classifySendErrorCause`, [error] — только ради имени типа при
+  /// `kind=unknown` (тип, не текст: в тексте пути и mxid).
+  @visibleForTesting
+  static String mediaSendTitle({
+    required String reason,
+    required String kind,
+    required String media,
+    String? host,
+    Object? error,
+    int? notSent,
+    int? total,
+  }) => buildAlertTitle(
+    prefix: mediaSendFailurePrefix,
+    reason: reason,
+    host: host,
+    context: {
+      'kind': kind,
+      // При неизвестном классе тип ошибки ценнее типа набора — раньше в бюджете.
+      if (kind == 'unknown' && error != null) 'err': _errorTypeName(error),
+      'media': media,
+      if (notSent != null && total != null) 'n': '$notSent/$total',
+    },
+  );
+
+  static String _errorTypeName(Object error) {
+    final name = error.runtimeType.toString().replaceAll(
+      RegExp(r'[^A-Za-z0-9_]'),
+      '',
+    );
+    return name.length > 30 ? name.substring(0, 30) : name;
+  }
+
+  static void reportMediaSendFailure({
+    required String reason,
+    required String kind,
+    required String media,
+    String? host,
+    Object? error,
+    int? notSent,
+    int? total,
+  }) {
+    if (!_active) return;
+    if (!mediaSendThrottleAllows(reason, DateTime.now())) return;
+    Sentry.captureMessage(
+      mediaSendTitle(
+        reason: reason,
+        kind: kind,
+        media: media,
+        host: host,
+        error: error,
+        notSent: notSent,
+        total: total,
+      ),
+      level: SentryLevel.warning,
+      withScope: (scope) => scope.setTag('liza.category', 'send'),
+    );
+  }
+
   /// Префикс title сигналов о сбое пушей КЛИЕНТСКОГО слоя (вторичный к серверному
   /// детектору `analytics.pusher_app_id_dist`, который ловит класс unknown-app-id
   /// из БД Synapse и покрывает killed-app). Notifier роутит `[push-*]` в общий
@@ -491,6 +617,133 @@ abstract final class Monitoring {
     } catch (e) {
       // Heartbeat не критичен: сбой package_info/prefs не должен ронять старт.
       return;
+    }
+  }
+
+  /// Title суточного отчёта о пушах с устройства. Под маркером `[health]` —
+  /// notifier его глушит (`is_health`), в чат он не идёт: это данные для
+  /// сравнения когорт, а не алёрт.
+  ///
+  /// ⚠️ В title НЕЛЬЗЯ писать `env=`: `fleet-health-poller.py` ищет живость
+  /// флота как `title LIKE '[health]%' AND title LIKE '%env=prod%'`, и
+  /// ежедневный отчёт замаскировал бы пропажу heartbeat. Окружение — тегом
+  /// `liza.env`. Страж — `RL-push-health-report` (обе стороны).
+  @visibleForTesting
+  static String pushReportTitle(String platform) =>
+      '$healthPrefix push-report platform=$platform';
+
+  static const Duration _pushReportWindow = Duration(hours: 24);
+  static const String _pushReportLastKey = 'monitoring.push_report_last_ms';
+
+  /// Потолок хвоста журнала в `extra`: события GlitchTip до ~56 КБ лежат целиком,
+  /// но отчёт шлётся с каждого устройства — держим запас.
+  static const int pushReportTailBytes = 24 * 1024;
+
+  static const String pushReportContextKey = 'push_report';
+
+  /// Ключи тегов когорты — закрытый словарь (AC-11): по ним сервер группирует
+  /// устройства «версия ОС × модель × стиль баннера × копии приложения».
+  static const Set<String> pushReportTagKeys = {
+    'liza.env',
+    'liza.build',
+    'liza.bundle',
+    'liza.device_id',
+    'liza.accounts',
+    'liza.os_version',
+    'liza.lifecycle',
+    'liza.auth',
+    'liza.alert',
+    'liza.alert_style',
+    'liza.badge_setting',
+    'liza.sound_setting',
+    'liza.nc_setting',
+    'liza.app_copies',
+    'liza.legacy_copies',
+    'liza.running_copies',
+    'liza.install_location',
+  };
+
+  static const int _tagValueMax = 32;
+
+  /// Оставить только ключи словаря и обрезать значения — свободный текст в
+  /// теги не просочится, кардинальность ограничена.
+  @visibleForTesting
+  static Map<String, String> sanitizePushReportTags(Map<String, String> raw) => {
+    for (final e in raw.entries)
+      if (pushReportTagKeys.contains(e.key) && e.value.isNotEmpty)
+        e.key: e.value.length > _tagValueMax
+            ? e.value.substring(0, _tagValueMax)
+            : e.value,
+  };
+
+  @visibleForTesting
+  static bool pushReportDue({required DateTime? lastSent, required DateTime now}) =>
+      lastSent == null || now.difference(lastSent) >= _pushReportWindow;
+
+  /// Пора ли собирать отчёт — дешёвая проверка ДО нативных проб (их не дёргаем
+  /// на каждом resume).
+  static Future<bool> pushReportIsDue() async {
+    if (!_active) return false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final lastMs = prefs.getInt(_pushReportLastKey);
+      return pushReportDue(
+        lastSent: lastMs == null ? null : DateTime.fromMillisecondsSinceEpoch(lastMs),
+        now: DateTime.now(),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Суточный отчёт о пути уведомлений с устройства: теги когорты + счётчики
+  /// журнала + хвост журнала (только hash8, без текста). Отметка времени
+  /// пишется ДО отправки: сбой capture не должен давать повтор в том же окне.
+  ///
+  /// [send] — точка подмены для стража (по умолчанию `Sentry.captureMessage`).
+  static Future<bool> reportPushHealth({
+    required String platform,
+    required Map<String, String> tags,
+    required Map<String, num> counters,
+    required String journalTail,
+    DateTime? now,
+    @visibleForTesting
+    void Function(String title, Map<String, String> tags, Map<String, Object> extra)?
+        send,
+    @visibleForTesting bool force = false,
+  }) async {
+    if (!_active && send == null) return false;
+    try {
+      final at = now ?? DateTime.now();
+      final prefs = await SharedPreferences.getInstance();
+      final lastMs = prefs.getInt(_pushReportLastKey);
+      final lastSent = lastMs == null ? null : DateTime.fromMillisecondsSinceEpoch(lastMs);
+      if (!force && !pushReportDue(lastSent: lastSent, now: at)) return false;
+      await prefs.setInt(_pushReportLastKey, at.millisecondsSinceEpoch);
+      final cleanTags = sanitizePushReportTags(tags);
+      final extra = <String, Object>{...counters, 'journal': journalTail};
+      final title = pushReportTitle(platform);
+      if (send != null) {
+        send(title, cleanTags, extra);
+        return true;
+      }
+      // Теги и данные — в самом событии, а не в scope: scope синхронизируется в
+      // нативный SDK, и хвост журнала прилип бы ко всем последующим событиям.
+      // Данные — контекстом `push_report` (`extra` в SDK объявлен устаревшим);
+      // GlitchTip хранит contexts целиком, сервер читает
+      // `data->'contexts'->'push_report'`.
+      await Sentry.captureEvent(
+        SentryEvent(
+          message: SentryMessage(title),
+          level: SentryLevel.info,
+          tags: {'liza.category': 'push-report', ...cleanTags},
+          contexts: Contexts()..[pushReportContextKey] = extra,
+        ),
+      );
+      return true;
+    } catch (_) {
+      // Отчёт диагностический — не мешает resume/старту.
+      return false;
     }
   }
 
@@ -681,6 +934,45 @@ abstract final class Monitoring {
   static void clearUser() {
     if (!_active) return;
     Sentry.configureScope((scope) => scope.setUser(null));
+  }
+
+  /// Что выставить в scope по списку залогиненных аккаунтов. ЧИСТАЯ функция
+  /// для стража: `user` — первый аккаунт (основной), остальное — теги.
+  @visibleForTesting
+  static ({SentryUser? user, Map<String, String> tags}) identityFor(
+    List<({String userId, String? deviceId})> accounts,
+  ) {
+    if (accounts.isEmpty) return (user: null, tags: const {});
+    final primary = accounts.first;
+    return (
+      user: buildSentryUser(primary.userId),
+      tags: {
+        'liza.accounts': '${accounts.length}',
+        if (primary.deviceId != null) 'liza.device_id': primary.deviceId!,
+      },
+    );
+  }
+
+  /// Идемпотентная атрибуция: зовётся на старте для ВСЕХ восстановленных
+  /// сессий и на каждую смену состава аккаунтов.
+  ///
+  /// Почему не через `handleLoginStateChange`: подписка восстановленных
+  /// клиентов идёт с `replayCachedLoggedIn=false` (go_router не переносит
+  /// спонтанный redirect на старте), поэтому `loggedIn` у них не приходит
+  /// никогда — и до 2026-10-16 у 98% событий GlitchTip не было пользователя
+  /// (61 из 3650 за 14 дней).
+  static void syncIdentity(List<({String userId, String? deviceId})> accounts) {
+    if (!_active) return;
+    final identity = identityFor(accounts);
+    Sentry.configureScope((scope) {
+      scope.setUser(identity.user);
+      for (final key in const ['liza.accounts', 'liza.device_id']) {
+        if (!identity.tags.containsKey(key)) scope.removeTag(key);
+      }
+      for (final e in identity.tags.entries) {
+        scope.setTag(e.key, e.value);
+      }
+    });
   }
 
   /// Фильтрация события перед отправкой: отбрасываем сетевые/IO-исключения

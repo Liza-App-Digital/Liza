@@ -109,8 +109,8 @@ class HomeserverPickerView extends StatelessWidget {
                               return Padding(
                                 padding: EdgeInsets.symmetric(
                                   // В компактном режиме отступы уже: слоган
-                                  // «Платформа для вашего общения» иначе
-                                  // ломается на две строки на узком экране.
+                                  // задуман одной строкой и на узком экране
+                                  // иначе ужимается слишком мелко.
                                   horizontal: compact ? 16.0 : 32.0,
                                 ),
                                 // Первый экран совмещён с вводом

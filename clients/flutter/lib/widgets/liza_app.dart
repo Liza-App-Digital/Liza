@@ -12,6 +12,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_overlay.dart';
 import 'package:liza/utils/adaptive_orientation.dart';
 import 'package:liza/utils/invite_link_parser.dart';
+import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/app_lock.dart';
 import 'package:liza/widgets/theme_builder.dart';
@@ -53,24 +54,40 @@ class LizaApp extends StatelessWidget {
   /// Фабрика роутера. Вынесена из статика, чтобы стартовый маршрут был
   /// тестируем: статик инициализируется один раз на изолят и `Uri.base` в нём
   /// не подменить.
-  static GoRouter buildAppRouter({String? initialLocation}) => GoRouter(
-        routes: AppRoutes.routes,
-        initialLocation: initialLocation,
-        debugLogDiagnostics: true,
-        onException: (context, state, router) {
-          // Auth/register deep links (liza://auth/callback,
-          // liza://register-callback) are handled by HomeserverPickerController
-          // via FlutterWebAuth2 / app_links. Silently ignore them so GoRouter
-          // doesn't reset the navigation stack.
-          if (state.uri.host == 'auth' ||
-              state.uri.path.startsWith('/auth/') ||
-              state.uri.host == 'register-callback') {
-            return;
-          }
-          // Other unmatched routes — go to root which redirects appropriately.
-          router.go('/');
-        },
-      );
+  static GoRouter buildAppRouter({String? initialLocation}) => _trackNavigation(
+    GoRouter(
+      routes: AppRoutes.routes,
+      initialLocation: initialLocation,
+      debugLogDiagnostics: true,
+      onException: (context, state, router) {
+        // Auth/register deep links (liza://auth/callback,
+        // liza://register-callback) are handled by HomeserverPickerController
+        // via FlutterWebAuth2 / app_links. Silently ignore them so GoRouter
+        // doesn't reset the navigation stack.
+        if (state.uri.host == 'auth' ||
+            state.uri.path.startsWith('/auth/') ||
+            state.uri.host == 'register-callback') {
+          return;
+        }
+        // Other unmatched routes — go to root which redirects appropriately.
+        router.go('/');
+      },
+    ),
+  );
+
+  /// Шаги навигации для справки поддержки — ШАБЛОНОМ маршрута (`/rooms/:roomid`):
+  /// в самом пути id комнаты и mxid собеседника. Слушатель делегата видит и
+  /// `go()` внутри shell-веток, которые NavigatorObserver пропускает.
+  static GoRouter _trackNavigation(GoRouter router) {
+    String? last;
+    router.routerDelegate.addListener(() {
+      final path = router.routerDelegate.currentConfiguration.fullPath;
+      if (path.isEmpty || path == last) return;
+      last = path;
+      Monitoring.breadcrumb('nav', path);
+    });
+    return router;
+  }
 
   @override
   Widget build(BuildContext context) {

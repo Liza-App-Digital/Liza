@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:integration_test/integration_test.dart';
 
+import 'package:liza/config/routes.dart';
 import 'package:liza/main.dart' as app;
 import 'package:liza/pages/settings_integrations/settings_integrations.dart';
 
@@ -53,7 +54,7 @@ void main() {
     // аккаунта: путь до пункта настроек стерегут отдельные тесты, а здесь
     // предмет проверки — сама карточка.
     final ctx = tester.element(find.byType(Navigator).first);
-    GoRouter.of(ctx).go('/rooms/settings/integrations');
+    GoRouter.of(ctx).go(AppRoutes.mcp);
     await tester.pump(const Duration(milliseconds: 700));
 
     await tester.waitUntil(

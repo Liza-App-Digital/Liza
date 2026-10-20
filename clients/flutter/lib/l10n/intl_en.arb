@@ -834,6 +834,10 @@
   },
   "createCompanyLeaveRequest": "Leave a request",
   "@createCompanyLeaveRequest": {},
+  "createCompanyLearnMore": "Learn more",
+  "@createCompanyLearnMore": {
+    "description": "Create-company popup button: open the support chat with a question about companies, no request"
+  },
   "companyName": "Company name",
   "@companyName": {},
   "companies": "Companies",
@@ -948,6 +952,10 @@
     "type": "String",
     "placeholders": {}
   },
+  "deleteAccountFailed": "Could not delete the account. Please contact support",
+  "@deleteAccountFailed": {"description": "Удаление аккаунта через auth-proxy не удалось: сеть, 5xx, старый сервер (RL-account-delete-works)"},
+  "deleteAccountTransferOwnership": "Transfer company ownership first",
+  "@deleteAccountTransferOwnership": {"description": "Отказ 409 company_owner: владелец компании не может удалить аккаунт (RL-account-delete-works)"},
   "deleteAccountConfirmTitle": "Delete this account?",
   "@deleteAccountConfirmTitle": {},
   "deleteAccountConsequences": "You will be signed out on all devices, notifications will stop, and you will leave all your chats. You will not appear in people search and will not be able to sign in with this account again. Messages you have already sent will remain visible to other people.",
@@ -1925,11 +1933,6 @@
   },
   "privacyPolicy": "Privacy policy",
   "@privacyPolicy": {
-    "type": "String",
-    "placeholders": {}
-  },
-  "privacyAndSecurity": "Privacy and security",
-  "@privacyAndSecurity": {
     "type": "String",
     "placeholders": {}
   },
@@ -2938,8 +2941,8 @@
   "@users": {},
   "searchSectionPeople": "People",
   "@searchSectionPeople": {"description": "Поиск людей: заголовок раздела с людьми (задача 12, RL-search-people-vs-bots-sections)"},
-  "searchSectionBotsAndAi": "Bots & AI",
-  "@searchSectionBotsAndAi": {"description": "Поиск людей: заголовок раздела с ботами и ИИ-ассистентами (задача 12, RL-search-people-vs-bots-sections)"},
+  "agentsAndBots": "Agents & bots",
+  "@agentsAndBots": {"description": "Вкладка списка чатов и раздел поиска: DM с ботами и ИИ-агентами (RL-chat-list-agents-people-tabs)"},
   "unlockOldMessages": "Unlock old messages",
   "@unlockOldMessages": {},
   "storeInSecureStorageDescription": "Store the recovery key in the secure storage of this device.",
@@ -3643,6 +3646,8 @@
   "@manageAccount": {},
   "settingsEmailTitle": "Email",
   "@settingsEmailTitle": {},
+  "settingsYourId": "Your ID",
+  "@settingsYourId": {},
   "settingsEmailNotSet": "Not specified",
   "@settingsEmailNotSet": {},
   "settingsEmailVerified": "Verified",
@@ -4401,10 +4406,6 @@
   "@channelNewPostHint": {},
   "addChannelStory": "Add channel story",
   "@addChannelStory": {},
-  "createStory": "Create story",
-  "@createStory": {},
-  "createBot": "Create bot",
-  "@createBot": {},
   "createMiniApp": "Create mini-app",
   "@createMiniApp": {},
   "connectAiAgent": "Connect AI agent",
@@ -4837,13 +4838,44 @@
       }
     }
   },
-  "memberFilterInCompany": "In company",
-  "@memberFilterInCompany": {},
-  "memberFiltersAllFromServerAndCompany": "All users are from server {server} and from the company",
+  "memberFilterInCompany": "In company {company}",
+  "@memberFilterInCompany": {
+    "type": "String",
+    "placeholders": {
+      "company": {
+        "type": "String"
+      }
+    }
+  },
+  "memberFilterInSpace": "In space {space}",
+  "@memberFilterInSpace": {
+    "type": "String",
+    "placeholders": {
+      "space": {
+        "type": "String"
+      }
+    }
+  },
+  "memberFiltersAllFromServerAndCompany": "All users are from server {server} and company {company}",
   "@memberFiltersAllFromServerAndCompany": {
     "type": "String",
     "placeholders": {
       "server": {
+        "type": "String"
+      },
+      "company": {
+        "type": "String"
+      }
+    }
+  },
+  "memberFiltersAllFromServerAndSpace": "All users are from server {server} and space {space}",
+  "@memberFiltersAllFromServerAndSpace": {
+    "type": "String",
+    "placeholders": {
+      "server": {
+        "type": "String"
+      },
+      "space": {
         "type": "String"
       }
     }
@@ -4857,8 +4889,24 @@
       }
     }
   },
-  "memberFiltersAllFromCompany": "All users are from the company",
-  "@memberFiltersAllFromCompany": {},
+  "memberFiltersAllFromCompany": "All users are from company {company}",
+  "@memberFiltersAllFromCompany": {
+    "type": "String",
+    "placeholders": {
+      "company": {
+        "type": "String"
+      }
+    }
+  },
+  "memberFiltersAllFromSpace": "All users are from space {space}",
+  "@memberFiltersAllFromSpace": {
+    "type": "String",
+    "placeholders": {
+      "space": {
+        "type": "String"
+      }
+    }
+  },
   "accessManagement": "Access management",
   "@accessManagement": {},
   "accessDossierServer": "Server",
@@ -5066,8 +5114,6 @@
   "@demoAuthSynapseError": {},
   "invitePeople": "Invite people",
   "@invitePeople": {},
-  "inviteFriends": "Invite friends",
-  "@inviteFriends": {},
   "inviteMessageText": "I'm using Liza. Join me! {link}",
   "@inviteMessageText": {
     "placeholders": {
@@ -5092,9 +5138,9 @@
   "@contactsOnLiza": {},
   "contactsInviteHint": "Invite to Liza",
   "@contactsInviteHint": {},
-  "lizaTagline": "A platform for your communication",
+  "lizaTagline": "Your assistant for business tasks",
   "@lizaTagline": {},
-  "lizaTaglineDetails": "Give Liza tasks on your own or together with others. Create group chats, invite people — the AI assistant will help every participant",
+  "lizaTaglineDetails": "Liza will put together a landing page, a content plan, a sales report or a payment link. Create chats with people and add the AI assistant so it helps every participant.",
   "@lizaTaglineDetails": {},
   "demoAuthPhoneFieldTitle": "Enter your phone number",
   "@demoAuthPhoneFieldTitle": {},
@@ -5309,5 +5355,21 @@
   "storiesBarOpenChatWith": "Open chat with {name}",
   "@storiesBarOpenChatWith": {"description": "Сторис-лента: подпись для скринридера у тайла частого собеседника (тап открывает личный чат)", "placeholders": {"name": {"type": "String"}}},
   "inviteNotAllowed": "You don't have permission to invite users",
-  "@inviteNotAllowed": {"description": "Плашка: у пользователя компании нет права приглашать (порог invite в power_levels пространства)"}
+  "@inviteNotAllowed": {"description": "Плашка: у пользователя компании нет права приглашать (порог invite в power_levels пространства)"},
+  "developerMarkLetter": "D",
+  "@developerMarkLetter": {"description": "Буква микро-тега DeveloperMark у функций, видимых только роли developer (RL-developer-mark)"},
+  "developerOnlyHint": "Visible to developers only",
+  "@developerOnlyHint": {"description": "Подсказка и семантика метки DeveloperMark (RL-developer-mark)"},
+  "forDevelopers": "For developers",
+  "@forDevelopers": {"description": "Пункт меню «+»: открывает главное меню BotFather (RL-create-menu-order-agent-entry)"},
+  "companyCreationSection": "Creating in the company",
+  "@companyCreationSection": {"description": "Секция экрана «Права» главного пространства своей компании (RL-company-create-rights)"},
+  "createChatsInCompany": "Create chats",
+  "@createChatsInCompany": {"description": "Порог com.liza.space.create_chat (RL-company-create-rights)"},
+  "createChannelsInCompany": "Create channels",
+  "@createChannelsInCompany": {"description": "Порог com.liza.space.create_channel (RL-company-create-rights)"},
+  "addRemoveSpaceChildren": "Add and remove chats",
+  "@addRemoveSpaceChildren": {"description": "Подпись порога m.space.child на экране «Права»"},
+  "setSpaceParent": "Set the parent space",
+  "@setSpaceParent": {"description": "Подпись порога m.space.parent на экране «Права»"}
 }

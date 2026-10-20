@@ -18,6 +18,11 @@ root-space (space без входящего m.space.child). Кэшируется
           auto_add_new: true         # авто-добавление новых чатов (дефолт)
           parent_grace_seconds: 60   # сколько ждать m.space.child у комнаты,
                                      # рождённой с m.space.parent
+
+Авто-добавление уважает пороги com.liza.space.create_chat / create_channel в
+power_levels главного пространства (умолчание 50): без права комната в
+компанию не вкладывается. backfill_existing этот порог НЕ проверяет — держать
+его выключенным на всех инстансах.
 """
 
 import json
@@ -35,6 +40,7 @@ from synapse.module_api import ModuleApi
 from ._guard import (
     apply_space_parent_marker,
     auto_add_delay_ms,
+    creation_kind,
     deduplicate_companies,
     is_auto_add_candidate,
     is_dm_creation,
@@ -43,6 +49,7 @@ from ._guard import (
     is_root_space_creation,
     is_space_chunk,
     matches_query,
+    may_create_in_company,
     root_response,
 )
 
@@ -292,11 +299,61 @@ class SingleSpaceGuardModule:
                 e,
             )
 
+    async def _room_sender_may_create(
+        self, room_id: str, main_id: str, room_sender: str, kind: str
+    ) -> bool:
+        """Есть ли у создателя комнаты право класть её в компанию (порог в
+        power_levels главного пространства). Не прочитали — не вкладываем."""
+        try:
+            state = await self._api.get_room_state(
+                main_id, [("m.room.power_levels", ""), ("m.room.create", "")]
+            )
+        except Exception as e:  # noqa: BLE001 — fail-closed, комната остаётся «для себя»
+            logger.warning(
+                "single_space_guard: skip auto-add %s: power_levels of %s "
+                "unreadable: %s",
+                room_id,
+                main_id,
+                e,
+            )
+            return False
+        pl_event = state.get(("m.room.power_levels", ""))
+        content = pl_event.content if pl_event is not None else {}
+        if may_create_in_company(
+            content, room_sender, kind, _room_creators(state.get(("m.room.create", "")))
+        ):
+            return True
+        logger.info(
+            "single_space_guard: skip auto-add: no create right "
+            "(room=%s, sender=%s, kind=%s, main=%s)",
+            room_id,
+            room_sender,
+            kind,
+            main_id,
+        )
+        return False
+
+    async def _add_room_if_allowed(
+        self, room_id: str, main_id: str, sender: str, room_sender: str, kind: str
+    ) -> None:
+        """Вложить новую комнату в компанию, если её создатель вправе.
+
+        Без права комната создаётся, но в компанию не попадает — остаётся «для
+        себя», как на общем сервере (LABA-2539). m.space.child уходит от имени
+        sender (создатель главного), поэтому право решает только наш порог.
+        """
+        if not await self._room_sender_may_create(room_id, main_id, room_sender, kind):
+            return
+        await self._add_room_to_main_space(room_id, main_id, sender)
+
     async def _add_room_if_still_unparented(
-        self, room_id: str, main_id: str, sender: str
+        self, room_id: str, main_id: str, sender: str, room_sender: str, kind: str
     ) -> None:
         """Запасной путь для комнаты с m.space.parent: вложить в компанию, если
-        ни одно пространство так и не записало на неё m.space.child."""
+        ни одно пространство так и не записало на неё m.space.child.
+
+        Право перепроверяется на момент вложения: порог могли сменить за grace.
+        """
         has_child = await self._api.run_db_interaction(
             "single_space_guard_has_incoming_child",
             self._has_incoming_child_txn,
@@ -304,7 +361,7 @@ class SingleSpaceGuardModule:
         )
         if has_child:
             return
-        await self._add_room_to_main_space(room_id, main_id, sender)
+        await self._add_room_if_allowed(room_id, main_id, sender, room_sender, kind)
 
     @staticmethod
     def _has_incoming_child_txn(txn, room_id: str) -> bool:
@@ -595,6 +652,7 @@ class SingleSpaceGuardModule:
                 if candidate and event.room_id != main_id:
                     creator = await self._main_space_creator(main_id)
                     if creator is not None:
+                        kind = creation_kind(event.content)
                         delay_ms = auto_add_delay_ms(
                             event.content, self._parent_grace_ms
                         )
@@ -608,17 +666,34 @@ class SingleSpaceGuardModule:
                                 event.room_id,
                                 main_id,
                                 creator,
+                                event.sender,
+                                kind,
                                 desc="single_space_guard_add_unparented",
                             )
                         else:
                             self._api.run_as_background_process(
                                 "single_space_guard_add_room",
-                                self._add_room_to_main_space,
+                                self._add_room_if_allowed,
                                 event.room_id,
                                 main_id,
                                 creator,
+                                event.sender,
+                                kind,
                             )
         return (True, None)
+
+
+def _room_creators(create_event) -> list[str]:
+    """Создатели с бесконечным уровнем (v12+, MSC4289); в v≤11 их нет."""
+    if create_event is None:
+        return []
+    room_version = getattr(create_event, "room_version", None)
+    if not getattr(room_version, "msc4289_creator_power_enabled", False):
+        return []
+    extra = create_event.content.get("additional_creators")
+    return [create_event.sender] + (
+        [u for u in extra if isinstance(u, str)] if isinstance(extra, list) else []
+    )
 
 
 class _RootSpaceResource(resource.Resource):

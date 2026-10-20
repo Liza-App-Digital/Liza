@@ -6,7 +6,9 @@ import 'package:go_router/go_router.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/utils/composer_enter_key.dart';
 import 'package:liza/utils/direct_chat_ensure.dart';
+import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/matrix.dart';
@@ -34,7 +36,7 @@ class DraftChatPage extends StatefulWidget {
 
 class _DraftChatPageState extends State<DraftChatPage> {
   final TextEditingController _textController = TextEditingController();
-  final FocusNode _focusNode = FocusNode();
+  late final FocusNode _focusNode = FocusNode(onKeyEvent: _onKeyEvent);
 
   Profile? _profile;
 
@@ -92,6 +94,15 @@ class _DraftChatPageState extends State<DraftChatPage> {
     if (text.isEmpty) return;
     _materializeAndGo([TextShareItem(text)]);
   }
+
+  KeyEventResult _onKeyEvent(FocusNode node, KeyEvent evt) =>
+      composerEnterKey(
+        evt,
+        _textController.value,
+        isMobile: PlatformInfos.isMobile,
+        onSend: _sendText,
+      ) ??
+      KeyEventResult.ignored;
 
   Future<void> _attach() async {
     if (_sending) return;

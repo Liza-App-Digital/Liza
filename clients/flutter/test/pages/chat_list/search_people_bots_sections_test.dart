@@ -1,21 +1,24 @@
 // ledger:RL-search-people-vs-bots-sections
 //
 // Разделы поиска ГЛАВНОГО экрана на РЕАЛЬНЫХ виджетах: ровно тот вызов, что
-// стоит в chat_list_body.dart (peopleAndBotsSections → SearchTitle +
-// SearchUsersHorizontalList → SearchCarouselItem). Разделы считает
-// контроллер (ChatListController.userSearchSections) тем же
-// partitionPeopleAndBots, что и здесь.
+// стоит в chat_list_body.dart (chatListSearchSections → botsSearchSection /
+// peopleSearchSection → SearchTitle + SearchUsersHorizontalList →
+// SearchCarouselItem). Разделы считает контроллер
+// (ChatListController.userSearchSections) тем же partitionPeopleAndBots, что
+// и здесь.
 //
 // Покрываемые AC (tests/registry/RL-search-people-vs-bots-sections.md):
-//   AC-1 два раздела в одном списке на главном экране.
+//   AC-1a на главном экране два раздела в одном списке, «Агенты и боты» выше
+//         «Люди» (порядок вкладок, задача 06 от 18.10).
 //   AC-3 пустой раздел скрыт вместе с заголовком; оба пусты — ничего.
 //   AC-4 элемент, переехавший между разделами после поздних ролей, рисуется
 //        в новом разделе (ключ ValueKey(userId), чужое состояние не
 //        переиспользуется).
-//   AC-5 заголовки — из L10n: ru «Люди» / «Боты и ИИ», en «People» / «Bots & AI».
+//   AC-5 заголовки — из L10n: ru «Люди» / «Агенты и боты», en «People» /
+//        «Agents & bots».
 //
-// Red-proof AC-3: в peopleAndBotsSections убрать условие
-// `if (sections.botsAndAi.isNotEmpty)` → заголовок «Боты и ИИ» появляется
+// Red-proof AC-3: в botsSearchSection убрать условие
+// `sections.botsAndAi.isEmpty` → заголовок «Агенты и боты» появляется
 // над пустым разделом, тест «пустой раздел скрыт» красный.
 // ignore_for_file: depend_on_referenced_packages
 
@@ -25,6 +28,7 @@ import 'package:matrix/matrix.dart';
 import 'package:provider/provider.dart';
 
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat_list/chat_list_body.dart';
 import 'package:liza/pages/chat_list/search_carousel_item.dart';
 import 'package:liza/pages/chat_list/search_title.dart';
 import 'package:liza/pages/chat_list/search_users_horizontal_list.dart';
@@ -66,14 +70,16 @@ void main() {
             body: Builder(
               builder: (context) => ListView(
                 children: [
-                  // Ровно как в chat_list_body.dart.
-                  ...peopleAndBotsSections(
+                  // Ровно как в chat_list_body.dart; прочие разделы пусты.
+                  ...chatListSearchSections(
                     context,
-                    sections,
-                    buildBody: (profiles) => SearchUsersHorizontalList(
-                      profiles: profiles,
-                      onItemTap: onTap ?? (_) {},
-                    ),
+                    query: 'а',
+                    people: sections,
+                    companies: const [],
+                    publicRooms: null,
+                    publicChannels: null,
+                    hasChats: false,
+                    onUserTap: onTap ?? (_) {},
                   ),
                 ],
               ),
@@ -90,7 +96,7 @@ void main() {
   testWidgets(
       // AC:RL-search-people-vs-bots-sections/1
       // AC:RL-search-people-vs-bots-sections/5
-      'главный экран: «Люди» и «Боты и ИИ» — две карусели под своими заголовками',
+      'главный экран: «Агенты и боты» выше «Люди» — две карусели под своими заголовками',
       (tester) async {
     final matrix = SearchTestMatrixState(client, StubRoleService(client));
     final sections = partitionPeopleAndBots(
@@ -111,13 +117,13 @@ void main() {
     });
 
     expect(find.text('Люди'), findsOneWidget);
-    expect(find.text('Боты и ИИ'), findsOneWidget);
+    expect(find.text('Агенты и боты'), findsOneWidget);
     expect(find.byType(SearchUsersHorizontalList), findsNWidgets(2));
     final peopleY = topOf(tester, find.byKey(peopleSectionKey));
     final botsY = topOf(tester, find.byKey(botsAndAiSectionKey));
-    expect(peopleY, lessThan(botsY));
-    expect(topOfText(tester, 'Анна'), inExclusiveRange(peopleY, botsY));
-    expect(topOfText(tester, 'Лиза'), greaterThan(botsY));
+    expect(botsY, lessThan(peopleY));
+    expect(topOfText(tester, 'Лиза'), inExclusiveRange(botsY, peopleY));
+    expect(topOfText(tester, 'Анна'), greaterThan(peopleY));
     expect(find.byKey(const ValueKey(_anna)), findsOneWidget);
     expect(
       tester.widget<SearchCarouselItem>(find.byKey(const ValueKey(_liza))).userId,
@@ -148,7 +154,7 @@ void main() {
       await tester.pump();
     });
     expect(find.text('Люди'), findsOneWidget);
-    expect(find.text('Боты и ИИ'), findsNothing);
+    expect(find.text('Агенты и боты'), findsNothing);
     expect(find.byType(SearchUsersHorizontalList), findsOneWidget);
 
     await tester.runAsync(() async {
@@ -163,7 +169,7 @@ void main() {
       await tester.pump();
     });
     expect(find.text('Люди'), findsNothing);
-    expect(find.text('Боты и ИИ'), findsOneWidget);
+    expect(find.text('Агенты и боты'), findsOneWidget);
 
     for (final empty in [const PeopleAndBots(), null]) {
       await tester.runAsync(() async {
@@ -179,7 +185,7 @@ void main() {
 
   testWidgets(
       // AC:RL-search-people-vs-bots-sections/4
-      'главный экран: бот после поздних ролей рисуется в «Боты и ИИ»',
+      'главный экран: бот после поздних ролей рисуется в «Агенты и боты»',
       (tester) async {
     final roles = StubRoleService(client, serverAi: {_cup});
     final matrix = SearchTestMatrixState(client, roles);
@@ -200,7 +206,7 @@ void main() {
       carouselOf(_cup),
       findsOneWidget,
     );
-    expect(find.text('Боты и ИИ'), findsNothing,
+    expect(find.text('Агенты и боты'), findsNothing,
         reason: 'до ролей бот на чужом домене неотличим от человека');
 
     // Поздние роли — контроллер переразбивает ту же выдачу.
@@ -212,14 +218,15 @@ void main() {
       await tester.pump();
     });
     final botsY = topOf(tester, find.byKey(botsAndAiSectionKey));
-    expect(topOfText(tester, 'Кубок'), greaterThan(botsY));
-    expect(topOfText(tester, 'Анна'), lessThan(botsY));
+    final peopleY = topOf(tester, find.byKey(peopleSectionKey));
+    expect(topOfText(tester, 'Кубок'), inExclusiveRange(botsY, peopleY));
+    expect(topOfText(tester, 'Анна'), greaterThan(peopleY));
     expect(find.byKey(const ValueKey(_cup)), findsOneWidget);
   });
 
   testWidgets(
       // AC:RL-search-people-vs-bots-sections/5
-      'en: заголовки «People» / «Bots & AI»', (tester) async {
+      'en: заголовки «People» / «Agents & bots»', (tester) async {
     final matrix = SearchTestMatrixState(client, StubRoleService(client));
     await tester.runAsync(() async {
       await tester.pumpWidget(
@@ -237,6 +244,6 @@ void main() {
       await tester.pump();
     });
     expect(find.text('People'), findsOneWidget);
-    expect(find.text('Bots & AI'), findsOneWidget);
+    expect(find.text('Agents & bots'), findsOneWidget);
   });
 }

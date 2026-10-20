@@ -2,7 +2,6 @@
 
 CHAT_TYPE_KEY = "com.liza.chat.type"
 CHANNEL_TYPE = "channel"
-ROLES_ALLOWED_TO_CREATE = ("admin", "moderator")
 # Стандартный m.room.create ключ типа комнаты. Именно он доезжает до
 # room_stats_state.room_type и попадает в ответ /publicRooms.
 ROOM_TYPE_KEY = "type"
@@ -35,7 +34,3 @@ def mark_channel_room_type(config: dict) -> bool:
         return False  # тип уже задан явно — не перетираем
     creation_content[ROOM_TYPE_KEY] = LIZA_CHANNEL_ROOM_TYPE
     return True
-
-
-def role_may_create_channel(role: str) -> bool:
-    return role in ROLES_ALLOWED_TO_CREATE

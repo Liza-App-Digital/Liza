@@ -17,13 +17,16 @@ import 'package:liza/pages/chat_list/chat_list_view.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_locals.dart';
 import 'package:liza/utils/miniapp_room.dart';
+import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/platform_infos.dart';
+import 'package:liza/utils/upload_error_classifier.dart';
 import 'package:liza/utils/show_scaffold_dialog.dart';
 import 'package:liza/utils/incoming_uri_policy.dart';
 import 'package:liza/utils/invite_link_parser.dart';
 import 'package:liza/utils/pending_invite_code.dart';
 import 'package:liza/utils/show_update_snackbar.dart';
 import 'package:liza/utils/voice_recording_guard.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_modal_action_popup.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_text_input_dialog.dart';
@@ -31,7 +34,6 @@ import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/share_scaffold_dialog.dart';
 import 'package:liza/widgets/update_read_only_bar.dart';
-import '../../../utils/account_bundles.dart';
 import '../../utils/url_launcher.dart';
 import '../../widgets/matrix.dart';
 import 'package:liza/utils/auth_proxy_service.dart';
@@ -53,15 +55,66 @@ enum PopupMenuAction {
   archive,
 }
 
-enum ActiveFilter { allChats, messages, groups, unread, spaces, channels }
+enum ActiveFilter { allChats, agents, people, groups, unread, spaces, channels }
+
+/// Порядок чипов в списке чатов (задание Надежды 18.10:
+/// «Все → Агенты и боты → Люди → Компании → Группы…»).
+const chatListFilterOrder = [
+  ActiveFilter.allChats,
+  ActiveFilter.agents,
+  ActiveFilter.people,
+  ActiveFilter.spaces,
+  ActiveFilter.groups,
+  ActiveFilter.channels,
+  ActiveFilter.unread,
+];
+
+/// Попадает ли комната под чип списка чатов.
+///
+/// «Агенты» и «Люди» делят DM по собеседнику через [isBotOrAi] — тот же
+/// классификатор, что разбивает поиск и исключает ботов из сторис
+/// (`MatrixState.isBotOrAiUser`). Роли он читает из кэша, сети не трогает.
+/// ledger:RL-chat-list-agents-people-tabs
+bool roomMatchesFilter(
+  Room room,
+  ActiveFilter filter, {
+  required bool Function(String userId) isBotOrAi,
+}) {
+  switch (filter) {
+    case ActiveFilter.allChats:
+      return true;
+    case ActiveFilter.agents:
+    case ActiveFilter.people:
+      if (room.isSpace || !room.isDirectChat) return false;
+      final partner = room.directChatMatrixID;
+      final isAgent = partner != null && isBotOrAi(partner);
+      return filter == ActiveFilter.agents ? isAgent : !isAgent;
+    case ActiveFilter.groups:
+      return !room.isSpace && !room.isDirectChat && !room.isChannel;
+    case ActiveFilter.unread:
+      return room.isUnreadOrInvited;
+    case ActiveFilter.spaces:
+      return room.isSpace;
+    case ActiveFilter.channels:
+      return room.isChannel;
+  }
+}
+
+/// Глобальный поиск (публичные чаты/каналы, компании, каталог людей) идёт
+/// только по непустому запросу: пустая лупа показывает свои чаты, как в
+/// Telegram, и не тянет чужие публичные комнаты (задание Надежды 18.10).
+/// ledger:RL-chat-list-search-empty-and-order
+bool shouldRunGlobalSearch(String text) => text.trim().isNotEmpty;
 
 extension LocalizedActiveFilter on ActiveFilter {
   String toLocalizedString(BuildContext context) {
     switch (this) {
       case ActiveFilter.allChats:
         return L10n.of(context).all;
-      case ActiveFilter.messages:
-        return L10n.of(context).messages;
+      case ActiveFilter.agents:
+        return L10n.of(context).agentsAndBots;
+      case ActiveFilter.people:
+        return L10n.of(context).searchSectionPeople;
       case ActiveFilter.unread:
         return L10n.of(context).unread;
       case ActiveFilter.groups:
@@ -158,27 +211,16 @@ class ChatListController extends State<ChatList>
     context.go('/rooms/${room.id}');
   }
 
-  bool Function(Room) getRoomFilterByActiveFilter(ActiveFilter activeFilter) {
-    switch (activeFilter) {
-      case ActiveFilter.allChats:
-        return (room) => true;
-      case ActiveFilter.messages:
-        return (room) => !room.isSpace && room.isDirectChat;
-      case ActiveFilter.groups:
-        return (room) => !room.isSpace && !room.isDirectChat && !room.isChannel;
-      case ActiveFilter.unread:
-        return (room) => room.isUnreadOrInvited;
-      case ActiveFilter.spaces:
-        return (room) => room.isSpace;
-      case ActiveFilter.channels:
-        return (room) => room.isChannel;
-    }
-  }
-
   List<Room> get filteredRooms {
-    final rooms = Matrix.of(context).client.rooms
+    final matrix = Matrix.of(context);
+    // Поиск — по всем своим чатам, независимо от выбранного чипа (как в TG);
+    // сам activeFilter не сбрасываем — после выхода из поиска чип прежний.
+    final filter = isSearchMode ? ActiveFilter.allChats : activeFilter;
+    final rooms = matrix.client.rooms
         .where((r) => !r.isHiddenChat)
-        .where(getRoomFilterByActiveFilter(activeFilter))
+        .where(
+          (r) => roomMatchesFilter(r, filter, isBotOrAi: matrix.isBotOrAiUser),
+        )
         .toList();
     // Pin @liza assistant chat to top without disturbing SDK sort order.
     final lizaIndex = rooms.indexWhere(
@@ -232,13 +274,27 @@ class ChatListController extends State<ChatList>
       searchServer = newServer;
     });
     _coolDown?.cancel();
-    _coolDown = Timer(const Duration(milliseconds: 500), _search);
+    if (shouldRunGlobalSearch(searchController.text)) {
+      _coolDown = Timer(const Duration(milliseconds: 500), _search);
+    }
   }
 
   final TextEditingController searchController = TextEditingController();
   final FocusNode searchFocusNode = FocusNode();
 
   void _search() async {
+    // Запрос стёрт до пробелов — снимаем прежнюю выдачу, в сеть не ходим.
+    if (!shouldRunGlobalSearch(searchController.text)) {
+      setState(() {
+        this.roomSearchResult = null;
+        this.userSearchResult = null;
+        userSearchSections = null;
+        companySearchResult = const [];
+        handleSearchResult = null;
+        isSearching = false;
+      });
+      return;
+    }
     // Захватываем ОДИН раз до первого await: ниже цепочка из нескольких
     // сетевых ожиданий, а Matrix.of(context) на размонтированном State бросает.
     final matrix = Matrix.of(context);
@@ -508,7 +564,9 @@ class ChatListController extends State<ChatList>
     });
     searchFocusNode.requestFocus();
     _coolDown?.cancel();
-    _coolDown = Timer(const Duration(milliseconds: 500), _search);
+    if (shouldRunGlobalSearch(searchController.text)) {
+      _coolDown = Timer(const Duration(milliseconds: 500), _search);
+    }
   }
 
   void cancelSearch({bool unfocus = true}) {
@@ -671,6 +729,18 @@ class ChatListController extends State<ChatList>
     });
   }
 
+  /// «Поделиться» из другого приложения (видео из мессенджера) падал в `print`:
+  /// пользователь не видел ничего, сервер — тоже.
+  void _reportShareFailure(Object e) {
+    Logs().w('Share intent failed', e);
+    Monitoring.reportMediaSendFailure(
+      reason: 'share',
+      kind: classifySendErrorCause(e).name,
+      media: 'file',
+      error: e,
+    );
+  }
+
   void _initReceiveSharingIntent() {
     // AppLinks подписан на всех платформах, чтобы invite-ссылки работали и на
     // desktop (macOS принимает liza://invite/<code> через URL scheme).
@@ -678,10 +748,11 @@ class ChatListController extends State<ChatList>
     if (PlatformInfos.isMobile) {
       _intentFileStreamSubscription = ReceiveSharingIntent.instance
           .getMediaStream()
-          .listen(_processIncomingSharedMedia, onError: print);
-      ReceiveSharingIntent.instance.getInitialMedia().then(
-        _processIncomingSharedMedia,
-      );
+          .listen(_processIncomingSharedMedia, onError: _reportShareFailure);
+      ReceiveSharingIntent.instance
+          .getInitialMedia()
+          .then(_processIncomingSharedMedia)
+          .catchError(_reportShareFailure);
     }
 
     final appLinks = AppLinks();
@@ -1103,9 +1174,17 @@ class ChatListController extends State<ChatList>
           showCloseIcon: true,
           backgroundColor: theme.colorScheme.errorContainer,
           closeIconColor: theme.colorScheme.onErrorContainer,
-          content: Text(
-            L10n.of(context).oneOfYourDevicesIsNotVerified,
-            style: TextStyle(color: theme.colorScheme.onErrorContainer),
+          content: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  L10n.of(context).oneOfYourDevicesIsNotVerified,
+                  style: TextStyle(color: theme.colorScheme.onErrorContainer),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const DeveloperMark(),
+            ],
           ),
           action: SnackBarAction(
             onPressed: () {
@@ -1149,51 +1228,6 @@ class ChatListController extends State<ChatList>
     });
   }
 
-  void editBundlesForAccount(String? userId, String? activeBundle) async {
-    final l10n = L10n.of(context);
-    final client = Matrix.of(
-      context,
-    ).widget.clients[Matrix.of(context).getClientIndexByMatrixId(userId!)];
-    final action = await showModalActionPopup<EditBundleAction>(
-      context: context,
-      title: L10n.of(context).editBundlesForAccount,
-      cancelLabel: L10n.of(context).cancel,
-      actions: [
-        AdaptiveModalAction(
-          value: EditBundleAction.addToBundle,
-          label: L10n.of(context).addToBundle,
-        ),
-        if (activeBundle != client.userID)
-          AdaptiveModalAction(
-            value: EditBundleAction.removeFromBundle,
-            label: L10n.of(context).removeFromBundle,
-          ),
-      ],
-    );
-    // Между диалогами цепочки контроллер может быть размонтирован (логаут,
-    // уход с экрана) — тогда context мёртв и showDialog падает.
-    if (action == null || !mounted) return;
-    switch (action) {
-      case EditBundleAction.addToBundle:
-        final bundle = await showTextInputDialog(
-          context: context,
-          title: l10n.bundleName,
-          hintText: l10n.bundleName,
-        );
-        if (bundle == null || bundle.isEmpty || !mounted) return;
-        await showFutureLoadingDialog(
-          context: context,
-          future: () => client.setAccountBundle(bundle),
-        );
-        break;
-      case EditBundleAction.removeFromBundle:
-        await showFutureLoadingDialog(
-          context: context,
-          future: () => client.removeFromAccountBundle(activeBundle!),
-        );
-    }
-  }
-
   void resetActiveBundle() {
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) {
       setState(() {
@@ -1211,8 +1245,6 @@ class ChatListController extends State<ChatList>
 
   Future<void> dehydrate() => Matrix.of(context).dehydrateAction(context);
 }
-
-enum EditBundleAction { addToBundle, removeFromBundle }
 
 enum InviteActions { accept, decline, block }
 

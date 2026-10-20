@@ -8,6 +8,7 @@ import 'package:liza/config/setting_keys.dart';
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/beautify_string_extension.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/if_developer.dart';
 import 'package:liza/widgets/layouts/max_width_body.dart';
 import 'package:liza/widgets/matrix.dart';
@@ -25,7 +26,7 @@ class SettingsSecurityView extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(L10n.of(context).privacyAndSecurity),
+        title: Text(L10n.of(context).privacy),
         automaticallyImplyLeading: !LizaThemes.isColumnMode(context),
         centerTitle: LizaThemes.isColumnMode(context),
       ),
@@ -49,15 +50,6 @@ class SettingsSecurityView extends StatelessWidget {
               }
               return Column(
                 children: [
-                  ListTile(
-                    title: Text(
-                      L10n.of(context).privacy,
-                      style: TextStyle(
-                        color: theme.colorScheme.secondary,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
                   SettingsSwitchListTile.adaptive(
                     title: L10n.of(context).sendTypingNotifications,
                     subtitle: L10n.of(
@@ -87,12 +79,20 @@ class SettingsSecurityView extends StatelessWidget {
                       children: [
                         Divider(color: theme.dividerColor),
                         ListTile(
-                          title: Text(
-                            L10n.of(context).shareKeysWith,
-                            style: TextStyle(
-                              color: theme.colorScheme.secondary,
-                              fontWeight: FontWeight.bold,
-                            ),
+                          title: Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  L10n.of(context).shareKeysWith,
+                                  style: TextStyle(
+                                    color: theme.colorScheme.secondary,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              const DeveloperMark(),
+                            ],
                           ),
                           subtitle: Text(
                             L10n.of(context).shareKeysWithDescription,
@@ -130,12 +130,20 @@ class SettingsSecurityView extends StatelessWidget {
                         ),
                         Divider(color: theme.dividerColor),
                         ListTile(
-                          title: Text(
-                            L10n.of(context).account,
-                            style: TextStyle(
-                              color: theme.colorScheme.secondary,
-                              fontWeight: FontWeight.bold,
-                            ),
+                          title: Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  L10n.of(context).account,
+                                  style: TextStyle(
+                                    color: theme.colorScheme.secondary,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              const DeveloperMark(),
+                            ],
                           ),
                         ),
                         ListTile(

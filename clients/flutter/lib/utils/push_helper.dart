@@ -589,9 +589,10 @@ Future<void> _tryPushHelper(
     return;
   }
 
-  // On macOS the native layer shows the banner: the NSE target
-  // (NotificationServiceExtensionMacOS, added 2026-05) formats the remote push,
-  // and AppDelegate.willPresent presents it. Инвариант «ровно один показывающий»
+  // On macOS the native layer shows the banner: the system renders the remote
+  // push from loc-key (Runner/ru.lproj), AppDelegate.willPresent decides when
+  // Liza is active. macOS-NSE не встраивается с 2026-10-19 — он не стартовал и
+  // давал повтор баннера через 120 с (howItWoks/pushes/pushes.md §24). Инвариант «ровно один показывающий»
   // (LABA-2354): баннер рисует ТОЛЬКО нативный путь; Dart здесь остаётся
   // haptic-only и НЕ вызывает flutterLocalNotificationsPlugin.show — иначе на
   // одно сообщение выйдут ДВА баннера (нативный + Dart). Не снимать этот return.

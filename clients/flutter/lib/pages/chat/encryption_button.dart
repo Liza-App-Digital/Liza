@@ -6,6 +6,7 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/platform_infos.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/if_developer.dart';
 import '../../widgets/matrix.dart';
 
@@ -27,8 +28,9 @@ class EncryptionButton extends StatelessWidget {
               ? room.calcEncryptionHealthState()
               : Future.value(EncryptionHealthState.allVerified),
           builder: (BuildContext context, snapshot) => IconButton(
-            visualDensity:
-                PlatformInfos.isMobile ? VisualDensity.compact : null,
+            visualDensity: PlatformInfos.isMobile
+                ? VisualDensity.compact
+                : null,
             tooltip: room.encrypted
                 ? L10n.of(context).encrypted
                 : L10n.of(context).encryptionNotEnabled,
@@ -63,6 +65,19 @@ class EncryptionButton extends StatelessWidget {
         );
       },
     );
-    return IfDeveloper(child: button);
+    // Кнопка в шапке узкая: метку кладём уголком поверх, а не рядом.
+    return IfDeveloper(
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          button,
+          const Positioned(
+            right: 0,
+            bottom: 2,
+            child: IgnorePointer(child: DeveloperMark()),
+          ),
+        ],
+      ),
+    );
   }
 }

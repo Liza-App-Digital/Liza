@@ -9,6 +9,7 @@ import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/liza_share.dart';
 import 'package:liza/widgets/avatar.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/if_developer.dart';
 import 'package:liza/widgets/matrix.dart';
 import 'package:liza/widgets/navigation_rail.dart';
@@ -164,15 +165,18 @@ class SettingsView extends StatelessWidget {
                     ),
                   ListTile(
                     leading: const Icon(Icons.link_outlined),
-                    title: Text(L10n.of(context).inviteFriends),
+                    title: Text(L10n.of(context).invitePeople),
                     onTap: () => LizaShare.shareInvitePeople(context),
                   ),
-                  // «Пригласить друзей» — разовое действие наружу, а почта и
+                  // «Пригласить людей» — разовое действие наружу, а почта и
                   // никнейм ниже — параметры аккаунта; разделяем группы.
                   Divider(color: theme.dividerColor),
+                  // Подпись «Ваш ID», а не «Почта»: это вход в Prodamus ID, но
+                  // имя стороннего сервиса не пишем из-за модерации Apple
+                  // (Надежда, В5 18.10). Экран почты не меняется.
                   ListTile(
-                    leading: const Icon(Icons.alternate_email_outlined),
-                    title: Text(L10n.of(context).settingsEmailTitle),
+                    leading: const Icon(Icons.person_outline),
+                    title: Text(L10n.of(context).settingsYourId),
                     onTap: () => context.go('/rooms/settings/email'),
                   ),
                   if (controller.handleGateAvailable)
@@ -189,7 +193,7 @@ class SettingsView extends StatelessWidget {
                         if (showChatBackupBanner == null)
                           ListTile(
                             leading: const Icon(Icons.backup_outlined),
-                            title: Text(L10n.of(context).chatBackup),
+                            title: _developerTitle(L10n.of(context).chatBackup),
                             trailing:
                                 const CircularProgressIndicator.adaptive(),
                           )
@@ -198,7 +202,7 @@ class SettingsView extends StatelessWidget {
                             controlAffinity: ListTileControlAffinity.trailing,
                             value: controller.showChatBackupBanner == false,
                             secondary: const Icon(Icons.backup_outlined),
-                            title: Text(L10n.of(context).chatBackup),
+                            title: _developerTitle(L10n.of(context).chatBackup),
                             onChanged: controller.firstRunBootstrapAction,
                           ),
                       ],
@@ -222,6 +226,18 @@ class SettingsView extends StatelessWidget {
                         : null,
                     onTap: () => context.go('/rooms/settings/notifications'),
                   ),
+                  // «Приватность» — перед «Сеансами» (Надежда, В5 18.10). Без
+                  // этого пункта «Удалить аккаунт» недоступен из интерфейса —
+                  // отказ App Store по Guideline 5.1.1(v).
+                  ListTile(
+                    leading: const Icon(Icons.shield_outlined),
+                    title: Text(L10n.of(context).privacy),
+                    onTap: () => context.go('/rooms/settings/security'),
+                    tileColor:
+                        activeRoute.startsWith('/rooms/settings/security')
+                        ? theme.colorScheme.surfaceContainerHigh
+                        : null,
+                  ),
                   ListTile(
                     leading: const Icon(Icons.devices_outlined),
                     title: Text(L10n.of(context).devices),
@@ -230,18 +246,16 @@ class SettingsView extends StatelessWidget {
                         ? theme.colorScheme.surfaceContainerHigh
                         : null,
                   ),
-                  // Вход в «Приватность и безопасность» скрыт по требованию
-                  // (сессия 2026-09-17). Сам экран и маршрут
-                  // `/rooms/settings/security` сохранены — убран только пункт
-                  // меню, поэтому возврат = один ListTile.
-                  ListTile(
-                    leading: const Icon(Icons.extension_outlined),
-                    title: Text(L10n.of(context).settingsMcpTitle),
-                    onTap: () => context.go(AppRoutes.settingsMcp),
-                    tileColor:
-                        activeRoute.startsWith('/rooms/settings/integrations')
-                        ? theme.colorScheme.surfaceContainerHigh
-                        : null,
+                  // Витрина MCP — только developer и отдельным окном вне
+                  // настроек (Надежда, В5 18.10): подсветки активного пункта
+                  // нет, экран не открывается в колонке настроек.
+                  IfDeveloper(
+                    child: ListTile(
+                      leading: const Icon(Icons.extension_outlined),
+                      title: Text(L10n.of(context).settingsMcpTitle),
+                      trailing: const DeveloperMark(),
+                      onTap: () => context.go(AppRoutes.mcp),
+                    ),
                   ),
                   IfDeveloper(
                     child: Column(
@@ -250,7 +264,7 @@ class SettingsView extends StatelessWidget {
                         Divider(color: theme.dividerColor),
                         ListTile(
                           leading: const Icon(Icons.dns_outlined),
-                          title: Text(
+                          title: _developerTitle(
                             L10n.of(context).aboutHomeserver(
                               Matrix.of(context).client.userID?.domain ??
                                   'homeserver',
@@ -298,3 +312,13 @@ class SettingsView extends StatelessWidget {
     );
   }
 }
+
+/// Подпись developer-пункта с меткой «Р» в заголовке: у `SwitchListTile`
+/// слот `trailing` занят переключателем.
+Widget _developerTitle(String text) => Row(
+  children: [
+    Flexible(child: Text(text)),
+    const SizedBox(width: 6),
+    const DeveloperMark(),
+  ],
+);

@@ -7,6 +7,7 @@ import 'package:liza/utils/create_group_in_space.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
 import 'package:liza/utils/room_name_limit.dart';
 import 'package:liza/widgets/avatar.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/if_developer.dart';
 import 'package:liza/widgets/layouts/max_width_body.dart';
 
@@ -95,12 +96,18 @@ class NewGroupView extends StatelessWidget {
                     prefixIcon: const Icon(Icons.workspaces_outlined),
                     labelText: L10n.of(context).groupPlace,
                   ),
-                  onChanged: controller.loading ? null : controller.setPlace,
+                  onChanged: controller.loading || controller.placesLoading
+                      ? null
+                      : controller.setPlace,
                   items: [
                     DropdownMenuItem<GroupPlace?>(
                       value: null,
                       child: Text(switch (controller.companyInstance) {
                         false => L10n.of(context).groupPlacePersonal,
+                        // Без права «Создание чатов» сервер не вложит группу
+                        // в компанию — она будет «для себя» (задача 12).
+                        true when controller.canCreateInOwnCompany == false =>
+                          L10n.of(context).groupPlacePersonal,
                         true => L10n.of(context).groupPlaceOwnCompany,
                         null => L10n.of(context).groupPlaceAuto,
                       }),
@@ -201,9 +208,19 @@ class NewGroupView extends StatelessWidget {
                           Icons.lock_outlined,
                           color: theme.colorScheme.onSurface,
                         ),
-                        title: Text(
-                          L10n.of(context).enableEncryption,
-                          style: TextStyle(color: theme.colorScheme.onSurface),
+                        title: Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                L10n.of(context).enableEncryption,
+                                style: TextStyle(
+                                  color: theme.colorScheme.onSurface,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            const DeveloperMark(),
+                          ],
                         ),
                         subtitle: controller.publicGroup
                             ? Text(L10n.of(context).noEncryptionForPublicRooms)
@@ -240,7 +257,7 @@ class NewGroupView extends StatelessWidget {
               child: SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: controller.loading
+                  onPressed: controller.loading || controller.placesLoading
                       ? null
                       : controller.submitAction,
                   child: controller.loading

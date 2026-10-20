@@ -20,6 +20,7 @@ import 'package:liza/utils/news_audience.dart';
 import 'package:liza/utils/push_client_resolver.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/push_helper.dart';
+import 'package:liza/utils/push_journal.dart';
 import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/utils/screen_lock_state.dart';
 import 'package:liza/utils/strip_matrix_mentions.dart';
@@ -32,6 +33,14 @@ import 'package:liza/widgets/matrix.dart';
 const _localNotificationMaxAge = Duration(minutes: 5);
 
 extension LocalNotificationsExtension on MatrixState {
+  void _journalLocal(PushReason reason, Event event) => PushJournal.instance.record(
+    PushStage.local,
+    reason: reason,
+    eventId: event.eventId,
+    roomId: event.room.id,
+    state: WidgetsBinding.instance.lifecycleState,
+  );
+
   static final html.AudioElement _audioPlayer = html.AudioElement()
     ..src = 'assets/assets/sounds/notification.ogg'
     ..load();
@@ -39,8 +48,15 @@ extension LocalNotificationsExtension on MatrixState {
   void showLocalNotification(Event event) async {
     // Пост Liza News для других платформ: web/Windows/Linux/macOS показывают
     // уведомление из /sync мимо Sygnal, поэтому режем здесь, а не только там.
-    if (event.isHiddenByNewsAudience) return;
     final roomId = event.room.id;
+    void skip(PushReason reason) => PushJournal.instance.record(
+      PushStage.localSkip,
+      reason: reason,
+      eventId: event.eventId,
+      roomId: roomId,
+      state: WidgetsBinding.instance.lifecycleState,
+    );
+    if (event.isHiddenByNewsAudience) return skip(PushReason.newsAudience);
     // «Активная комната» принадлежит активному клиенту: та же комната у ДРУГОГО
     // своего аккаунта уведомление не глушит (общий предикат с нативным путём —
     // RL-push-active-room-native-suppress).
@@ -59,14 +75,14 @@ extension LocalNotificationsExtension on MatrixState {
           ) ==
           ReadableForeground.full,
     )) {
-      return;
+      return skip(PushReason.activeRoom);
     }
     // Скрытую комнату (stories/обсуждение канала) нельзя открыть и «прочитать» —
     // её баннер завис бы неснимаемым, как фантомный бейдж. Тот же инвариант, что
     // у бейджа и у clearing-ветки push_helper.
     if (!event.room.countsTowardAppBadge &&
         event.room.membership != Membership.invite) {
-      return;
+      return skip(PushReason.hiddenRoom);
     }
     // Догоняющий /sync после простоя эмитит onNotification по КАЖДОМУ
     // пропущенному событию — без этого гейта пользователь получил бы шквал
@@ -77,7 +93,7 @@ extension LocalNotificationsExtension on MatrixState {
         '[Push] Skip local notification: event is ${age.inMinutes} min old',
         event.eventId,
       );
-      return;
+      return skip(PushReason.tooOld);
     }
     // APNs уже обогнал sync: баннер нарисовал натив — система у неактивной
     // Лизы, `willPresent` (`NativeBannerGate.banner`) у активной — либо натив
@@ -87,7 +103,7 @@ extension LocalNotificationsExtension on MatrixState {
         '[Push] Skip local notification: APNs already handled',
         event.eventId,
       );
-      return;
+      return skip(PushReason.apnsHandled);
     }
     // Отметку «показано» шлём ДО загрузки аватара (та ждёт сеть до 3 с): иначе
     // опоздавший APNs-пуш успеет проскочить нативный гейт и дать второй баннер.
@@ -287,8 +303,10 @@ extension LocalNotificationsExtension on MatrixState {
           ).toString(),
         );
         Logs().v('[Push] Local notification shown', event.eventId);
+        _journalLocal(PushReason.shown, event);
       } catch (e, s) {
         Logs().w('[Push] Local notification failed', e, s);
+        _journalLocal(PushReason.failed, event);
       }
     } else if (Platform.isWindows) {
       final plugin = backgroundPush?.localNotificationsPlugin;

@@ -94,27 +94,13 @@ class ChatMembersController extends State<ChatMembersPage> {
   bool get membershipFiltersReady =>
       _spaceMembersSettled || !_needsSpaceMembers;
 
-  /// Читаемое имя для «На сервере {server}» — см. [memberFilterServerLabel].
-  String get serverLabel {
-    final client = Matrix.of(context).client;
-    final room = client.getRoomById(widget.roomId);
-    final serverName = companyServerName;
-    final locals = MatrixLocals(L10n.of(context));
-    return memberFilterServerLabel(
-      serverName: serverName,
-      ownCompanyName: room != null && isCompanyRoom
-          ? room.getLocalizedDisplayname(locals)
-          : null,
-      companyNamesOnServer: client.rooms
-          .where(
-            (r) =>
-                r.isSpace &&
-                r.membership == Membership.join &&
-                _serverNameOf(r.id) == serverName &&
-                isCompanySpace(space: r, allRooms: client.rooms),
-          )
-          .map((r) => r.getLocalizedDisplayname(locals)),
-    );
+  /// Имя открытого пространства для «В компании {имя}» / «В пространстве
+  /// {имя}»; вне пространства не нужно. Берём только у самой комнаты: имя
+  /// другой комнаты того же домена на общих инстансах было бы чужим.
+  String get spaceLabel {
+    final room = Matrix.of(context).client.getRoomById(widget.roomId);
+    if (room == null || !room.isSpace) return '';
+    return room.getLocalizedDisplayname(MatrixLocals(L10n.of(context)));
   }
 
   /// База расчёта пользы чекбоксов: участники текущей вкладки членства (и

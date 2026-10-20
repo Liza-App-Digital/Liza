@@ -2,37 +2,34 @@ enum CreateMenuAction {
   newRequest,
   group,
   channel,
-  story,
-  bot,
-  miniApp,
-  agent,
+  developers,
   mcp,
   invite,
   contacts,
 }
 
+/// Пункты, видимые только роли developer: рядом с подписью ставится
+/// `DeveloperMark` (RL-developer-mark).
+const developerOnlyActions = {CreateMenuAction.mcp};
+
 /// Разделы меню «+» шапки списка чатов; между разделами — разделитель.
 ///
-/// Порядок — постановка продакта 2026-09-16 (спека
-/// `2026-09-16-create-menu-connect-agent-design.md`); «Новый запрос» к Лизе —
-/// первым (РГ Лиза 05.10, спека `2026-10-14-liza-new-request-chat-design.md`). «Добавить МСР» — отдельным
-/// разделом только для разработчика (и админа); у остальных нет ни пункта, ни
-/// лишнего разделителя. «Контакты» — только на мобильных: flutter_contacts на
-/// web/десктопе бросает MissingPluginException.
+/// Состав и порядок — задание Надежды 18.10 (спека
+/// `2026-10-19-nadya-interface-1810-design.md`, задача 02): «Новый запрос»,
+/// «Создать группу», «Создать канал» | «Разработчику» (всем; бот, mini-app и
+/// агент живут в главном меню BotFather) + «Добавить МСР» только разработчику |
+/// «Пригласить контакт» + «Контакты» только на мобильных (flutter_contacts на
+/// web/десктопе бросает MissingPluginException). «Создать канал» — всем:
+/// серверный `channel_guard` роль больше не проверяет.
 List<List<CreateMenuAction>> createMenuSections({
-  required bool isAdmin,
   required bool isDeveloper,
   required bool isMobile,
 }) => [
   [
     CreateMenuAction.newRequest,
     CreateMenuAction.group,
-    if (isAdmin) CreateMenuAction.channel,
-    CreateMenuAction.story,
-    CreateMenuAction.bot,
-    CreateMenuAction.miniApp,
-    CreateMenuAction.agent,
+    CreateMenuAction.channel,
   ],
-  if (isDeveloper || isAdmin) [CreateMenuAction.mcp],
+  [CreateMenuAction.developers, if (isDeveloper) CreateMenuAction.mcp],
   [CreateMenuAction.invite, if (isMobile) CreateMenuAction.contacts],
 ];

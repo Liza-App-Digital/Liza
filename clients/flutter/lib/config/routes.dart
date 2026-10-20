@@ -72,10 +72,11 @@ abstract class AppRoutes {
   /// при первой же правке, и `settings_routes_test.dart` этого не заметит —
   /// он сверяет литералы меню с деревом маршрутов, а не входы между собой.
   ///
-  /// Путь исторический (`integrations`): раздел «Интеграции» и есть витрина
-  /// MCP-подключений — его единственная карточка XL сама является MCP-клиентом.
-  /// Переименован заголовок, а не адрес: ломать рабочий маршрут незачем.
-  static const String settingsMcp = '/rooms/settings/integrations';
+  /// Витрина живёт вне ветки настроек (Надежда, В5 18.10: «оставить только
+  /// вот это одно окно … чтобы не было видно, что это в настройках»): в
+  /// колоночном режиме слева список чатов, колонки настроек нет. Маршрут —
+  /// в общем `ShellRoute` списка чатов рядом с `apps`, до `:roomid`.
+  static const String mcp = '/rooms/mcp';
 
   static FutureOr<String?> loggedInRedirect(
     BuildContext context,
@@ -328,6 +329,15 @@ abstract class AppRoutes {
               redirect: loggedOutRedirect,
             ),
             GoRoute(
+              path: 'mcp',
+              pageBuilder: (context, state) => defaultPageBuilder(
+                context,
+                state,
+                const SettingsIntegrationsPage(),
+              ),
+              redirect: loggedOutRedirect,
+            ),
+            GoRoute(
               path: 'newprivatechat',
               pageBuilder: (context, state) =>
                   defaultPageBuilder(context, state, const NewPrivateChat()),
@@ -519,15 +529,6 @@ abstract class AppRoutes {
                         context,
                         state,
                         const SettingsHandlePage(),
-                      ),
-                      redirect: loggedOutRedirect,
-                    ),
-                    GoRoute(
-                      path: 'integrations',
-                      pageBuilder: (context, state) => defaultPageBuilder(
-                        context,
-                        state,
-                        const SettingsIntegrationsPage(),
                       ),
                       redirect: loggedOutRedirect,
                     ),

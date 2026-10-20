@@ -6,6 +6,7 @@ import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_registry.dart';
 import 'package:liza/pages/chat/mini_app_web_view.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/matrix.dart';
 
 enum _CatalogState { loading, data, empty, error }
@@ -127,8 +128,7 @@ class _MiniAppCatalogPageState extends State<MiniAppCatalogPage> {
                 app.icon,
                 width: 40,
                 height: 40,
-                errorBuilder: (context, error, stack) =>
-                    const Icon(Icons.apps),
+                errorBuilder: (context, error, stack) => const Icon(Icons.apps),
               ),
       ),
       title: Text(app.name),
@@ -192,7 +192,14 @@ class _MiniAppCatalogPageState extends State<MiniAppCatalogPage> {
           Center(
             child: FilledButton.icon(
               icon: const Icon(Icons.add),
-              label: Text(L10n.of(context).miniAppCatalogConnectOwn),
+              label: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(L10n.of(context).miniAppCatalogConnectOwn),
+                  const SizedBox(width: 6),
+                  const DeveloperMark(),
+                ],
+              ),
               onPressed: _openDeveloperPortal,
             ),
           ),

@@ -27,6 +27,7 @@ import 'package:liza/utils/news_audience.dart';
 import 'package:liza/utils/notification_background_handler.dart';
 import 'package:liza/utils/push_client_resolver.dart';
 import 'package:liza/utils/push_helper.dart';
+import 'package:liza/utils/push_journal.dart';
 import 'package:liza/utils/push_tap_navigation.dart';
 import 'package:liza/utils/unseen_messages.dart';
 import 'package:liza/widgets/liza_app.dart';
@@ -429,18 +430,43 @@ class BackgroundPush {
     switch (decision) {
       case ApnsBannerDecision.suppressLocal:
       case ApnsBannerDecision.suppressRead:
+        _journalGate(PushReason.suppress, eventId);
         return NativeBannerGate.suppress;
       case ApnsBannerDecision.unknownEvent:
-        if (eventId == null || eventId.isEmpty) return NativeBannerGate.silent;
-        if (isLocallyShown(eventId)) return NativeBannerGate.suppress;
+        if (eventId == null || eventId.isEmpty) {
+          _journalGate(PushReason.silent, eventId);
+          return NativeBannerGate.silent;
+        }
+        if (isLocallyShown(eventId)) {
+          _journalGate(PushReason.suppress, eventId);
+          return NativeBannerGate.suppress;
+        }
         markNativelyReceived(eventId);
         Logs().v('[Push] Native banner: push ahead of sync', eventId);
+        _journalGate(PushReason.banner, eventId);
         return NativeBannerGate.banner;
       case ApnsBannerDecision.show:
       case ApnsBannerDecision.noEvent:
+        _journalGate(PushReason.silent, eventId);
         return NativeBannerGate.silent;
     }
   }
+
+  static PushReason _journalReason(ApnsBannerDecision d) => switch (d) {
+    ApnsBannerDecision.suppressLocal => PushReason.suppressLocal,
+    ApnsBannerDecision.suppressRead => PushReason.suppressRead,
+    ApnsBannerDecision.show => PushReason.show,
+    ApnsBannerDecision.unknownEvent => PushReason.unknownEvent,
+    ApnsBannerDecision.noEvent => PushReason.noEvent,
+  };
+
+  void _journalGate(PushReason reason, String? eventId) =>
+      PushJournal.instance.record(
+        PushStage.gate,
+        reason: reason,
+        eventId: eventId,
+        state: WidgetsBinding.instance.lifecycleState,
+      );
 
   /// Тот же предикат, но с именем причины и временем известного события —
   /// для решения на приходе пуша ([handleApnsMessage]) и телеметрии.
@@ -517,11 +543,30 @@ class BackgroundPush {
     Future<void> Function(Map<String, dynamic> raw)? deliver,
     void Function(String reason, Map<String, String> tags)? report,
     Future<void> Function(Map<String, dynamic> raw)? clearing,
+    PushJournal? journal,
   }) async {
     final raw = Map<String, dynamic>.from(message['data'] ?? message);
+    final jr = journal ?? PushJournal.instance;
+    // Журнал — наблюдатель: его сбой не трогает решение и retract
+    // (RL-macos-push-late-apns-retract AC-7, RL-push-health-report AC-7).
+    void note(PushReason reason, {String? eventId, int? latencyS, DateTime? at}) {
+      try {
+        jr.record(
+          PushStage.apns,
+          reason: reason,
+          eventId: eventId,
+          roomId: raw['room_id'] as String?,
+          state: WidgetsBinding.instance.lifecycleState,
+          value: latencyS,
+          now: at,
+        );
+      } catch (_) {}
+    }
+
     // Тихий «почисти шторку» — не уведомление: мимо pushHelper (там counts-only
     // при одном аккаунте = cancelAll плагина), мимо гейта баннера и дедупа.
     if (isClearingPush(raw)) {
+      note(PushReason.clearing);
       await (clearing ?? handleClearingPush)(raw);
       return const ApnsMessageOutcome(ApnsBannerDecision.noEvent);
     }
@@ -540,12 +585,14 @@ class BackgroundPush {
     // одно решение и один pushHelper.
     if (eventId.isNotEmpty && isNativelyReceived(eventId)) {
       Logs().v('[Push] apns duplicate onMessage ignored', eventId);
+      note(PushReason.duplicate, eventId: eventId);
       return const ApnsMessageOutcome(ApnsBannerDecision.noEvent, duplicate: true);
     }
     // До всего остального: `showLocalNotification` из догоняющего sync смотрит
     // на эту отметку (RL-macos-push-banner-read-suppress AC-10).
     markNativelyReceived(eventId);
     if (!Platform.isMacOS) {
+      note(PushReason.noEvent, eventId: eventId);
       await deliverFn(raw);
       return const ApnsMessageOutcome(ApnsBannerDecision.noEvent);
     }
@@ -566,6 +613,12 @@ class BackgroundPush {
       verdict.decision,
       latency: latency,
       retract: retractResult,
+    );
+    note(
+      _journalReason(verdict.decision),
+      eventId: eventId,
+      latencyS: latency?.inSeconds,
+      at: moment,
     );
     try {
       final state = WidgetsBinding.instance.lifecycleState?.name ?? 'unknown';
@@ -1010,7 +1063,8 @@ class BackgroundPush {
   final pusherDataMessageFormat = Platform.isAndroid ? 'android' : 'ios';
 
   // mutable-content=1 запускает NSE на iOS (расшифровка loc-keys, аватар, звук).
-  // sound=liza_ding.aiff — звук на macOS, где NSE не существует.
+  // macOS-пушам Sygnal его снимает (NSE там не встраивается, pushes.md §24).
+  // sound=liza_ding.aiff — звук на macOS.
   // Sygnal читает default_payload из pusher.data и мержит его в top-level FCM data /
   // APNs payload → `client_name` приезжает в каждом пуше и маршрутизирует его к
   // аккаунту-адресату при мультиаккаунте (см. push_client_resolver.dart).

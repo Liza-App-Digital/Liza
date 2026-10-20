@@ -624,3 +624,83 @@ class ApnsTestCase(testutils.TestCase):
             )
             self.assertEqual("liza_ding.aiff", req.message["aps"]["sound"])
             self.assertNotIn("liza_clear", req.message)
+
+    # ------------------------------------------------------------------
+    # RL-macos-push-no-nse-wakeup — macOS-pusher'у APNs уходит без
+    # aps.mutable-content: расширение уведомлений Лизы на Маке не стартует,
+    # usernoted убивает его за «sluggish startup» и через 120 с ПОВТОРНО
+    # показывает баннер (жалоба Саши 19.10, howItWoks/pushes/pushes.md §24).
+    # iOS (там NSE рабочий) и неопознанные Apple-устройства не трогаем.
+    # ------------------------------------------------------------------
+
+    def _apple_device(self, **default_payload: Any) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "aps": {"mutable-content": 1, "sound": "liza_ding.aiff"},
+        }
+        payload.update(default_payload)
+        return {
+            "app_id": "com.example.apns",
+            "pushkey": "spqr",
+            "pushkey_ts": 42,
+            "data": {"data_message": "ios", "default_payload": payload},
+        }
+
+    def _sent_request(self, notification: Dict[str, Any]) -> Any:
+        method = self.apns_pushkin_snotif
+        method.reset_mock()
+        method.side_effect = testutils.make_async_magic_mock(
+            NotificationResult("notID", "200")
+        )
+        self._request(notification)
+        self.assertEqual(1, method.call_count)
+        ((req,), _kwargs) = method.call_args
+        return req
+
+    def _all_payload_shapes(self, device: Dict[str, Any]) -> Dict[str, Any]:
+        story = self._make_dummy_notification([device])
+        story["notification"]["room_name"] = "Stories - ivan"
+        story["notification"]["content"] = {"com.liza.story": {"expires_ts": 1}}
+        return {
+            "full": self._make_dummy_notification([device]),
+            "event_id_only": self._make_dummy_notification_event_id_only([device]),
+            "story": story,
+            "too_large_fallback": self._make_dummy_notification_large_fields([device]),
+        }
+
+    def test_macos_push_has_no_mutable_content_in_any_payload_shape(self) -> None:
+        """ledger:RL-macos-push-no-nse-wakeup
+        AC:RL-macos-push-no-nse-wakeup/1 — platform=macos: во всех формах payload
+        (full, event_id_only, story, фолбэк слишком длинного) нет
+        aps.mutable-content, звук остаётся.
+        AC:RL-macos-push-no-nse-wakeup/3 — приоритет таких пушей 10."""
+        device = self._apple_device(platform="macos", client_name="Liza macos")
+        for shape, notif in self._all_payload_shapes(device).items():
+            notif["notification"]["prio"] = "low"
+            req = self._sent_request(notif)
+            self.assertNotIn("mutable-content", req.message["aps"], shape)
+            self.assertEqual("liza_ding.aiff", req.message["aps"]["sound"], shape)
+            self.assertEqual(10, req.priority, shape)
+        full = self._sent_request(self._make_dummy_notification([device]))
+        self.assertIn("alert", full.message["aps"])
+        # default_payload pusher'а не мутирован — следующий пуш строится заново.
+        self.assertEqual(1, device["data"]["default_payload"]["aps"]["mutable-content"])
+
+    def test_macos_by_client_name_without_platform_field(self) -> None:
+        """AC:RL-macos-push-no-nse-wakeup/1 — Мак без поля platform, но с
+        client_name «Liza macos» — тоже без mutable-content."""
+        device = self._apple_device(client_name="Liza macos")
+        req = self._sent_request(self._make_dummy_notification([device]))
+        self.assertNotIn("mutable-content", req.message["aps"])
+
+    def test_ios_and_unknown_apple_keep_mutable_content(self) -> None:
+        """AC:RL-macos-push-no-nse-wakeup/2 — iOS (явный platform и по
+        client_name) и неопознанное Apple-устройство сохраняют mutable-content=1
+        во всех формах payload: на iOS NSE рисует аватар и считает бейдж."""
+        for device in (
+            self._apple_device(platform="ios", client_name="Liza ios"),
+            self._apple_device(client_name="Liza ios"),
+            self._apple_device(client_name="Liza-1729000000000"),
+        ):
+            for shape, notif in self._all_payload_shapes(device).items():
+                req = self._sent_request(notif)
+                self.assertEqual(1, req.message["aps"]["mutable-content"], shape)

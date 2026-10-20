@@ -10,6 +10,11 @@
 // предикат — полный mxid через геттер `MatrixState.lizaMxid` (не литерал:
 // на локальном стенде mxid другой).
 //
+// С 2026-10-19 (Надежда, В5 18.10) витрина — только developer: роль ставится
+// через РЕАЛЬНЫЙ кэш UserRoleService (applyOwnAccountData), без подмены
+// геттера isCurrentUserDeveloper. Чужие кейсы гоняются ПОД developer — иначе
+// они зеленели бы от ролевого гейта, а не от гейта по mxid.
+//
 // ledger:RL-mcp-showcase-entry-points
 
 // ignore_for_file: depend_on_referenced_packages
@@ -23,6 +28,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/widgets/chat_settings_popup_menu.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/matrix.dart';
 
 import '../utils/test_client.dart';
@@ -114,7 +120,11 @@ void main() {
     return room;
   }
 
-  Future<void> openMenu(WidgetTester tester, Room room) async {
+  Future<void> openMenu(
+    WidgetTester tester,
+    Room room, {
+    bool developer = true,
+  }) async {
     ignoreAhemOverflow();
     final router = GoRouter(
       routes: [
@@ -151,6 +161,19 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     await tester.pump(const Duration(seconds: 1));
 
+    if (developer) {
+      tester
+          .state<MatrixState>(find.byType(Matrix))
+          .userRoleService
+          .applyOwnAccountData(client.userID!, {
+            'role_v2': {
+              'code': 'developer',
+              'label': 'Разработчик',
+              'color': null,
+            },
+          });
+    }
+
     await tester.tap(find.byIcon(Icons.more_vert));
     await tester.pumpAndSettle();
   }
@@ -164,17 +187,45 @@ void main() {
   }
 
   testWidgets(
-    'AC:RL-mcp-showcase-entry-points/11 — пункт есть в DM с Лизой ИИ',
+    'AC:RL-mcp-showcase-entry-points/11 — пункт есть в DM с Лизой ИИ '
+    'у developer, с меткой «Р»',
     (tester) async {
       final room = buildDirectChat(MatrixState.lizaMxid);
       await openMenu(tester, room);
 
+      final item = find.text('MCP-подключения');
       expect(
-        find.text('MCP-подключения'),
+        item,
         findsOneWidget,
         reason:
-            'в DM с живым ассистентом пункт обязан быть — это одна из трёх '
-            'точек входа в витрину по требованию продакта',
+            'в DM с живым ассистентом у developer пункт обязан быть — это '
+            'одна из трёх точек входа в витрину',
+      );
+      expect(
+        find.descendant(
+          of: find.ancestor(of: item, matching: find.byType(Row)).first,
+          matching: find.byType(DeveloperMark),
+        ),
+        findsOneWidget,
+        reason: 'скрытый за ролью пункт обязан нести метку «Р»',
+      );
+      await teardownTree(tester);
+    },
+  );
+
+  testWidgets(
+    'AC:RL-mcp-showcase-entry-points/11 — пункта НЕТ в DM с Лизой ИИ '
+    'у обычного пользователя',
+    (tester) async {
+      final room = buildDirectChat(MatrixState.lizaMxid);
+      await openMenu(tester, room, developer: false);
+
+      expect(
+        find.text('MCP-подключения'),
+        findsNothing,
+        reason:
+            'витрина MCP только для developer (Надежда, В5 18.10) — у '
+            'обычного пользователя пункт вёл бы в скрытый раздел',
       );
       await teardownTree(tester);
     },

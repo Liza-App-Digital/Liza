@@ -8,6 +8,7 @@ import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/settings_notifications/push_rule_extensions.dart';
 import 'package:liza/utils/push_rule_defaults.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/layouts/max_width_body.dart';
 import '../../widgets/matrix.dart';
 import '../../widgets/if_developer.dart';
@@ -112,12 +113,20 @@ class SettingsNotificationsView extends StatelessWidget {
                   for (final category in pushCategories)
                     if (category.rules.any(_isVisibleRule)) ...[
                       ListTile(
-                        title: Text(
-                          category.kind.localized(L10n.of(context)),
-                          style: TextStyle(
-                            color: theme.colorScheme.secondary,
-                            fontWeight: FontWeight.bold,
-                          ),
+                        title: Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                category.kind.localized(L10n.of(context)),
+                                style: TextStyle(
+                                  color: theme.colorScheme.secondary,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            const DeveloperMark(),
+                          ],
                         ),
                       ),
                       for (final rule in category.rules.where(_isVisibleRule))
@@ -188,7 +197,13 @@ class SettingsNotificationsView extends StatelessWidget {
           IfDeveloper(
             child: ListTile(
               leading: const Icon(Icons.notifications_active_outlined),
-              title: Text(L10n.of(context).testPushNotification),
+              title: Row(
+                children: [
+                  Flexible(child: Text(L10n.of(context).testPushNotification)),
+                  const SizedBox(width: 6),
+                  const DeveloperMark(),
+                ],
+              ),
               trailing: controller.isSendingTestPush
                   ? const SizedBox(
                       width: 24,

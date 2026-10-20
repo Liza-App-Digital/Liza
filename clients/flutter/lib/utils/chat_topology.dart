@@ -79,6 +79,80 @@ int permissionThresholdMaxLevel({
   return ownPowerLevel < cap ? ownPowerLevel : cap;
 }
 
+/// Пороги «кто создаёт чаты / каналы в компании» в `power_levels.events`
+/// главного пространства (задача 12 newInterface, Надежда 18.10: «по умолчанию
+/// это должно быть запрещено»). Проверяет их сервер — `single_space_guard`
+/// не вкладывает в компанию комнату создателя без права; здесь зеркало для UI.
+const companyCreateChatKey = 'com.liza.space.create_chat';
+const companyCreateChannelKey = 'com.liza.space.create_channel';
+
+/// Порог, когда ключа нет. Умолчание держит сервер, ключи при создании
+/// пространства не пишутся.
+const int defaultCompanyCreateLevel = moderatorPowerLevel;
+
+enum CompanyCreateKind { chat, channel }
+
+int? _asPowerLevel(Object? value) => switch (value) {
+  final int v => v,
+  // Старые версии комнат допускают уровни строкой ("50").
+  final String v => int.tryParse(v.trim()),
+  _ => null,
+};
+
+/// Порог [kind] в [powerLevels] главного пространства; ключа нет или в нём
+/// мусор — [defaultCompanyCreateLevel].
+int companyCreateThreshold(
+  Map<String, Object?>? powerLevels,
+  CompanyCreateKind kind,
+) {
+  final key = kind == CompanyCreateKind.channel
+      ? companyCreateChannelKey
+      : companyCreateChatKey;
+  final events = powerLevels?['events'];
+  return (events is Map ? _asPowerLevel(events[key]) : null) ??
+      defaultCompanyCreateLevel;
+}
+
+/// Хватает ли [userId] уровня в [powerLevels] главного пространства, чтобы
+/// созданное им попало в компанию. Точное зеркало `may_create_in_company`
+/// (`servers/synapse/modules/single_space_guard/_guard.py`), общие кейсы —
+/// `single_space_guard/tests/create_rights_cases.json`.
+///
+/// [creators] — создатели с бесконечным уровнем (комнаты v12+); для v≤11 пусто.
+bool mayCreateInCompany(
+  Map<String, Object?>? powerLevels,
+  String userId,
+  CompanyCreateKind kind, {
+  Iterable<String> creators = const [],
+}) {
+  if (creators.contains(userId)) return true;
+  final content = powerLevels ?? const {};
+  final required = companyCreateThreshold(content, kind);
+  final usersDefault = _asPowerLevel(content['users_default']) ?? 0;
+  final users = content['users'];
+  final level =
+      (users is Map ? _asPowerLevel(users[userId]) : null) ?? usersDefault;
+  return level >= required;
+}
+
+extension CompanyCreateRights on Room {
+  /// Может ли текущий пользователь создавать [kind] в компании, главное
+  /// пространство которой — эта комната. Без загруженного `power_levels`
+  /// (partial-state после холодного старта) — `false`: позовите `postLoad()`.
+  bool canCreateInCompany(CompanyCreateKind kind) {
+    if (membership != Membership.join) return false;
+    final powerLevels = getState(EventTypes.RoomPowerLevels)?.content;
+    if (powerLevels == null) return false;
+    final v12 = (int.tryParse(roomVersion ?? '') ?? 0) >= 12;
+    return mayCreateInCompany(
+      powerLevels,
+      client.userID!,
+      kind,
+      creators: v12 ? creatorUserIds : const [],
+    );
+  }
+}
+
 /// Пороги, которые [normalizeOwnerModelThresholds] НЕ опускает до 99:
 /// `com.liza.chat.topology` (скрытость/тип комнаты) держится только за
 /// владельцем — на 100 опираются сторис (stories_extension.dart) и серверный

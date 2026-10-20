@@ -77,21 +77,3 @@ typedef MemberFilterFacts = ({bool belongsToServer, bool joinedCompany});
     company: isSpace && splits(inCompany),
   );
 }
-
-/// Читаемое имя сервера для подписи «На сервере {server}»: экран открыт на
-/// самой компании — её имя; иначе ровно одна компания с этим доменом среди
-/// известных клиенту комнат — её имя; иначе домен. На общих инстансах
-/// (`user.liza.ru`, стенд `local`) корней одного домена бывает много —
-/// «первое попавшееся» имя было бы чужим.
-String memberFilterServerLabel({
-  required String serverName,
-  String? ownCompanyName,
-  required Iterable<String> companyNamesOnServer,
-}) {
-  if (ownCompanyName != null && ownCompanyName.isNotEmpty) {
-    return ownCompanyName;
-  }
-  final names = companyNamesOnServer.toList();
-  if (names.length == 1 && names.single.isNotEmpty) return names.single;
-  return serverName;
-}

@@ -113,43 +113,92 @@ Future<void> openSupportChat(
   }
 }
 
+enum _CompanyChoice { request, details }
+
 /// «Создать компанию» (rail-«+», плашка на чипе «Компании»): попап с описанием
-/// компаний → «Оставить заявку» открывает чат поддержки сразу в сборе заявки.
+/// компаний и тремя кнопками столбиком — «Оставить заявку» открывает чат
+/// поддержки сразу в сборе заявки, «Узнать подробности» — с вопросом о
+/// компаниях (без заявки), «Отмена» и тап по фону ничего не шлют.
 /// Своя адаптивная обёртка, а не `showOkCancelAlertDialog`: тот режет ширину до
 /// 256 и не прокручивается, а текст постановщика — ~520 символов в 4 абзаца.
-/// Спека: docs/superpowers/specs/2026-10-14-create-company-popup-design.md.
+/// Спека: docs/superpowers/specs/2026-10-14-create-company-popup-design.md,
+/// третья кнопка (2026-10-19) — RL-create-company-support-entry AC-17…22.
 Future<void> confirmCreateCompanyRequest(BuildContext context) async {
   // Второго попапа от двойного тапа не будет без своего гейта: push маршрута
   // глушит указатели до следующего кадра, а дальше вход закрыт барьером.
   final l10n = L10n.of(context);
-  final confirmed = await showAdaptiveDialog<bool>(
+  final choice = await showAdaptiveDialog<_CompanyChoice>(
     context: context,
     useRootNavigator: true,
-    builder: (context) => AlertDialog.adaptive(
-      scrollable: true,
-      title: Text(l10n.createCompanyViaSupport),
-      content: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 420),
-        child: Text(
-          l10n.createCompanyIntroText,
-          key: const ValueKey('create_company_intro_text'),
-        ),
-      ),
-      actions: [
-        AdaptiveDialogAction(
-          key: const ValueKey('create_company_intro_cancel'),
-          onPressed: () => Navigator.of(context).pop<bool>(false),
-          child: Text(l10n.cancel),
-        ),
+    builder: (context) {
+      // Порядок сверху вниз — по постановщику: заявка главная, затем
+      // подробности, затем отмена. Три подписи в строку не влезают.
+      final actions = [
         AdaptiveDialogAction(
           key: const ValueKey('create_company_intro_request'),
-          onPressed: () => Navigator.of(context).pop<bool>(true),
+          bigButtons: true,
+          borderRadius: AdaptiveDialogAction.topRadius,
+          onPressed: () =>
+              Navigator.of(context).pop<_CompanyChoice>(_CompanyChoice.request),
           autofocus: true,
           child: Text(l10n.createCompanyLeaveRequest),
         ),
-      ],
-    ),
+        AdaptiveDialogAction(
+          key: const ValueKey('create_company_intro_details'),
+          bigButtons: true,
+          borderRadius: AdaptiveDialogAction.centerRadius,
+          onPressed: () =>
+              Navigator.of(context).pop<_CompanyChoice>(_CompanyChoice.details),
+          child: Text(l10n.createCompanyLearnMore),
+        ),
+        AdaptiveDialogAction(
+          key: const ValueKey('create_company_intro_cancel'),
+          bigButtons: true,
+          borderRadius: AdaptiveDialogAction.bottomRadius,
+          onPressed: () => Navigator.of(context).pop<_CompanyChoice>(),
+          child: Text(l10n.cancel),
+        ),
+      ];
+      return AlertDialog.adaptive(
+        scrollable: true,
+        title: Text(l10n.createCompanyViaSupport),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Text(
+            l10n.createCompanyIntroText,
+            key: const ValueKey('create_company_intro_text'),
+          ),
+        ),
+        // Material прокручивает только заголовок и текст, а блок кнопок —
+        // неподвижный: три большие кнопки при крупном шрифте на низком экране
+        // переносят подписи и не влезают (переполнение диалога). Поэтому у
+        // столбца кнопок потолок в полэкрана и своя прокрутка. Cupertino
+        // прокручивает кнопки сам.
+        actions: switch (Theme.of(context).platform) {
+          TargetPlatform.iOS || TargetPlatform.macOS => actions,
+          _ => [
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height / 2,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: actions,
+                ),
+              ),
+            ),
+          ],
+        },
+      );
+    },
   );
-  if (confirmed != true || !context.mounted) return;
-  await openSupportChat(context, intent: SupportIntent.createCompanyRequest);
+  if (choice == null || !context.mounted) return;
+  await openSupportChat(
+    context,
+    intent: switch (choice) {
+      _CompanyChoice.request => SupportIntent.createCompanyRequest,
+      _CompanyChoice.details => SupportIntent.createCompanyQuestion,
+    },
+  );
 }

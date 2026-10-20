@@ -5,8 +5,25 @@ import 'package:liza/utils/chat_topology.dart';
 /// Может ли пользователь создавать чаты и подпространства в [space]: право
 /// писать `m.space.child`. Тот же гейт держит кнопку «Создать чат» и пункт
 /// «Новое подпространство» на экране компании.
-bool canCreateChatInSpace(Room? space) =>
-    space?.canChangeStateEvent(EventTypes.SpaceChild) == true;
+///
+/// Без загруженного `m.room.power_levels` — `false`: его нет в
+/// `importantStateEvents`, и у partial-пространства после холодного старта SDK
+/// считал порог 0 — право «было» у всех (баг В3 Надежды 18.10: рядовой видел
+/// чужие компании в «Где создать»). Экраны зовут `postLoad()` и перерисовываются.
+///
+/// В главном пространстве своей компании ([ownCompanyRootId]) для создания
+/// чата нужен ещё порог «Создание чатов»
+/// ([CompanyCreateRights.canCreateInCompany]); без параметра — только право на
+/// `m.space.child` (подпространства, настройки, перенос чатов).
+bool canCreateChatInSpace(Room? space, {String? ownCompanyRootId}) {
+  if (space == null) return false;
+  if (space.getState(EventTypes.RoomPowerLevels) == null) return false;
+  if (!space.canChangeStateEvent(EventTypes.SpaceChild)) return false;
+  if (ownCompanyRootId != null && space.id == ownCompanyRootId) {
+    return space.canCreateInCompany(CompanyCreateKind.chat);
+  }
+  return true;
+}
 
 /// Создать группу [name] внутри пространства [space] (кнопка «Создать чат» на
 /// экране компании или подпространства) и вернуть её id.
@@ -96,6 +113,17 @@ class GroupPlace {
 
   /// Компания-корень, если [space] — подпространство (для подписи).
   final Room? company;
+
+  // Список мест пересчитывается после postLoad/fetch (задача 12) — в т.ч. пока
+  // открыт выпадающий список; выбор из старого списка должен совпасть с новым.
+  @override
+  bool operator ==(Object other) =>
+      other is GroupPlace &&
+      other.space.id == space.id &&
+      other.company?.id == company?.id;
+
+  @override
+  int get hashCode => Object.hash(space.id, company?.id);
 }
 
 /// Места для выбора «Где создать» на экране «Создать группу» (задача 10
@@ -107,7 +135,10 @@ class GroupPlace {
 /// Порядок: компании по имени, за каждой — её подпространства обходом
 /// `m.space.child` в глубину; места, до которых обход не дошёл (компания-корень
 /// клиенту не видна), — в конце.
-List<GroupPlace> groupPlaces(Iterable<Room> rooms) {
+///
+/// [ownCompanyRootId] — главное пространство своей компании: туда ещё нужен
+/// порог «Создание чатов» (см. [canCreateChatInSpace]).
+List<GroupPlace> groupPlaces(Iterable<Room> rooms, {String? ownCompanyRootId}) {
   final joinedSpaces = [
     for (final r in rooms)
       if (r.isSpace && r.membership == Membership.join) r,
@@ -115,7 +146,7 @@ List<GroupPlace> groupPlaces(Iterable<Room> rooms) {
   final byId = {for (final s in joinedSpaces) s.id: s};
   final eligible = {
     for (final s in joinedSpaces)
-      if (canCreateChatInSpace(s)) s.id,
+      if (canCreateChatInSpace(s, ownCompanyRootId: ownCompanyRootId)) s.id,
   };
   String name(Room r) => r.getLocalizedDisplayname();
   final roots =
@@ -163,14 +194,21 @@ List<GroupPlace> groupPlaces(Iterable<Room> rooms) {
 ///
 /// На компании выбор нужен, только если есть место ВНЕ своей компании (её
 /// корень — [ownCompanyRootId]): свои подпространства — то же «в компании».
+///
+/// [canCreateInOwnCompany] — порог «Создание чатов» своей компании (задача 12):
+/// `false` — сервер группу в компанию не вложит, «Автоматически» значит «для
+/// себя», как на общем сервере; `null` — ещё не известно.
 bool shouldShowPlacePicker({
   required List<GroupPlace> places,
   required bool? companyInstance,
   required String? ownCompanyRootId,
   required String? userDomain,
+  bool? canCreateInOwnCompany,
 }) {
   if (companyInstance == null) return places.length > 1;
-  if (!companyInstance) return places.isNotEmpty;
+  if (!companyInstance || canCreateInOwnCompany == false) {
+    return places.isNotEmpty;
+  }
   bool isOwn(GroupPlace p) {
     final rootId = (p.company ?? p.space).id;
     if (ownCompanyRootId != null) return rootId == ownCompanyRootId;

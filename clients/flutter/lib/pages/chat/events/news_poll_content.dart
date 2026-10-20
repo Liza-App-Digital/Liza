@@ -5,6 +5,7 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/news_poll_results_page.dart';
 import 'package:liza/utils/news_poll.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/matrix.dart';
 
 /// Карточка опроса Liza News (`msgtype: com.liza.news.poll`).
@@ -251,7 +252,14 @@ class _NewsPollContentState extends State<NewsPollContent> {
                         botMxid: widget.event.senderId,
                         poll: poll,
                       ),
-                      label: Text(l10n.newsPollResults),
+                      label: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(l10n.newsPollResults),
+                          const SizedBox(width: 6),
+                          const DeveloperMark(),
+                        ],
+                      ),
                     ),
                 ],
               ),

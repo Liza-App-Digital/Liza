@@ -29,6 +29,7 @@ import 'package:liza/utils/update_policy.dart';
 import 'package:liza/utils/voice_recording_guard.dart';
 import 'package:liza/utils/url_launcher.dart';
 import 'package:liza/widgets/chat_settings_popup_menu.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/matrix.dart';
 import 'package:liza/widgets/mxc_image.dart';
@@ -58,8 +59,7 @@ bool showArchiveBackButton({
   required bool selectMode,
   required bool hasActiveThread,
   required bool isArchived,
-}) =>
-    isColumnMode && !selectMode && !hasActiveThread && isArchived;
+}) => isColumnMode && !selectMode && !hasActiveThread && isArchived;
 
 class ChatView extends StatelessWidget {
   final ChatController controller;
@@ -170,6 +170,8 @@ class ChatView extends StatelessWidget {
                       const Icon(Icons.info_outlined),
                       const SizedBox(width: 12),
                       Text(L10n.of(context).messageInfo),
+                      const SizedBox(width: 8),
+                      const DeveloperMark(),
                     ],
                   ),
                 ),

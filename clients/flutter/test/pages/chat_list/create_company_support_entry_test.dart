@@ -6,6 +6,9 @@
 // AC:RL-create-company-support-entry/10 AC:RL-create-company-support-entry/11
 // AC:RL-create-company-support-entry/12 AC:RL-create-company-support-entry/13
 // AC:RL-create-company-support-entry/14 AC:RL-create-company-support-entry/15
+// AC:RL-create-company-support-entry/17 AC:RL-create-company-support-entry/18
+// AC:RL-create-company-support-entry/19 AC:RL-create-company-support-entry/20
+// AC:RL-create-company-support-entry/21
 // ledger:RL-company-request-intro
 // AC:RL-company-request-intro/13 AC:RL-company-request-intro/14
 // AC:RL-company-request-intro/15 AC:RL-company-request-intro/16
@@ -22,6 +25,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -42,6 +47,7 @@ import 'package:liza/utils/direct_chat_ensure.dart';
 import 'package:liza/utils/matrix_sdk_extensions/filtered_timeline_extension.dart';
 import 'package:liza/utils/single_space_service.dart';
 import 'package:liza/utils/support_chat.dart';
+import 'package:liza/widgets/adaptive_dialogs/adaptive_dialog_action.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/matrix.dart' as liza_matrix;
 import 'package:liza/widgets/navigation_rail.dart';
@@ -181,6 +187,7 @@ Future<void> _settle(WidgetTester tester) async {
 const _introText = ValueKey('create_company_intro_text');
 const _introRequest = ValueKey('create_company_intro_request');
 const _introCancel = ValueKey('create_company_intro_cancel');
+const _introDetails = ValueKey('create_company_intro_details');
 
 List<dynamic> _createRoomCalls() => FakeMatrixApi.calledEndpoints.entries
     .where((e) => e.key.contains('/client/v3/createRoom'))
@@ -723,7 +730,7 @@ void main() {
         : find.byType(CreateCompanyListTile);
 
     testWidgets(
-      'AC-11: ∀ вход {rail, плашка} → ровно один попап с текстом и двумя '
+      'AC-11: ∀ вход {rail, плашка} → ровно один попап с текстом и тремя '
       'кнопками, до подтверждения ни createRoom, ни PUT — '
       'AC:RL-create-company-support-entry/11',
       (tester) async {
@@ -743,6 +750,13 @@ void main() {
             find.descendant(
               of: find.byKey(_introRequest),
               matching: find.text('Оставить заявку'),
+            ),
+            findsOneWidget,
+          );
+          expect(
+            find.descendant(
+              of: find.byKey(_introDetails),
+              matching: find.text('Узнать подробности'),
             ),
             findsOneWidget,
           );
@@ -844,6 +858,255 @@ void main() {
         await _settle(tester);
       },
     );
+
+    testWidgets(
+      'AC-17: ∀ вход {rail, плашка} → три кнопки сверху вниз «Оставить заявку» '
+      '→ «Узнать подробности» → «Отмена», заявка — основная — '
+      'AC:RL-create-company-support-entry/17',
+      (tester) async {
+        double centerDy(Key key) => tester.getCenter(find.byKey(key)).dy;
+        _setSupportDm(client, dm);
+        for (final entry in entries().entries) {
+          await tester.pumpWidget(
+            _app(client: client, store: store, home: entry.value),
+          );
+          await _settle(tester);
+          await tester.tap(entryFinder(entry.key));
+          await _settle(tester);
+          expect(
+            find.byType(AdaptiveDialogAction),
+            findsNWidgets(3),
+            reason: entry.key,
+          );
+          final request = centerDy(_introRequest);
+          final details = centerDy(_introDetails);
+          final cancel = centerDy(_introCancel);
+          expect(request, lessThan(details), reason: entry.key);
+          expect(details, lessThan(cancel), reason: entry.key);
+          expect(
+            tester
+                .widget<AdaptiveDialogAction>(find.byKey(_introRequest))
+                .autofocus,
+            isTrue,
+          );
+          // Фактический фокус, а не только поле: на Material кнопки обёрнуты
+          // в столбец с прокруткой — фокус не должен потеряться.
+          expect(
+            Focus.of(
+              tester.element(
+                find.descendant(
+                  of: find.byKey(_introRequest),
+                  matching: find.text('Оставить заявку'),
+                ),
+              ),
+            ).hasPrimaryFocus,
+            isTrue,
+            reason: entry.key,
+          );
+          for (final other in [_introDetails, _introCancel]) {
+            expect(
+              tester.widget<AdaptiveDialogAction>(find.byKey(other)).autofocus,
+              isFalse,
+            );
+          }
+          await tester.tap(find.byKey(_introCancel));
+          await _settle(tester);
+        }
+      },
+    );
+
+    testWidgets(
+      'AC-18: ∀ платформа {android, windows, iOS, macOS} → три кнопки '
+      'столбиком; 320×480 и textScaler 2.0 без overflow — '
+      'AC:RL-create-company-support-entry/18',
+      (tester) async {
+        _setSupportDm(client, dm);
+        tester.view.physicalSize = const Size(320, 480);
+        tester.view.devicePixelRatio = 1;
+        tester.platformDispatcher.textScaleFactorTestValue = 2;
+        addTearDown(tester.view.reset);
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        const platforms = {
+          TargetPlatform.android: false,
+          TargetPlatform.windows: false,
+          TargetPlatform.iOS: true,
+          TargetPlatform.macOS: true,
+        };
+        try {
+          for (final MapEntry(key: platform, value: cupertino)
+              in platforms.entries) {
+            debugDefaultTargetPlatformOverride = platform;
+            await tester.pumpWidget(
+              _app(
+                client: client,
+                store: store,
+                home: const Scaffold(
+                  body: SingleChildScrollView(child: CreateCompanyListTile()),
+                ),
+              ),
+            );
+            await _settle(tester);
+            await tester.tap(find.byType(CreateCompanyListTile));
+            await _settle(tester);
+            final reason = platform.name;
+            expect(tester.takeException(), isNull, reason: reason);
+            // Кейсы различимы, только если ветка кнопки реально сменилась.
+            expect(
+              find.byType(CupertinoDialogAction),
+              cupertino ? findsNWidgets(3) : findsNothing,
+              reason: reason,
+            );
+            expect(
+              find.byType(ElevatedButton),
+              cupertino ? findsNothing : findsNWidgets(3),
+              reason: reason,
+            );
+            final centers = [
+              _introRequest,
+              _introDetails,
+              _introCancel,
+            ].map((k) => tester.getCenter(find.byKey(k))).toList();
+            for (final c in centers.skip(1)) {
+              expect(c.dx, closeTo(centers.first.dx, 0.5), reason: reason);
+            }
+            expect(centers[0].dy, lessThan(centers[1].dy), reason: reason);
+            expect(centers[1].dy, lessThan(centers[2].dy), reason: reason);
+            await tester.ensureVisible(find.byKey(_introCancel));
+            await tester.pump();
+            await tester.tap(find.byKey(_introCancel));
+            await _settle(tester);
+            expect(find.byKey(_introText), findsNothing, reason: reason);
+          }
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    /// Попап с плашки → «Узнать подробности». До тапа — ни DM, ни интента.
+    Future<void> openDetails(WidgetTester tester) async {
+      await tester.pumpWidget(
+        _app(
+          client: client,
+          store: store,
+          home: const Scaffold(body: CreateCompanyListTile()),
+        ),
+      );
+      await _settle(tester);
+      await tester.tap(find.byType(CreateCompanyListTile));
+      await _settle(tester);
+      expect(_createRoomCalls(), isEmpty, reason: 'до тапа');
+      expect(_intentPuts(), isEmpty, reason: 'до тапа');
+      await tester.tap(find.byKey(_introDetails));
+      for (var i = 0; i < 5; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 20)),
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    testWidgets(
+      'AC-19: «Узнать подробности», DM нет → ровно один createRoom с интентом '
+      'next=question в initial_state, PUT нет — '
+      'AC:RL-create-company-support-entry/19',
+      (tester) async {
+        await openDetails(tester);
+        final rooms = _createRoomCalls();
+        expect(rooms, hasLength(1));
+        expect(rooms.single.toString(), contains('@support:bots.liza.ru'));
+        final body = jsonDecode(rooms.single as String) as Map;
+        final intents = (body['initial_state'] as List)
+            .cast<Map>()
+            .where((e) => e['type'] == supportIntentStateType)
+            .toList();
+        expect(intents, hasLength(1));
+        expect(intents.single['content']['intent'], 'create_company');
+        expect(intents.single['content']['next'], 'question');
+        expect(_intentPuts(), isEmpty);
+        // FakeMatrixApi не доносит комнату через sync — ждём 30-с таймаут
+        // ensureDirectChat, иначе «Timer is still pending» (как в AC-3).
+        await tester.pump(ensureDirectChatTimeout + const Duration(seconds: 1));
+      },
+    );
+
+    testWidgets(
+      'AC-19: «Узнать подробности», DM есть → без createRoom ровно один PUT '
+      'state next=question, затем переход — '
+      'AC:RL-create-company-support-entry/19',
+      (tester) async {
+        _setSupportDm(client, dm);
+        await openDetails(tester);
+        await _settle(tester);
+        expect(_createRoomCalls(), isEmpty);
+        final puts = _intentPuts();
+        expect(puts, hasLength(1));
+        expect(puts.single['intent'], 'create_company');
+        expect(puts.single['next'], 'question');
+        expect(find.text('ROOM $dm'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'AC-20 NEGATIVE: ∀ платформа {android, iOS} × {«Отмена», фон} → ни '
+      'createRoom, ни PUT — AC:RL-create-company-support-entry/20',
+      (tester) async {
+        _setSupportDm(client, dm);
+        try {
+          for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+            for (final dismiss in ['cancel', 'barrier']) {
+              debugDefaultTargetPlatformOverride = platform;
+              await tester.pumpWidget(
+                _app(
+                  client: client,
+                  store: store,
+                  home: const Scaffold(body: CreateCompanyListTile()),
+                ),
+              );
+              await _settle(tester);
+              await tester.tap(find.byType(CreateCompanyListTile));
+              await _settle(tester);
+              final reason = '${platform.name}/$dismiss';
+              if (dismiss == 'cancel') {
+                await tester.ensureVisible(find.byKey(_introCancel));
+                await tester.pump();
+                await tester.tap(find.byKey(_introCancel));
+              } else {
+                await tester.tapAt(const Offset(4, 4));
+                await _settle(tester);
+                // Cupertino-диалог фоном не закрывается (штатно для iOS):
+                // попап остаётся, запросов нет, выход — «Отмена».
+                if (platform == TargetPlatform.iOS) {
+                  expect(
+                    find.byKey(_introText),
+                    findsOneWidget,
+                    reason: reason,
+                  );
+                  expect(_createRoomCalls(), isEmpty, reason: reason);
+                  expect(_intentPuts(), isEmpty, reason: reason);
+                  await tester.ensureVisible(find.byKey(_introCancel));
+                  await tester.pump();
+                  await tester.tap(find.byKey(_introCancel));
+                }
+              }
+              await _settle(tester);
+              expect(find.byKey(_introText), findsNothing, reason: reason);
+              expect(_createRoomCalls(), isEmpty, reason: reason);
+              expect(_intentPuts(), isEmpty, reason: reason);
+              expect(find.textContaining('ROOM'), findsNothing, reason: reason);
+            }
+          }
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    test('AC-21: «Узнать подробности» есть и в ru, и в en — '
+        'AC:RL-create-company-support-entry/21', () {
+      expect(L10nRu().createCompanyLearnMore, 'Узнать подробности');
+      expect(L10nEn().createCompanyLearnMore, 'Learn more');
+    });
 
     test('AC-15: ключи попапа есть и в ru, и в en — '
         'AC:RL-create-company-support-entry/15', () {

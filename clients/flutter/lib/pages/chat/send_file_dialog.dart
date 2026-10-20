@@ -19,6 +19,7 @@ import 'package:liza/utils/clipboard_paste.dart';
 import 'package:liza/utils/compress_image.dart';
 import 'package:liza/utils/file_selector.dart';
 import 'package:liza/utils/heic_converter.dart';
+import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/mp4_faststart.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_file_extension.dart';
@@ -516,6 +517,13 @@ class SendFileDialogState extends State<SendFileDialog> {
     final theme = Theme.of(context);
     final room = widget.room;
     final client = room.client;
+    // Для сигнала провала и шагов справки — тип набора, без имён файлов.
+    final media = Monitoring.mediaTypeOf(widget.files.map(resolveXFileMime));
+    final host = client.homeserver?.host;
+    Monitoring.breadcrumb(
+      'send',
+      'start media=$media n=${widget.files.length}',
+    );
 
     // txid'ы всех файлов, сгенерированные ДО подготовки: по ним пре-эмитятся
     // пузыри и по ним же потом идёт sendFileEvent. `notHandedToSdk` — те, чьи
@@ -929,6 +937,10 @@ class SendFileDialogState extends State<SendFileDialog> {
         onSent: (i) => UploadProgressTracker.instance.unregister(txids[i]),
         onPrepareFailed: (i, e) {
           prepareFailures.add(e);
+          Monitoring.breadcrumb(
+            'send',
+            'prepare-fail kind=${classifySendErrorCause(e).name}',
+          );
           UploadProgressTracker.instance.unregister(txids[i]);
           // Пузырь снимает внешний finally (txid остался в notHandedToSdk):
           // `cancelSend`, НЕ error — у события нет байтов (LABA-2239).
@@ -941,6 +953,10 @@ class SendFileDialogState extends State<SendFileDialog> {
             ..reportError(txids[i], _uploadErrorReason(e, l10n))
             ..reportErrorKind(txids[i], kind);
           uploadFailures.add(e);
+          Monitoring.breadcrumb(
+            'send',
+            'upload-fail kind=${classifySendErrorCause(e).name}',
+          );
         },
         onWaiting: (indices) {
           for (final i in indices) {
@@ -993,6 +1009,18 @@ class SendFileDialogState extends State<SendFileDialog> {
             : prepareFailures.isNotEmpty
             ? prepareFailures.first
             : null;
+        // Один сигнал на серию, не на файл: 23 упавших видео — одно событие.
+        Monitoring.reportMediaSendFailure(
+          reason: uploadFailures.isNotEmpty ? 'upload' : 'prepare',
+          kind: firstError == null
+              ? 'unknown'
+              : classifySendErrorCause(firstError).name,
+          media: media,
+          host: host,
+          error: firstError,
+          notSent: result.notSent,
+          total: result.total,
+        );
         final String message;
         if (result.total == 1 && firstError != null) {
           // Одиночный файл — как раньше: ↻ есть на самом пузыре.
@@ -1025,6 +1053,14 @@ class SendFileDialogState extends State<SendFileDialog> {
         );
       }
     } catch (e) {
+      // Первым делом и без context: сигнал не должен менять поток уборки ниже.
+      Monitoring.reportMediaSendFailure(
+        reason: 'dialog',
+        kind: classifySendErrorCause(e).name,
+        media: media,
+        host: host,
+        error: e,
+      );
       final text = trailingText;
       if (text != null) widget.onUnsentText?.call(text);
       scaffoldMessenger.clearSnackBars();

@@ -11,7 +11,7 @@ library;
 //
 // Preservation 1 — Normal scrolling preserves offset without StreamBuilder rebuild (Req 3.1)
 // Preservation 2 — scrolledToTop is true iff offset <= threshold (Req 3.1)
-// Preservation 3 — Filter switching correctly filters rooms by type (Req 3.2)
+// Preservation 3 — см. test/pages/chat_list/chat_list_tabs_test.dart
 // Preservation 4 — Search mode switching does not affect scroll offset (Req 3.3)
 // Preservation 5 — Non-bug SyncUpdates (no room update) do not reset scroll position (Req 3.5)
 
@@ -47,25 +47,6 @@ bool isBugCondition({
 ///     }
 ///   }
 bool computeScrolledToTop(double pixels) => pixels <= 0;
-
-/// Simulates getRoomFilterByActiveFilter from ChatListController.
-/// Returns a predicate matching the given filter.
-bool Function(Map<String, dynamic>) getRoomFilter(String activeFilter) {
-  switch (activeFilter) {
-    case 'allChats':
-      return (_) => true;
-    case 'messages':
-      return (r) => r['isDirectChat'] == true && r['isSpace'] == false;
-    case 'groups':
-      return (r) => r['isDirectChat'] == false && r['isSpace'] == false;
-    case 'unread':
-      return (r) => r['isUnreadOrInvited'] == true;
-    case 'spaces':
-      return (r) => r['isSpace'] == true;
-    default:
-      return (_) => true;
-  }
-}
 
 /// Builds a SyncUpdate that has a room update (triggers StreamBuilder rebuild).
 SyncUpdate buildRoomSyncUpdate() {
@@ -364,173 +345,9 @@ void _runScrolledToTopPreservationTests() {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Preservation 3 — Filter switching correctly filters rooms by type
-// ---------------------------------------------------------------------------
-
-/// **Validates: Requirements 3.2**
-///
-/// Observes: ChatListController.getRoomFilterByActiveFilter() returns the
-/// correct predicate for each ActiveFilter value. filteredRooms applies this
-/// predicate to client.rooms.
-///
-/// Property: for all filters, the chat list is correctly filtered by room type.
-void _runFilterSwitchingPreservationTests() {
-  group('Preservation 3 — Filter switching correctly filters rooms by type', () {
-    // Sample room data matching the structure used in getRoomFilterByActiveFilter
-    final rooms = [
-      {'id': '!dm1', 'isDirectChat': true, 'isSpace': false, 'isUnreadOrInvited': false},
-      {'id': '!dm2', 'isDirectChat': true, 'isSpace': false, 'isUnreadOrInvited': true},
-      {'id': '!group1', 'isDirectChat': false, 'isSpace': false, 'isUnreadOrInvited': false},
-      {'id': '!group2', 'isDirectChat': false, 'isSpace': false, 'isUnreadOrInvited': true},
-      {'id': '!space1', 'isDirectChat': false, 'isSpace': true, 'isUnreadOrInvited': false},
-      {'id': '!space2', 'isDirectChat': false, 'isSpace': true, 'isUnreadOrInvited': true},
-    ];
-
-    test(
-      'allChats filter returns all rooms',
-      () {
-        final filtered = rooms.where(getRoomFilter('allChats')).toList();
-        expect(
-          filtered.length,
-          equals(rooms.length),
-          reason: 'allChats filter must return all rooms',
-        );
-      },
-    );
-
-    test(
-      'messages filter returns only direct chats (non-space)',
-      () {
-        final filtered = rooms.where(getRoomFilter('messages')).toList();
-        expect(
-          filtered.every((r) => r['isDirectChat'] == true && r['isSpace'] == false),
-          isTrue,
-          reason: 'messages filter must return only direct chats',
-        );
-        expect(
-          filtered.length,
-          equals(2),
-          reason: 'messages filter must return exactly 2 direct chats',
-        );
-      },
-    );
-
-    test(
-      'groups filter returns only non-direct, non-space rooms',
-      () {
-        final filtered = rooms.where(getRoomFilter('groups')).toList();
-        expect(
-          filtered.every((r) => r['isDirectChat'] == false && r['isSpace'] == false),
-          isTrue,
-          reason: 'groups filter must return only group rooms',
-        );
-        expect(
-          filtered.length,
-          equals(2),
-          reason: 'groups filter must return exactly 2 group rooms',
-        );
-      },
-    );
-
-    test(
-      'unread filter returns only unread or invited rooms',
-      () {
-        final filtered = rooms.where(getRoomFilter('unread')).toList();
-        expect(
-          filtered.every((r) => r['isUnreadOrInvited'] == true),
-          isTrue,
-          reason: 'unread filter must return only unread/invited rooms',
-        );
-        expect(
-          filtered.length,
-          equals(3),
-          reason: 'unread filter must return exactly 3 unread rooms',
-        );
-      },
-    );
-
-    test(
-      'spaces filter returns only space rooms',
-      () {
-        final filtered = rooms.where(getRoomFilter('spaces')).toList();
-        expect(
-          filtered.every((r) => r['isSpace'] == true),
-          isTrue,
-          reason: 'spaces filter must return only space rooms',
-        );
-        expect(
-          filtered.length,
-          equals(2),
-          reason: 'spaces filter must return exactly 2 space rooms',
-        );
-      },
-    );
-
-    // Property: filters are mutually exclusive for non-overlapping room types
-    test(
-      'property: messages and groups filters are mutually exclusive',
-      () {
-        final messages = rooms.where(getRoomFilter('messages')).toList();
-        final groups = rooms.where(getRoomFilter('groups')).toList();
-
-        final messageIds = messages.map((r) => r['id']).toSet();
-        final groupIds = groups.map((r) => r['id']).toSet();
-
-        expect(
-          messageIds.intersection(groupIds),
-          isEmpty,
-          reason: 'messages and groups filters must be mutually exclusive',
-        );
-      },
-    );
-
-    // Property: allChats is the union of all other filters
-    test(
-      'property: allChats contains all rooms from messages + groups + spaces',
-      () {
-        final allChats = rooms.where(getRoomFilter('allChats')).toList();
-        final messages = rooms.where(getRoomFilter('messages')).toList();
-        final groups = rooms.where(getRoomFilter('groups')).toList();
-        final spaces = rooms.where(getRoomFilter('spaces')).toList();
-
-        final unionIds = {
-          ...messages.map((r) => r['id']),
-          ...groups.map((r) => r['id']),
-          ...spaces.map((r) => r['id']),
-        };
-        final allIds = allChats.map((r) => r['id']).toSet();
-
-        expect(
-          allIds,
-          equals(unionIds),
-          reason: 'allChats must be the union of messages + groups + spaces',
-        );
-      },
-    );
-
-    // Property: for all filters, filtered rooms satisfy the filter predicate
-    test(
-      'property: for all filters, every returned room satisfies the filter predicate',
-      () {
-        final filters = ['allChats', 'messages', 'groups', 'unread', 'spaces'];
-
-        for (final filter in filters) {
-          final predicate = getRoomFilter(filter);
-          final filtered = rooms.where(predicate).toList();
-
-          for (final room in filtered) {
-            expect(
-              predicate(room),
-              isTrue,
-              reason: 'Room ${room['id']} must satisfy filter "$filter"',
-            );
-          }
-        }
-      },
-    );
-  });
-}
+// Preservation 3 (фильтры по типу комнаты) живёт в
+// test/pages/chat_list/chat_list_tabs_test.dart — на РЕАЛЬНОМ roomMatchesFilter
+// и реальных Room, а не на реплике предиката (RL-chat-list-agents-people-tabs).
 
 // ---------------------------------------------------------------------------
 // Preservation 4 — Search mode switching does not affect scroll offset
@@ -816,7 +633,6 @@ void _runNonBugSyncUpdatePreservationTests() {
 void main() {
   _runNormalScrollingPreservationTests();
   _runScrolledToTopPreservationTests();
-  _runFilterSwitchingPreservationTests();
   _runSearchModeSwitchingPreservationTests();
   _runNonBugSyncUpdatePreservationTests();
 }

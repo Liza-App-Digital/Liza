@@ -1,6 +1,6 @@
 // Страж сепаратора перед блоком параметров аккаунта в настройках.
 //
-// «Пригласить друзей» — разовое действие наружу, а идущие следом «Почта» и
+// «Пригласить людей» — разовое действие наружу, а идущие следом «Ваш ID» и
 // «Никнейм» — параметры аккаунта. Без разделителя все три пункта читались
 // одним списком.
 //
@@ -19,12 +19,12 @@ void main() {
   });
 
   test(
-    'между «Пригласить друзей» и почтой стоит Divider',
+    'между «Пригласить людей» и «Ваш ID» стоит Divider',
     () {
-      final inviteIdx = src.indexOf('.inviteFriends');
-      final emailIdx = src.indexOf('.settingsEmailTitle');
-      expect(inviteIdx, isNot(-1), reason: 'пункт inviteFriends должен быть');
-      expect(emailIdx, isNot(-1), reason: 'пункт settingsEmailTitle должен быть');
+      final inviteIdx = src.indexOf('.invitePeople');
+      final emailIdx = src.indexOf('.settingsYourId');
+      expect(inviteIdx, isNot(-1), reason: 'пункт invitePeople должен быть');
+      expect(emailIdx, isNot(-1), reason: 'пункт settingsYourId должен быть');
       expect(
         inviteIdx < emailIdx,
         isTrue,

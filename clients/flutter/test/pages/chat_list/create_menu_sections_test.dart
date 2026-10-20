@@ -4,7 +4,7 @@
 //
 // Страж состава и порядка меню «+» шапки списка чатов. guard.render:pure-function —
 // `createMenuSections` и есть единственный источник пунктов в ChatListHeader
-// (itemBuilder только расставляет разделители между разделами и подписи).
+// (itemBuilder только расставляет разделители, подписи и метку разработчика).
 import 'dart:convert';
 import 'dart:io';
 
@@ -14,15 +14,16 @@ import 'package:liza/pages/chat_list/create_menu_sections.dart';
 
 typedef _A = CreateMenuAction;
 
-enum _Role { user, admin, developer }
+// Роль у аккаунта одна; admin+[developer] — admin с доп. ролью developer
+// (isCurrentUserDeveloper=true), см. RL-developer-gates-strict.
+enum _Role { user, moderator, ai, developer, admin, adminPlusDeveloper }
+
+bool _isDeveloper(_Role r) =>
+    r == _Role.developer || r == _Role.adminPlusDeveloper;
 
 void main() {
   List<List<CreateMenuAction>> sections(_Role role, bool mobile) =>
-      createMenuSections(
-        isAdmin: role == _Role.admin,
-        isDeveloper: role == _Role.developer,
-        isMobile: mobile,
-      );
+      createMenuSections(isDeveloper: _isDeveloper(role), isMobile: mobile);
 
   final cases = [
     for (final role in _Role.values)
@@ -30,94 +31,95 @@ void main() {
   ];
 
   // AC:RL-create-menu-order-agent-entry/1
-  test('AC-1: ∀ роль × платформа — порядок разделов как в постановке', () {
+  test('AC-1: ∀ роль × платформа — три раздела в порядке задания 18.10', () {
     for (final (role, mobile) in cases) {
       final s = sections(role, mobile);
       final reason = 'role=$role mobile=$mobile';
-      expect(s.first, [
-        _A.newRequest,
-        _A.group,
-        if (role == _Role.admin) _A.channel,
-        _A.story,
-        _A.bot,
-        _A.miniApp,
-        _A.agent,
+      expect(s, [
+        [_A.newRequest, _A.group, _A.channel],
+        [_A.developers, if (_isDeveloper(role)) _A.mcp],
+        [_A.invite, if (mobile) _A.contacts],
       ], reason: reason);
-      expect(s.last, [_A.invite, if (mobile) _A.contacts], reason: reason);
-      expect(s.every((section) => section.isNotEmpty), isTrue, reason: reason);
+    }
+    // История, бот, mini-app и агент из меню ушли (живут в полосе историй и
+    // главном меню BotFather) — проверяем сам enum, а не текст исходника.
+    final names = CreateMenuAction.values.map((a) => a.name).toSet();
+    for (final gone in ['story', 'bot', 'miniApp', 'agent']) {
+      expect(names.contains(gone), isFalse, reason: gone);
     }
   });
 
   // AC:RL-create-menu-order-agent-entry/2
-  test('AC-2: «Создать канал» только у admin', () {
+  test('AC-2: «Создать канал» есть у всех ролей, канал создаётся приватным', () {
     for (final (role, mobile) in cases) {
       expect(
-        sections(role, mobile).expand((e) => e).contains(_A.channel),
-        role == _Role.admin,
+        sections(role, mobile).first.contains(_A.channel),
+        isTrue,
         reason: 'role=$role mobile=$mobile',
       );
     }
-  });
-
-  // AC:RL-create-menu-order-agent-entry/3
-  test('AC-3: МСР отдельным разделом только у developer/admin, иначе без '
-      'лишнего раздела', () {
-    for (final (role, mobile) in cases) {
-      final s = sections(role, mobile);
-      final privileged = role != _Role.user;
-      expect(s.length, privileged ? 3 : 2, reason: 'role=$role');
-      expect(
-        s.expand((e) => e).contains(_A.mcp),
-        privileged,
-        reason: 'role=$role mobile=$mobile',
-      );
-      if (privileged) expect(s[1], [_A.mcp]);
-    }
+    // Публичность канала — как у группы: по умолчанию выключена.
+    final newGroup = File(
+      'lib/pages/new_group/new_group.dart',
+    ).readAsStringSync();
+    expect(newGroup, contains('bool publicGroup = false;'));
   });
 
   // AC:RL-create-menu-order-agent-entry/4
-  test('AC-4: «Контакты» только на мобильных', () {
-    for (final (role, mobile) in cases) {
-      expect(
-        sections(role, mobile).expand((e) => e).contains(_A.contacts),
-        mobile,
-        reason: 'role=$role mobile=$mobile',
-      );
-    }
+  test('AC-4: метку разработчика получает только МСР', () {
+    expect(developerOnlyActions, {_A.mcp});
+    final header = File(
+      'lib/pages/chat_list/chat_list_header.dart',
+    ).readAsStringSync();
+    expect(header, contains('developerOnlyActions.contains('));
+    expect(header, contains('const DeveloperMark()'));
   });
 
   // AC:RL-create-menu-order-agent-entry/5
-  test('AC-5: тексты пунктов в ru и ключ агента в en', () {
+  test('AC-5: «Разработчику» — /menu только в существующий DM BotFather', () {
+    final src = File(
+      'lib/pages/chat_list/chat_list_header.dart',
+    ).readAsStringSync();
+    final start = src.indexOf('Future<void> _openBotFatherMenu(');
+    expect(start, isNot(-1));
+    final body = src.substring(start);
+    final existingBranch = body.substring(
+      body.indexOf('if (existing != null) {'),
+      body.indexOf('final created = await showFutureLoadingDialog('),
+    );
+    final freshBranch = body.substring(
+      body.indexOf('final created = await showFutureLoadingDialog('),
+    );
+    // DM есть → ровно одно /menu; свежий DM → без /menu (карточку BotFather
+    // шлёт сам при входе, иначе их было бы две).
+    expect("'/menu'".allMatches(existingBranch).length, 1);
+    expect(freshBranch.contains('/menu'), isFalse);
+    expect(freshBranch, contains('waitForMemberJoin('));
+    // Живой DM по member-стейту, а не getDirectChatFromUserId (брошенный DM).
+    expect(body, contains('findBotDm(client, _botFatherMxid)'));
+    expect(src.contains('getDirectChatFromUserId'), isFalse);
+    expect(existingBranch, contains('oopsSomethingWentWrong'));
+  });
+
+  // AC:RL-create-menu-order-agent-entry/6
+  test('AC-6: tooltip «+» = «Создать», подписи пунктов в ru/en', () {
     Map<String, dynamic> arb(String loc) =>
         jsonDecode(File('lib/l10n/intl_$loc.arb').readAsStringSync())
             as Map<String, dynamic>;
     final ru = arb('ru');
     final en = arb('en');
+    expect(ru['create'], 'Создать');
+    expect(ru['forDevelopers'], 'Разработчику');
+    expect(en['forDevelopers'], 'For developers');
+    expect(ru['newLizaRequest'], isA<String>());
     expect(ru['createGroup'], 'Создать группу');
     expect(ru['createChannel'], 'Создать канал');
-    expect(ru['createStory'], 'Создать историю');
-    expect(ru['createBot'], 'Создать бота');
-    expect(ru['createMiniApp'], 'Создать mini-app');
-    expect(ru['connectAiAgent'], 'Подключить ИИ-агента');
     expect(ru['inviteContact'], 'Пригласить контакт');
     expect(ru['contactsTitle'], 'Контакты');
-    expect(en['connectAiAgent'], isA<String>());
-  });
-
-  // AC:RL-create-menu-order-agent-entry/6
-  test('AC-6: пункт агента шлёт Лизе callback agent.start, а не текст', () {
-    final src = File(
+    final header = File(
       'lib/pages/chat_list/chat_list_header.dart',
     ).readAsStringSync();
-    expect(src, contains('CreateMenuAction.channel => l10n.createChannel'));
-    expect(src, contains('findLizaAssistantDm(client, lizaMxid)'));
-    expect(src, contains('MatrixState.lizaMxid'));
-    expect(src, contains("'msgtype': 'com.liza.miniapp.callback'"));
-    expect(src, contains("'button_id': 'agent.start'"));
-    expect(
-      src.contains('sendTextEvent'),
-      isFalse,
-      reason: 'текст-фраза на шаге «название» стала бы названием чата агента',
-    );
+    expect(header, contains('tooltip: L10n.of(context).create,'));
+    expect(header, contains('CreateMenuAction.developers => l10n.forDevelopers'));
   });
 }

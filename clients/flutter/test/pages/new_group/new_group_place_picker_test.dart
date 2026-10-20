@@ -9,6 +9,7 @@
 // создателя.
 //
 // ledger:RL-new-group-place-picker
+// ledger:RL-company-create-rights
 
 // ignore_for_file: depend_on_referenced_packages
 
@@ -114,12 +115,18 @@ void main() {
     );
   }
 
-  void addSpace(String id, String name, {List<String> children = const []}) {
+  void addSpace(
+    String id,
+    String name, {
+    List<String> children = const [],
+    int myLevel = 100,
+    bool partial = false,
+  }) {
     final room = Room(id: id, client: client);
     state(room, EventTypes.RoomCreate, {'type': 'm.space'});
     state(room, EventTypes.RoomName, {'name': name});
     state(room, EventTypes.RoomPowerLevels, {
-      'users': {client.userID!: 100},
+      'users': {client.userID!: myLevel},
       'users_default': 0,
       'state_default': 50,
     });
@@ -128,6 +135,8 @@ void main() {
         'via': ['example.invalid'],
       }, c);
     }
+    // Состояние собрано целиком (как после postLoad): экран не ждёт БД.
+    room.partial = partial;
     client.rooms.add(room);
   }
 
@@ -367,6 +376,28 @@ void main() {
     await teardownScreen(tester);
   });
 
+  // AC:RL-company-create-rights/5 — после холодного старта пространства
+  // partial: «Создать» и выбор ждут postLoad и после него оживают.
+  testWidgets('partial-пространства: «Создать» ждёт postLoad, потом активна', (
+    tester,
+  ) async {
+    addSpace(_companyA, 'Альфа', partial: true);
+    addSpace(_companyB, 'Бета', partial: true);
+    await pumpNewGroup(tester);
+    ElevatedButton button() =>
+        tester.widget<ElevatedButton>(find.byType(ElevatedButton));
+    expect(button().onPressed, isNull, reason: 'до postLoad права неизвестны');
+    for (var i = 0; i < 5 && button().onPressed == null; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await tester.pump();
+    }
+    expect(button().onPressed, isNotNull);
+    expect(_picker, findsOneWidget);
+    await teardownScreen(tester);
+  });
+
   // AC:RL-new-group-place-picker/10 — реальный экран, класс сервера известен.
   group('класс сервера: показ и подпись первого пункта', () {
     Future<void> pumpWithClass(
@@ -400,6 +431,17 @@ void main() {
 
     const ownRoot = '!own:fakeServer.notExisting';
 
+    void ownRootEvents(String key, int level) {
+      final room = client.getRoomById(ownRoot)!;
+      final pl = Map<String, Object?>.from(
+        room.getState(EventTypes.RoomPowerLevels)!.content,
+      );
+      state(room, EventTypes.RoomPowerLevels, {
+        ...pl,
+        'events': {key: level},
+      });
+    }
+
     testWidgets('общий сервер + место в компании: выбор с «Для себя»', (
       tester,
     ) async {
@@ -426,6 +468,46 @@ void main() {
       addSpace(_companyB, 'Бета');
       await pumpWithClass(tester, company: true, mainId: ownRoot);
       expect(_picker, findsOneWidget);
+      expect(find.text('В своей компании'), findsOneWidget);
+      await teardownScreen(tester);
+    });
+
+    // AC:RL-company-create-rights/6 — без порога «Создание чатов» своей
+    // компании сервер группу туда не вложит: первый пункт «Для себя», корня
+    // своей компании среди мест нет; ∀ {место в чужой, своё подпространство}.
+    testWidgets('компания без права + место в чужой: «Для себя», '
+        'своей компании в списке нет', (tester) async {
+      addSpace(ownRoot, 'Своя', myLevel: 0);
+      addSpace(_companyB, 'Бета');
+      await pumpWithClass(tester, company: true, mainId: ownRoot);
+      expect(_picker, findsOneWidget);
+      expect(find.text('Для себя (друзья, семья)'), findsOneWidget);
+      expect(find.text('В своей компании'), findsNothing);
+      await tester.tap(_picker);
+      await tester.pumpAndSettle();
+      expect(find.text('Своя'), findsNothing);
+      expect(find.text('Бета'), findsWidgets);
+      await tester.tap(find.text('Для себя (друзья, семья)').last);
+      await tester.pumpAndSettle();
+      await teardownScreen(tester);
+    });
+
+    testWidgets('компания без права + своё подпространство с правом: '
+        'выбор с «Для себя»', (tester) async {
+      addSpace(ownRoot, 'Своя', myLevel: 0, children: [_subB]);
+      addSpace(_subB, 'Отдел');
+      await pumpWithClass(tester, company: true, mainId: ownRoot);
+      expect(_picker, findsOneWidget);
+      expect(find.text('Для себя (друзья, семья)'), findsOneWidget);
+      await teardownScreen(tester);
+    });
+
+    testWidgets('компания, порог «Создание чатов» открыт рядовым (0): '
+        '«В своей компании»', (tester) async {
+      addSpace(ownRoot, 'Своя', myLevel: 0, children: [_subB]);
+      ownRootEvents(companyCreateChatKey, 0);
+      addSpace(_companyB, 'Бета');
+      await pumpWithClass(tester, company: true, mainId: ownRoot);
       expect(find.text('В своей компании'), findsOneWidget);
       await teardownScreen(tester);
     });

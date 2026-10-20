@@ -19,6 +19,7 @@ import 'package:liza/utils/copy_media_eligibility.dart';
 import 'package:liza/utils/file_description.dart';
 import 'package:liza/utils/message_link.dart';
 import 'package:liza/utils/stories/story_model.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/matrix.dart';
 
 /// Контекстное меню сообщения в стиле Liza: единый заякоренный поповер —
@@ -130,12 +131,14 @@ class _MenuAction {
   final String label;
   final VoidCallback onTap;
   final bool destructive;
+  final bool developerOnly;
 
   const _MenuAction({
     required this.icon,
     required this.label,
     required this.onTap,
     this.destructive = false,
+    this.developerOnly = false,
   });
 }
 
@@ -366,6 +369,7 @@ class _MessageContextMenu extends StatelessWidget {
         _MenuAction(
           icon: Icons.info_outline,
           label: l10n.messageInfo,
+          developerOnly: true,
           onTap: () {
             close();
             controller.showEventInfo(event);
@@ -795,6 +799,10 @@ class _ActionMenu extends StatelessWidget {
                             ),
                           ),
                         ),
+                        if (action.developerOnly) ...[
+                          const DeveloperMark(),
+                          const SizedBox(width: 8),
+                        ],
                         Icon(
                           action.icon,
                           size: 22,

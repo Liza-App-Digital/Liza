@@ -12,6 +12,7 @@ import 'package:liza/utils/company_deletion.dart';
 import 'package:liza/utils/company_membership.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/utils/owner_leave.dart';
 import 'matrix.dart';
@@ -163,7 +164,7 @@ class ChatSettingsPopupMenuState extends State<ChatSettingsPopupMenu> {
                 context.go('/rooms/${widget.room.id}/search');
                 break;
               case ChatPopupMenuActions.mcp:
-                context.go(AppRoutes.settingsMcp);
+                context.go(AppRoutes.mcp);
                 break;
             }
           },
@@ -219,8 +220,11 @@ class ChatSettingsPopupMenuState extends State<ChatSettingsPopupMenu> {
             // по `isAiUser`: роль `ai` носят и @gpt, @deepseek, @botfather,
             // @liza-news, @cup — пункт «MCP-подключения» всплыл бы у них всех.
             // `MatrixState.lizaMxid` — геттер, а не литерал: на локальном
-            // стенде (`liza.local`) mxid другой.
-            if (widget.room.directChatMatrixID == MatrixState.lizaMxid)
+            // стенде (`liza.local`) mxid другой. Витрина MCP — только для
+            // developer (Надежда, В5 18.10): у остальных пункт вёл бы в раздел,
+            // которого им не показывают ни в «+», ни в настройках.
+            if (widget.room.directChatMatrixID == MatrixState.lizaMxid &&
+                Matrix.of(context).isCurrentUserDeveloper)
               PopupMenuItem<ChatPopupMenuActions>(
                 value: ChatPopupMenuActions.mcp,
                 child: Row(
@@ -228,6 +232,8 @@ class ChatSettingsPopupMenuState extends State<ChatSettingsPopupMenu> {
                     const Icon(Icons.extension_outlined),
                     const SizedBox(width: 12),
                     Text(L10n.of(context).settingsMcpTitle),
+                    const SizedBox(width: 8),
+                    const DeveloperMark(),
                   ],
                 ),
               ),

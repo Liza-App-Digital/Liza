@@ -117,6 +117,18 @@ class _SpaceViewState extends State<SpaceView> {
     Matrix.of(context).singleSpaceService.fetch().then((_) {
       if (mounted) setState(() {});
     });
+    // m.room.power_levels нет в importantStateEvents: после холодного старта
+    // пространство partial, и без postLoad гейт «Создать чат» / «Новое
+    // подпространство» / «Настройки» закрыт даже владельцу (задача 12).
+    Matrix.of(context).client
+        .getRoomById(widget.spaceId)
+        ?.postLoad()
+        .then((_) {
+          if (mounted) setState(() {});
+        })
+        .catchError((Object e, StackTrace s) {
+          Logs().w('SpaceView: postLoad ${widget.spaceId} не удался', e, s);
+        });
     super.initState();
   }
 
@@ -504,6 +516,12 @@ class _SpaceViewState extends State<SpaceView> {
         room?.getLocalizedDisplayname() ?? L10n.of(context).nothingFound;
     const avatarSize = Avatar.defaultSize / 1.5;
     final isAdmin = canCreateChatInSpace(room);
+    // В главном своей компании кнопке нужен ещё порог «Создание чатов»;
+    // подпространства и настройки он не трогает (задача 12).
+    final canCreateChat = canCreateChatInSpace(
+      room,
+      ownCompanyRootId: Matrix.of(context).singleSpaceService.mainRootSpaceId,
+    );
     final canSeeMembers = room?.canSeeSpaceMembers == true;
     // В компании «Пригласить» видят все, право проверяет тап (плашка).
     final showInvite =
@@ -685,8 +703,9 @@ class _SpaceViewState extends State<SpaceView> {
                     ),
                     // Задача 04 (newInterface): явная кнопка вместо иконки
                     // «+» в шапке — создавать чат в компании искали и не
-                    // находили. Гейт прежний: право писать m.space.child.
-                    if (isAdmin)
+                    // находили. Гейт: право писать m.space.child (+ порог
+                    // «Создание чатов» в главном своей компании).
+                    if (canCreateChat)
                       SliverToBoxAdapter(
                         child: Padding(
                           padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),

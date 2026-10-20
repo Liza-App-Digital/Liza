@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/utils/push_journal.dart';
 import 'package:liza/utils/screen_lock_state.dart';
 
 /// Native APNs push service — drop-in replacement for FcmSharedIsolate on iOS.
@@ -85,6 +86,12 @@ class ApnsPushService {
         Logs().v('[APNs] Screen ${locked ? 'locked' : 'unlocked'}');
         ScreenLockState.update(locked);
         break;
+      case 'onJournal':
+        // Нативные стадии (macOS): сон/пробуждение, опции `willPresent`,
+        // сбой `center.add`. Натив шлёт ПОСЛЕ completionHandler — ответ
+        // системе не ждёт Dart (RL-macos-push-active-one-banner).
+        PushJournal.instance.recordNative(call.arguments);
+        break;
       case 'shouldSuppressBanner':
         // Ответ — имя [NativeBannerGate] (`MacApnsPushPlugin.swift` разбирает
         // строку). Fail-open: нет обработчика / ошибка → `silent`, т.е. прежнее
@@ -100,6 +107,63 @@ class ApnsPushService {
           return NativeBannerGate.silent.name;
         }
     }
+  }
+
+  /// Снимок окружения уведомлений для тегов push-report (только macOS/iOS;
+  /// чего натив не умеет — просто нет в ответе).
+  Future<Map<String, String>> environmentTags() async {
+    final tags = <String, String>{};
+    try {
+      final raw = await _channel
+          .invokeMethod('getNotificationSettings')
+          .timeout(const Duration(seconds: 3));
+      if (raw is Map) tags.addAll(notificationSettingsTags(raw));
+    } catch (_) {}
+    try {
+      final raw = await _channel
+          .invokeMethod('getAppCopies')
+          .timeout(const Duration(seconds: 3));
+      if (raw is Map) tags.addAll(appCopiesTags(raw));
+    } catch (_) {}
+    return tags;
+  }
+
+  /// `UNAuthorizationStatus` / `UNNotificationSetting` / `UNAlertStyle` →
+  /// стабильные имена для тегов когорты.
+  @visibleForTesting
+  static Map<String, String> notificationSettingsTags(Map<Object?, Object?> raw) {
+    const auth = {0: 'not_determined', 1: 'denied', 2: 'authorized', 3: 'provisional', 4: 'ephemeral'};
+    const setting = {0: 'not_supported', 1: 'disabled', 2: 'enabled'};
+    const style = {0: 'none', 1: 'banner', 2: 'alert'};
+    final out = <String, String>{};
+    void put(String tag, String key, Map<int, String> names) {
+      final v = raw[key];
+      if (v is int) out[tag] = names[v] ?? 'unknown_$v';
+    }
+
+    put('liza.auth', 'authorization', auth);
+    put('liza.alert', 'alert', setting);
+    put('liza.alert_style', 'alertStyle', style);
+    put('liza.badge_setting', 'badge', setting);
+    put('liza.sound_setting', 'sound', setting);
+    put('liza.nc_setting', 'notificationCenter', setting);
+    return out;
+  }
+
+  @visibleForTesting
+  static Map<String, String> appCopiesTags(Map<Object?, Object?> raw) {
+    final out = <String, String>{};
+    for (final (tag, key) in const [
+      ('liza.app_copies', 'copies'),
+      ('liza.legacy_copies', 'legacyCopies'),
+      ('liza.running_copies', 'running'),
+    ]) {
+      final v = raw[key];
+      if (v is int) out[tag] = '$v';
+    }
+    final location = raw['location'];
+    if (location is String) out['liza.install_location'] = location;
+    return out;
   }
 
   /// Request notification permission from the user.
@@ -165,7 +229,8 @@ class ApnsPushService {
   /// Снять УЖЕ ПОКАЗАННЫЕ системой уведомления комнаты, включая нарисованные
   /// NSE/AppDelegate (их идентификатор — UUID от APNs, поэтому
   /// `flutterLocalNotificationsPlugin.cancel(id)` их не видит). Натив ищет по
-  /// `threadIdentifier == roomId` — его проставляет NSE на каждом баннере.
+  /// `threadIdentifier == roomId` (его проставляет iOS-NSE) или по
+  /// `userInfo["room_id"]` — на macOS NSE нет, там работает только второе.
   Future<void> cancelDeliveredForRoom(String roomId) async {
     try {
       await _channel.invokeMethod('cancelDeliveredForRoom', {'roomId': roomId});

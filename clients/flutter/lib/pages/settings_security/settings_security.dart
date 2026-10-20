@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/utils/account_delete_service.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_text_input_dialog.dart';
 import 'package:liza/widgets/app_lock.dart';
@@ -79,28 +81,25 @@ class SettingsSecurityController extends State<SettingsSecurity> {
     if (!confirmed || !mounted) {
       return;
     }
-    final resp = await showFutureLoadingDialog(
-      context: context,
-      delay: false,
-      future: () => matrix.client.uiaRequestBackground<IdServerUnbindResult?>(
-        (auth) => matrix.client.deactivateAccount(auth: auth),
-      ),
+    // Не штатный /account/deactivate: он требует пароль (UIA), которого у
+    // ProdamusID/OTP-пользователя нет. Удаляет auth-proxy, см. сервис.
+    final service = AccountDeleteService(
+      baseUrl: AppConfig.authProxyBaseUrl,
+      accessTokenProvider: () => matrix.client.accessToken,
+      serverNameProvider: () => userId.domain ?? '',
     );
-
-    if (!resp.isError) {
-      matrix.markExplicitLogout();
-      // Логаут обязан состояться в любом случае: аккаунт уже деактивирован на
-      // сервере, и остаться залогиненным локально нельзя. Если экран успели
-      // закрыть — выходим молча, без диалога прогресса.
-      if (!mounted) {
-        await matrix.client.logout();
-        return;
-      }
-      await showFutureLoadingDialog(
+    await deleteAccountAndLogout(
+      delete: service.delete,
+      markExplicitLogout: matrix.markExplicitLogout,
+      unmarkExplicitLogout: matrix.unmarkExplicitLogout,
+      logout: matrix.client.logout,
+      runWithProgress: (action) => showFutureLoadingDialog(
         context: context,
-        future: () => matrix.client.logout(),
-      );
-    }
+        delay: false,
+        future: action,
+      ),
+      isMounted: () => mounted,
+    );
   }
 
   Future<void> dehydrateAction() => Matrix.of(context).dehydrateAction(context);
