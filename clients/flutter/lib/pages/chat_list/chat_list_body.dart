@@ -9,6 +9,7 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat_list/chat_list.dart';
+import 'package:liza/pages/chat_list/chat_list_filter_row.dart';
 import 'package:liza/pages/chat_list/chat_list_item.dart';
 import 'package:liza/pages/chat_list/create_company_list_tile.dart';
 import 'package:liza/pages/chat_list/dummy_chat_list_item.dart';
@@ -186,7 +187,12 @@ class ChatListViewBody extends StatelessWidget {
                         AppSettings.showPresences.value)
                       const StoriesBar(key: ValueKey('storiesBar')),
                     if (client.rooms.isNotEmpty && !controller.isSearchMode)
-                      _ChatListFilterRow(controller: controller),
+                      ChatListFilterRow(
+                        activeFilter: controller.activeFilter,
+                        onSelected: controller.setActiveFilter,
+                        store: Matrix.of(context).store,
+                        userId: Matrix.of(context).client.userID,
+                      ),
                     // На пустых «Компаниях» заглушку «чатов больше нет» не
                     // рисуем: пустое состояние заменяет плашка «Создать компанию».
                     if (client.prevBatch != null &&
@@ -480,55 +486,6 @@ class _PublicRoomsHorizontalListState extends State<PublicRoomsHorizontalList> {
                 ),
               ),
             ),
-    );
-  }
-}
-
-class _ChatListFilterRow extends StatefulWidget {
-  const _ChatListFilterRow({required this.controller});
-
-  final ChatListController controller;
-
-  @override
-  State<_ChatListFilterRow> createState() => _ChatListFilterRowState();
-}
-
-class _ChatListFilterRowState extends State<_ChatListFilterRow> {
-  final ScrollController _scrollController = ScrollController();
-
-  @override
-  void dispose() {
-    _scrollController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final controller = widget.controller;
-    return SizedBox(
-      height: 64,
-      child: HorizontalMouseWheel(
-        controller: _scrollController,
-        child: ListView(
-          controller: _scrollController,
-          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 12.0),
-          shrinkWrap: true,
-          scrollDirection: Axis.horizontal,
-          children:
-              chatListFilterOrder
-                  .map(
-                    (filter) => Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                      child: FilterChip(
-                        selected: filter == controller.activeFilter,
-                        onSelected: (_) => controller.setActiveFilter(filter),
-                        label: Text(filter.toLocalizedString(context)),
-                      ),
-                    ),
-                  )
-                  .toList(),
-        ),
-      ),
     );
   }
 }

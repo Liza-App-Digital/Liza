@@ -12,16 +12,40 @@ import 'package:liza/widgets/matrix.dart';
 /// запрос». Двойной тап: барьер диалога + single-flight `forceNew`.
 ///
 /// Общая точка входа для пункта «+» в шапке, строки внизу списка чатов и
-/// пустой правой панели.
-Future<void> openNewLizaRequest(BuildContext context) async {
-  final client = Matrix.of(context).client;
+/// пустой правой панели. [initialMessage] — вопрос, набранный в пустой панели
+/// до создания чата; уходит после приветствия Лизы
+/// (`sendFirstRequestMessage`). `true` — чат открыт.
+Future<bool> openNewLizaRequest(
+  BuildContext context, {
+  String? initialMessage,
+}) async {
+  final matrix = Matrix.of(context);
+  final client = matrix.client;
+  final store = matrix.store;
   final title = L10n.of(context).newLizaRequest;
   final created = await showFutureLoadingDialog(
     context: context,
-    future: () =>
-        startLizaRequestChat(client, MatrixState.lizaMxid, title: title),
+    future: () async {
+      final (id, joined) = await startLizaRequestChat(
+        client,
+        MatrixState.lizaMxid,
+        title: title,
+      );
+      if (initialMessage != null) {
+        await sendFirstRequestMessage(
+          client,
+          store,
+          id,
+          MatrixState.lizaMxid,
+          initialMessage,
+          lizaJoined: joined,
+        );
+      }
+      return id;
+    },
   );
-  final result = created.result;
-  if (result == null || !context.mounted) return;
-  context.go('/rooms/${result.$1}');
+  final roomId = created.result;
+  if (roomId == null || !context.mounted) return false;
+  context.go('/rooms/$roomId');
+  return true;
 }

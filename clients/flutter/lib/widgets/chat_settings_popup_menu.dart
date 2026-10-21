@@ -15,6 +15,7 @@ import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
 import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/utils/owner_leave.dart';
+import 'package:liza/utils/leave_room.dart';
 import 'matrix.dart';
 
 enum ChatPopupMenuActions {
@@ -107,7 +108,7 @@ class ChatSettingsPopupMenuState extends State<ChatSettingsPopupMenu> {
                 if (confirmed != OkCancelResult.ok) return;
                 final result = await showFutureLoadingDialog(
                   context: context,
-                  future: () => widget.room.leave(),
+                  future: () => leaveRoomTolerant(widget.room),
                 );
                 if (result.error == null) {
                   router.go('/rooms');

@@ -30,6 +30,7 @@ import 'package:liza/pages/chat_access_settings/chat_access_settings_controller.
 import 'package:liza/pages/chat_details/chat_details.dart';
 import 'package:liza/pages/chat_encryption_settings/chat_encryption_settings.dart';
 import 'package:liza/pages/chat_list/chat_list.dart';
+import 'package:liza/pages/chat_list/new_request_empty_page.dart';
 import 'package:liza/pages/chat_details/blocked_members.dart';
 import 'package:liza/pages/chat_members/chat_members.dart';
 import 'package:liza/pages/chat_permissions_settings/chat_permissions_settings.dart';
@@ -292,7 +293,7 @@ abstract class AppRoutes {
             context,
             state,
             LizaThemes.isColumnMode(context)
-                ? const EmptyPage()
+                ? const NewRequestEmptyPage()
                 : ChatList(
                     activeChat: state.pathParameters['roomid'],
                     activeSpace: state.uri.queryParameters['spaceId'],
@@ -346,7 +347,7 @@ abstract class AppRoutes {
             GoRoute(
               path: 'contacts',
               pageBuilder: (context, state) =>
-                  defaultPageBuilder(context, state, const ContactsPage()),
+                  defaultPageBuilder(context, state, ContactsPage()),
               redirect: loggedOutRedirect,
             ),
             GoRoute(

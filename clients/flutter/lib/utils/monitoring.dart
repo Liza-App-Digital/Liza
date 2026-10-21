@@ -766,6 +766,31 @@ abstract final class Monitoring {
   static String badgeMismatchTitle(String platform) =>
       '$badgeMismatchPrefix platform=$platform';
 
+  /// Итог чистки комнат-призраков (`ghost_room_prune.dart`). Шлётся только
+  /// когда кандидаты были: ноль удалений при кандидатах тоже сигнал, а
+  /// `aborted` = сработал предохранитель — смотреть руками. Только числа:
+  /// id комнат — ПД переписки.
+  static void reportGhostRooms({
+    required int candidates,
+    required int probed,
+    required int removed,
+    required bool aborted,
+    bool resynced = false,
+  }) {
+    if (!_active) return;
+    Sentry.captureMessage(
+      '[ghost-room] removed=$removed aborted=$aborted resync=$resynced',
+      level: SentryLevel.warning,
+      withScope: (scope) {
+        scope.setTag('ghost_candidates', '$candidates');
+        scope.setTag('ghost_probed', '$probed');
+        scope.setTag('ghost_removed', '$removed');
+        scope.setTag('ghost_aborted', '$aborted');
+        scope.setTag('ghost_resync', '$resynced');
+      },
+    );
+  }
+
   /// Наблюдение дрейфа бейджа (ВТОРИЧНЫЙ, human-facing сигнал): серверное
   /// push-payload `counts.unread` против пост-sync СЫРОГО серверного числа
   /// непрочитанных комнат ([postSyncRaw] = комнаты с notificationCount>0 +

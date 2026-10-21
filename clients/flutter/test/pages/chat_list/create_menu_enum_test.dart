@@ -1,7 +1,9 @@
-// ledger:RL-create-menu-contacts-items
-// AC:RL-create-menu-contacts-items/3 AC:RL-create-menu-contacts-items/4
+// ledger:RL-contacts-entry-avatar-all-platforms
+// AC:RL-contacts-entry-avatar-all-platforms/1
 //
-// Страж enum-пунктов меню «+» и маршрутизации invite.
+// Страж enum-пунктов меню «+» и маршрутизации invite. «Контакты» из «+» убраны
+// на всех платформах (замечание Надежды 20.10); RL-create-menu-contacts-items
+// заменён RL-contacts-entry-avatar-all-platforms.
 // guard.render:pure-function — не рендерит ChatListHeader (требует
 // ChatListController + Matrix; device residual для AC-1/2, см. RL).
 // AC-4: состав enum по CreateMenuAction.values (позитив и негатив).
@@ -22,8 +24,8 @@ void main() {
 
   // AC-4: состав enum — по самим значениям (src.contains('story') был бы
   // ложно-зелёным: слово встречается в комментариях и других идентификаторах).
-  // AC:RL-create-menu-contacts-items/4
-  test('AC-4: CreateMenuAction.values — актуальный состав меню 18.10', () {
+  // AC:RL-contacts-entry-avatar-all-platforms/1
+  test('AC-1: CreateMenuAction.values — состав меню без «Контактов»', () {
     final names = CreateMenuAction.values.map((a) => a.name).toSet();
     for (final value in [
       'newRequest',
@@ -32,11 +34,10 @@ void main() {
       'developers',
       'mcp',
       'invite',
-      'contacts',
     ]) {
       expect(names.contains(value), isTrue, reason: value);
     }
-    for (final gone in ['story', 'bot', 'miniApp', 'agent']) {
+    for (final gone in ['story', 'bot', 'miniApp', 'agent', 'contacts']) {
       expect(names.contains(gone), isFalse, reason: gone);
     }
   });
@@ -75,11 +76,12 @@ void main() {
     },
   );
 
-  // AC-3: invite-ветка → shareInvitePeople (не QR / не LizaShare.share(mxid,…)).
-  // AC:RL-create-menu-contacts-items/3
+  // invite-ветка → shareInvitePeople (не QR / не LizaShare.share(mxid,…));
+  // перехода на экран контактов из «+» больше нет ни на одной платформе.
+  // AC:RL-contacts-entry-avatar-all-platforms/1
   test(
-    'AC-3: ветка invite вызывает LizaShare.shareInvitePeople, '
-    'contacts → /rooms/contacts',
+    'AC-1: ветка invite вызывает LizaShare.shareInvitePeople, '
+    '«+» не ведёт на /rooms/contacts',
     () {
       expect(
         src.contains('CreateMenuAction.invite'),
@@ -92,9 +94,9 @@ void main() {
         reason: 'invite-ветка должна вызывать shareInvitePeople, не share(mxid)',
       );
       expect(
-        src.contains("context.go('/rooms/contacts')"),
-        isTrue,
-        reason: "contacts-ветка должна вести на '/rooms/contacts'",
+        src.contains('/rooms/contacts'),
+        isFalse,
+        reason: '«Контакты» живут только в меню аватара, не в «+»',
       );
     },
   );

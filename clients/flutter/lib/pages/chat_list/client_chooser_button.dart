@@ -5,7 +5,6 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/themes.dart';
-import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/support_chat.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/widgets/avatar.dart';
@@ -58,19 +57,19 @@ class ClientChooserButton extends StatelessWidget {
           ],
         ),
       ),
-      // Экран контактов доступен только на мобильных: flutter_contacts
-      // поддерживает лишь Android/iOS (на Web/десктопе — MissingPluginException).
-      if (PlatformInfos.isMobile)
-        PopupMenuItem(
-          value: SettingsAction.contacts,
-          child: Row(
-            children: [
-              const Icon(Icons.contacts_outlined),
-              const SizedBox(width: 18),
-              Text(L10n.of(context).contactsTitle),
-            ],
-          ),
+      // «Контакты» — на всех платформах (замечание Надежды 20.10): на мобильных
+      // экран читает телефонную книгу, на десктопе/web — людей из личных чатов.
+      // ledger:RL-contacts-entry-avatar-all-platforms
+      PopupMenuItem(
+        value: SettingsAction.contacts,
+        child: Row(
+          children: [
+            const Icon(Icons.contacts_outlined),
+            const SizedBox(width: 18),
+            Text(L10n.of(context).contactsTitle),
+          ],
         ),
+      ),
       PopupMenuItem(
         value: SettingsAction.archive,
         child: Row(

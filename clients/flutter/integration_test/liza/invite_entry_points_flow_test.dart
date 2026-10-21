@@ -1,12 +1,12 @@
 // Device-flow страж (Ярус C, живой прогон на iOS+Android) новых точек входа
 // приглашения (итерация 2026-08-20).
 // ledger:RL-chat-list-phone-search-invite
-// ledger:RL-create-menu-contacts-items
+// ledger:RL-contacts-entry-avatar-all-platforms
 // ledger:RL-settings-invite-friends-action
 //
 // Живьём на реальном бинаре проверяем клиентский слой, который host widget-тесты
 // не покрывают (полный ChatList/Settings + навигация + меню-гейты):
-//   #6 меню «+» показывает «Пригласить контакт» и «Контакты» (isMobile), тап по
+//   #6 меню «+» показывает «Пригласить контакт» без «Контактов» (они в меню аватара), тап по
 //      «Пригласить контакт» не роняет приложение (нативный share integration_test
 //      НЕ видит — native residual);
 //   #2 настройки показывают «Пригласить людей» и «Ваш ID» (не «Почта»);
@@ -27,7 +27,7 @@ import 'liza_flows.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('#6 меню «+»: пункты «Пригласить контакт» и «Контакты» живьём',
+  testWidgets('#6 меню «+»: «Пригласить контакт» есть, «Контакты» нет',
       (tester) async {
     app.main();
     await tester.ensureLizaHome();
@@ -38,12 +38,13 @@ void main() {
     await tester.tap(plusBtn.first);
     await tester.pump(const Duration(milliseconds: 700));
 
-    // Оба пункта присутствуют (гейт isMobile отдаёт «Контакты» на iOS/Android).
+    // «Контакты» из «+» убраны на всех платформах (замечание Надежды 20.10):
+    // они живут в меню аватара. AC:RL-contacts-entry-avatar-all-platforms/1
     await tester.waitUntil(find.text('Пригласить контакт'));
     expect(find.text('Пригласить контакт'), findsWidgets,
         reason: '#6: «Пригласить контакт» отсутствует в меню «+».');
-    expect(find.text('Контакты'), findsWidgets,
-        reason: '#6: «Контакты» отсутствует в меню «+» на мобильной платформе.');
+    expect(find.text('Контакты'), findsNothing,
+        reason: '#6: «Контакты» в меню «+» — их место в меню аватара.');
 
     // Тап по «Пригласить контакт» — нативный share; проверяем, что не роняет.
     await tester.tap(find.text('Пригласить контакт').last);

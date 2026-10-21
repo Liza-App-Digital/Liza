@@ -5138,6 +5138,10 @@
   "@contactsOnLiza": {},
   "contactsInviteHint": "Invite to Liza",
   "@contactsInviteHint": {},
+  "contactsPhoneBookOnMobile": "Phone book contacts are available in the Liza mobile app. Here are the people you chat with.",
+  "@contactsPhoneBookOnMobile": {},
+  "contactsChatPeers": "People you chat with",
+  "@contactsChatPeers": {},
   "lizaTagline": "Your assistant for business tasks",
   "@lizaTagline": {},
   "lizaTaglineDetails": "Liza will put together a landing page, a content plan, a sales report or a payment link. Create chats with people and add the AI assistant so it helps every participant.",
@@ -5371,5 +5375,13 @@
   "addRemoveSpaceChildren": "Add and remove chats",
   "@addRemoveSpaceChildren": {"description": "Подпись порога m.space.child на экране «Права»"},
   "setSpaceParent": "Set the parent space",
-  "@setSpaceParent": {"description": "Подпись порога m.space.parent на экране «Права»"}
+  "@setSpaceParent": {"description": "Подпись порога m.space.parent на экране «Права»"},
+  "newRequestGreeting": "What task shall we solve, {name}?",
+  "@newRequestGreeting": {"description": "Заголовок пустой правой панели (компьютер, чат не выбран)", "type": "String", "placeholders": {"name": {"type": "String"}}},
+  "newRequestGreetingNoName": "What task shall we solve?",
+  "@newRequestGreetingNoName": {"description": "Заголовок пустой правой панели, когда имени нет"},
+  "newRequestSubtitle": "Describe what needs to be done.",
+  "@newRequestSubtitle": {"description": "Подзаголовок пустой правой панели. Без «скажите голосом»: микрофона в панели нет"},
+  "newRequestHint": "For example: generate 5 blog post ideas",
+  "@newRequestHint": {"description": "Подсказка в поле ввода пустой правой панели"}
 }

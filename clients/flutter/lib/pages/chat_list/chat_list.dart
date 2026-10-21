@@ -45,6 +45,7 @@ import 'package:liza/utils/company_membership.dart';
 import 'package:liza/utils/owner_leave.dart';
 import 'package:liza/utils/federated_user_search_service.dart';
 import 'package:liza/utils/single_space_service.dart';
+import 'package:liza/utils/leave_room.dart';
 
 enum PopupMenuAction {
   settings,
@@ -57,8 +58,9 @@ enum PopupMenuAction {
 
 enum ActiveFilter { allChats, agents, people, groups, unread, spaces, channels }
 
-/// Порядок чипов в списке чатов (задание Надежды 18.10:
-/// «Все → Агенты и боты → Люди → Компании → Группы…»).
+/// Порядок чипов по умолчанию (задание Надежды 18.10:
+/// «Все → Агенты и боты → Люди → Компании → Группы…»). Пользователь меняет его
+/// зажатием чипа — см. [resolveFilterOrder].
 const chatListFilterOrder = [
   ActiveFilter.allChats,
   ActiveFilter.agents,
@@ -67,6 +69,45 @@ const chatListFilterOrder = [
   ActiveFilter.groups,
   ActiveFilter.channels,
   ActiveFilter.unread,
+];
+
+/// Стабильные id чипов для сохранённого порядка: имя значения enum менять
+/// можно, id — нет (иначе порядок пользователя молча сбросится).
+const _filterIds = {
+  ActiveFilter.allChats: 'all',
+  ActiveFilter.agents: 'agents',
+  ActiveFilter.people: 'people',
+  ActiveFilter.spaces: 'companies',
+  ActiveFilter.groups: 'groups',
+  ActiveFilter.channels: 'channels',
+  ActiveFilter.unread: 'unread',
+};
+
+/// Ключ SharedPreferences с порядком чипов — свой у каждого аккаунта. Порядок
+/// локален для устройства: синхронизацию Надежда не просила («не приоритет»).
+String filterOrderPrefsKey(String userId) => 'chat_list.filter_order.$userId';
+
+/// Порядок чипов из сохранённых id: «Все» всегда первая и не переставляется,
+/// неизвестные id и повторы отбрасываются, чипы, которых нет в сохранённом
+/// (новые в этой версии), дописываются в конец в порядке по умолчанию.
+/// ledger:RL-chat-list-filter-reorder
+List<ActiveFilter> resolveFilterOrder(List<String>? storedIds) {
+  final byId = {for (final e in _filterIds.entries) e.value: e.key};
+  final order = <ActiveFilter>[ActiveFilter.allChats];
+  for (final id in storedIds ?? const <String>[]) {
+    final filter = byId[id];
+    if (filter != null && !order.contains(filter)) order.add(filter);
+  }
+  for (final filter in chatListFilterOrder) {
+    if (!order.contains(filter)) order.add(filter);
+  }
+  return order;
+}
+
+/// id для сохранения порядка; «Все» не пишется — она всегда первая.
+List<String> encodeFilterOrder(List<ActiveFilter> order) => [
+  for (final filter in order)
+    if (filter != ActiveFilter.allChats) _filterIds[filter]!,
 ];
 
 /// Попадает ли комната под чип списка чатов.
@@ -1081,7 +1122,10 @@ class ChatListController extends State<ChatList>
         if (confirmed == OkCancelResult.cancel) return;
         if (!mounted) return;
 
-        await showFutureLoadingDialog(context: context, future: room.leave);
+        await showFutureLoadingDialog(
+          context: context,
+          future: () => leaveRoomTolerant(room),
+        );
 
         return;
       case ChatContextAction.deleteCompanyViaSupport:

@@ -33,6 +33,7 @@ import 'package:liza/utils/matrix_sdk_extensions/matrix_file_extension.dart';
 import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/network_recovery_trigger.dart';
 import 'package:liza/utils/failed_send_retry_service.dart';
+import 'package:liza/utils/ghost_room_prune.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/push_client_resolver.dart';
 import 'package:liza/utils/push_journal.dart';
@@ -525,6 +526,11 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
   final onKeyVerificationRequestSub = <String, StreamSubscription>{};
   final onNotification = <String, StreamSubscription>{};
   final onSyncBadgeUpdate = <String, StreamSubscription>{};
+  final onSyncGhostSeen = <String, StreamSubscription>{};
+  final _ghostSeenRooms = <String, Set<String>>{};
+  // Не сбрасывается в _cancelSubs: иначе повторный вход до первого sync
+  // навесил бы второй запуск рядом с ещё ждущим первым.
+  final _ghostPruneStarted = <String>{};
   final onLoginStateChanged = <String, StreamSubscription<LoginState>>{};
   final onUiaRequest = <String, StreamSubscription<UiaRequest>>{};
   final onAccountDataSub = <String, StreamSubscription>{};
@@ -825,6 +831,29 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
       await userRoleService.fetchRoles(dmPartners);
     });
 
+    // Комнаты-призраки отката сервера (заявка №55): сервер их не знает, sync
+    // их не пришлёт, метка непрочитанного висит вечно. Чистка раз за сессию;
+    // комнаты из sync сервер точно знает — их отбор не трогает.
+    final ghostSeen = _ghostSeenRooms.putIfAbsent(name, () => <String>{});
+    onSyncGhostSeen[name] ??= c.onSync.stream.listen((update) {
+      final rooms = update.rooms;
+      if (rooms == null) return;
+      ghostSeen
+        ..addAll(rooms.join?.keys ?? const <String>[])
+        ..addAll(rooms.invite?.keys ?? const <String>[])
+        ..addAll(rooms.leave?.keys ?? const <String>[]);
+    });
+    if (_ghostPruneStarted.add(name)) {
+      c.onSync.stream.first.then(
+        (_) => pruneGhostRooms(
+          c,
+          seenInSync: ghostSeen,
+          onRemoved: _leaveRemovedRoomPage,
+          onResync: _leaveChatPageForResync,
+        ).catchError((e, s) => Logs().w('[ghost-room] сбой чистки', e, s)),
+      );
+    }
+
     // Прогрев героев DM-комнат. После restore из БД комнаты partial, и
     // getLocalizedDisplayname фолбэчит на localpart MXID (логин) вместо ФИО.
     // loadHeroUsers подтягивает RoomMember state партнёра, после чего ближайший
@@ -847,6 +876,24 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     }
   }
 
+  /// Удалённый чистильщиком чат мог быть открыт — экран без комнаты ушёл бы в
+  /// peek-заглушку «вы больше не участник».
+  void _leaveRemovedRoomPage(String roomId) {
+    final path = Uri.decodeComponent(
+      LizaApp.router.routerDelegate.currentConfiguration.uri.path,
+    );
+    if (path.contains(roomId)) LizaApp.router.go('/rooms');
+  }
+
+  /// Полный ресинк чистильщика призраков пересоздаёт все `Room` — открытый
+  /// чат держал бы мёртвый объект.
+  void _leaveChatPageForResync() {
+    final path = Uri.decodeComponent(
+      LizaApp.router.routerDelegate.currentConfiguration.uri.path,
+    );
+    if (path.startsWith('/rooms/!')) LizaApp.router.go('/rooms');
+  }
+
   void _cancelSubs(String name) {
     onRoomKeyRequestSub[name]?.cancel();
     onRoomKeyRequestSub.remove(name);
@@ -858,6 +905,9 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     onNotification.remove(name);
     onSyncBadgeUpdate[name]?.cancel();
     onSyncBadgeUpdate.remove(name);
+    onSyncGhostSeen[name]?.cancel();
+    onSyncGhostSeen.remove(name);
+    _ghostSeenRooms.remove(name);
     backgroundPush?.forgetReadSnapshot(name);
     onAccountDataSub[name]?.cancel();
     onAccountDataSub.remove(name);

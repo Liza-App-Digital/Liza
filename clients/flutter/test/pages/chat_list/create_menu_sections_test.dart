@@ -22,40 +22,35 @@ bool _isDeveloper(_Role r) =>
     r == _Role.developer || r == _Role.adminPlusDeveloper;
 
 void main() {
-  List<List<CreateMenuAction>> sections(_Role role, bool mobile) =>
-      createMenuSections(isDeveloper: _isDeveloper(role), isMobile: mobile);
-
-  final cases = [
-    for (final role in _Role.values)
-      for (final mobile in [true, false]) (role, mobile),
-  ];
+  // Платформа на состав меню больше не влияет («Контакты» ушли из «+» везде,
+  // замечание Надежды 20.10) — перебор ролей полный, платформенного параметра нет.
+  List<List<CreateMenuAction>> sections(_Role role) =>
+      createMenuSections(isDeveloper: _isDeveloper(role));
 
   // AC:RL-create-menu-order-agent-entry/1
-  test('AC-1: ∀ роль × платформа — три раздела в порядке задания 18.10', () {
-    for (final (role, mobile) in cases) {
-      final s = sections(role, mobile);
-      final reason = 'role=$role mobile=$mobile';
-      expect(s, [
+  test('AC-1: ∀ роль — три раздела в порядке задания 18.10, без «Контактов»', () {
+    for (final role in _Role.values) {
+      expect(sections(role), [
         [_A.newRequest, _A.group, _A.channel],
         [_A.developers, if (_isDeveloper(role)) _A.mcp],
-        [_A.invite, if (mobile) _A.contacts],
-      ], reason: reason);
+        [_A.invite],
+      ], reason: 'role=$role');
     }
-    // История, бот, mini-app и агент из меню ушли (живут в полосе историй и
-    // главном меню BotFather) — проверяем сам enum, а не текст исходника.
+    // История, бот, mini-app, агент и контакты из меню ушли (полоса историй,
+    // главное меню BotFather, меню аватара) — проверяем сам enum, а не исходник.
     final names = CreateMenuAction.values.map((a) => a.name).toSet();
-    for (final gone in ['story', 'bot', 'miniApp', 'agent']) {
+    for (final gone in ['story', 'bot', 'miniApp', 'agent', 'contacts']) {
       expect(names.contains(gone), isFalse, reason: gone);
     }
   });
 
   // AC:RL-create-menu-order-agent-entry/2
   test('AC-2: «Создать канал» есть у всех ролей, канал создаётся приватным', () {
-    for (final (role, mobile) in cases) {
+    for (final role in _Role.values) {
       expect(
-        sections(role, mobile).first.contains(_A.channel),
+        sections(role).first.contains(_A.channel),
         isTrue,
-        reason: 'role=$role mobile=$mobile',
+        reason: 'role=$role',
       );
     }
     // Публичность канала — как у группы: по умолчанию выключена.

@@ -3,7 +3,7 @@
 // ledger:RL-chat-list-agents-people-tabs
 //
 // Живьём на реальном бинаре: пункт меню «Контакты» открывает экран ContactsPage
-// без краша/белого экрана (навигация + route + меню-гейт isMobile работают), и
+// без краша/белого экрана (навигация + route; пункт есть на всех платформах), и
 // внизу списка чатов на «Все» есть строка «+ Новый запрос» (с 2026-10-19 вместо
 // «Пригласить людей»; закреплённая «Лиза ИИ» ей не нужна — ассерт безусловный).
 // Нативный доступ к книге/share integration_test НЕ видит (native residual) —
@@ -50,7 +50,7 @@ void main() {
     await tester.tap(chooser.first);
     await tester.pump(const Duration(milliseconds: 700));
 
-    // Пункт «Контакты» присутствует (гейт isMobile отдаёт его на iOS/Android).
+    // Пункт «Контакты» в меню аватара — на всех платформах (замечание Надежды 20.10).
     await tester.waitUntil(find.text('Контакты'));
     await tester.tap(find.text('Контакты').last);
     await tester.pump(const Duration(milliseconds: 800));

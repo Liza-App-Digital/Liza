@@ -13,7 +13,6 @@ import 'package:liza/utils/liza_dm.dart';
 import 'package:liza/utils/liza_new_request.dart';
 import 'package:liza/pages/chat_list/client_chooser_button.dart';
 import 'package:liza/utils/liza_share.dart';
-import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/sync_status_localization.dart';
 import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
@@ -151,7 +150,6 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
                         final roles = Matrix.of(context).userRoleService;
                         final sections = createMenuSections(
                           isDeveloper: roles.isCurrentUserDeveloper,
-                          isMobile: PlatformInfos.isMobile,
                         );
                         return [
                           for (final (i, section) in sections.indexed) ...[
@@ -197,10 +195,9 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
       CreateMenuAction.channel => l10n.createChannel,
       CreateMenuAction.developers => l10n.forDevelopers,
       CreateMenuAction.mcp => l10n.settingsMcpAddShort,
-      // «Пригласить контакт» и «Контакты» дублируют пункты меню аватара —
-      // единое место добавления людей рядом с созданием (референс Макса).
+      // «Пригласить контакт» дублирует пункт меню аватара — добавление людей
+      // рядом с созданием (референс Макса).
       CreateMenuAction.invite => l10n.inviteContact,
-      CreateMenuAction.contacts => l10n.contactsTitle,
     };
   }
 
@@ -231,9 +228,6 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
         // Нативный share-лист приглашения (НЕ QR-визитка из меню аватара —
         // консистентно с настройками/списком/поиском).
         LizaShare.shareInvitePeople(context);
-        return;
-      case CreateMenuAction.contacts:
-        context.go('/rooms/contacts');
         return;
     }
   }
