@@ -120,9 +120,11 @@ enum _CompanyChoice { request, details }
 /// поддержки сразу в сборе заявки, «Узнать подробности» — с вопросом о
 /// компаниях (без заявки), «Отмена» и тап по фону ничего не шлют.
 /// Своя адаптивная обёртка, а не `showOkCancelAlertDialog`: тот режет ширину до
-/// 256 и не прокручивается, а текст постановщика — ~520 символов в 4 абзаца.
+/// 256 и не прокручивается, а текст — три абзаца со списком.
 /// Спека: docs/superpowers/specs/2026-10-14-create-company-popup-design.md,
-/// третья кнопка (2026-10-19) — RL-create-company-support-entry AC-17…22.
+/// третья кнопка (2026-10-19) — RL-create-company-support-entry AC-17…22,
+/// короткий текст без прокрутки (2026-10-21) — AC-23,
+/// docs/superpowers/specs/2026-10-21-create-company-popup-short-text-plus-align-design.md.
 Future<void> confirmCreateCompanyRequest(BuildContext context) async {
   // Второго попапа от двойного тапа не будет без своего гейта: push маршрута
   // глушит указатели до следующего кадра, а дальше вход закрыт барьером.
@@ -161,6 +163,10 @@ Future<void> confirmCreateCompanyRequest(BuildContext context) async {
       ];
       return AlertDialog.adaptive(
         scrollable: true,
+        // Текст должен влезать на телефоне без прокрутки (AC-23): дефолтные
+        // поля 40 сужали Material-диалог на 360 dp до 280. Cupertino поля
+        // игнорирует (ширина 270) — там держит только длина текста.
+        insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
         title: Text(l10n.createCompanyViaSupport),
         content: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),

@@ -828,9 +828,9 @@
   "@createCompanyRailHint": {},
   "createCompanyListHint": "Learn more and leave a request",
   "@createCompanyListHint": {},
-  "createCompanyIntroText": "Hi! A quick overview of companies:\n\n🏢 A company is your own messenger inside Liza, with a separate server and database for your team and clients.\n\n👥 Flexible roles — appoint Moderators and Administrators to fit your needs.\n\nWhat you get:\n- company data is isolated from others;\n- when an employee leaves, access is easy to revoke;\n- you can see who has access to what, according to their role;\n- you can still chat with other Liza users.",
+  "createCompanyIntroText": "🏢 A company is your own messenger in Liza: a separate server and database for your team and clients.\n\n👥 Moderator and Administrator roles — tailored to your needs.\n\n- company data is isolated;\n- a departing employee's access is easy to revoke;\n- you can see who has access to what;\n- you can still chat with other Liza users.",
   "@createCompanyIntroText": {
-    "description": "Попап «Создать компанию». Текст — дословная копия COMPANY_INTRO_TEXT (servers/liza-bot-api/support/cards.py): правишь одно — правь и другое."
+    "description": "Попап «Создать компанию». Короткая выжимка без приветствия — должна влезать на телефоне без прокрутки (RL-create-company-support-entry AC-23). Полная редакция постановщика — COMPANY_INTRO_TEXT бота (servers/liza-bot-api/support/cards.py), тексты развязаны 2026-10-21."
   },
   "createCompanyLeaveRequest": "Leave a request",
   "@createCompanyLeaveRequest": {},

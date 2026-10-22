@@ -452,13 +452,20 @@ void main() {
       expect(card.color, scheme.primaryContainer);
       expect(card.borderRadius, BorderRadius.circular(AppConfig.borderRadius));
       final tileLeft = tester.getTopLeft(find.byType(CreateCompanyListTile)).dx;
+      // Геометрия строки ChatListItem: поля 8, «+» в слоте аватара на 16.
+      // Сверка с реальной строкой компании — AC-24 (create_company_popup_fit_test).
       expect(
         tester.getTopLeft(cardFinder).dx - tileLeft,
-        moreOrLessEquals(16),
-        reason: 'левый край карточки на уровне аватаров списка',
+        moreOrLessEquals(8),
+        reason: 'края карточки — как у подсветки строк списка',
       );
       final plus = find.byKey(const ValueKey('create_company_row_plus'));
-      expect(tester.getSize(plus), const Size.square(32));
+      expect(tester.getSize(plus), const Size.square(Avatar.defaultSize));
+      expect(
+        tester.getTopLeft(plus).dx - tileLeft,
+        moreOrLessEquals(16),
+        reason: '«+» на левом крае аватаров списка',
+      );
       expect(
         find.descendant(of: plus, matching: find.byIcon(Icons.add)),
         findsOneWidget,
@@ -1124,7 +1131,20 @@ void main() {
           reason: l10n.localeName,
         );
       }
-      expect(ru.createCompanyIntroText, startsWith('Привет! Коротко'));
+      // Попап — короткая выжимка без приветствия (Надежда, 2026-10-21);
+      // полная редакция с «Привет!» осталась только у бота для старых сборок.
+      for (final l10n in <L10n>[ru, en]) {
+        expect(
+          l10n.createCompanyIntroText,
+          startsWith('🏢'),
+          reason: l10n.localeName,
+        );
+      }
+      expect(
+        ru.createCompanyIntroText,
+        isNot(contains('Коротко о функционале')),
+      );
+      expect(ru.createCompanyIntroText, isNot(contains('Что это даёт')));
       expect(
         ru.createCompanyLeaveRequest,
         isNot(en.createCompanyLeaveRequest),

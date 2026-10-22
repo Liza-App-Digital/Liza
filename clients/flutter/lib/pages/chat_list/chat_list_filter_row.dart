@@ -7,7 +7,8 @@ import 'package:liza/widgets/horizontal_mouse_wheel.dart';
 
 /// Ряд чипов-вкладок списка чатов. Порядок меняется зажатием чипа и
 /// перетаскиванием (замечание Надежды 20.10 «поменять порядок по зажатию»);
-/// «Все» стоит отдельно и не двигается. Тап по чипу по-прежнему выбирает
+/// «Все» всегда первая и не перетаскивается, но прокручивается вместе с рядом
+/// (замечание 21.10 «чтобы она не была зафиксирована»). Тап по чипу по-прежнему выбирает
 /// вкладку: перетаскивание стартует только после задержки зажатия.
 ///
 /// Виджет — единственный писатель сохранённого порядка
@@ -88,39 +89,35 @@ class _ChatListFilterRowState extends State<ChatListFilterRow> {
     final movable = _order.skip(1).toList();
     return SizedBox(
       height: 64,
-      child: Row(
-        children: [
-          Padding(
+      child: HorizontalMouseWheel(
+        controller: _scrollController,
+        child: ReorderableListView(
+          scrollController: _scrollController,
+          scrollDirection: Axis.horizontal,
+          buildDefaultDragHandles: false,
+          padding: const EdgeInsets.only(right: 12),
+          // «Все» — header: прокручивается вместе с рядом (как в Telegram),
+          // но в индексы onReorder не входит, поэтому перед ней ничего не встанет.
+          header: Padding(
             padding: const EdgeInsets.only(left: 16, right: 4),
-            child: _chip(ActiveFilter.allChats),
+            child: Center(child: _chip(ActiveFilter.allChats)),
           ),
-          Expanded(
-            child: HorizontalMouseWheel(
-              controller: _scrollController,
-              child: ReorderableListView(
-                scrollController: _scrollController,
-                scrollDirection: Axis.horizontal,
-                buildDefaultDragHandles: false,
-                padding: const EdgeInsets.only(right: 12),
-                // Без Material перетаскиваемый чип теряет тему и тень.
-                proxyDecorator: (child, _, _) =>
-                    Material(type: MaterialType.transparency, child: child),
-                onReorder: _onReorder,
-                children: [
-                  for (final (i, filter) in movable.indexed)
-                    ReorderableDelayedDragStartListener(
-                      key: ValueKey(filter),
-                      index: i,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: Center(child: _chip(filter)),
-                      ),
-                    ),
-                ],
+          // Без Material перетаскиваемый чип теряет тему и тень.
+          proxyDecorator: (child, _, _) =>
+              Material(type: MaterialType.transparency, child: child),
+          onReorder: _onReorder,
+          children: [
+            for (final (i, filter) in movable.indexed)
+              ReorderableDelayedDragStartListener(
+                key: ValueKey(filter),
+                index: i,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Center(child: _chip(filter)),
+                ),
               ),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

@@ -185,6 +185,24 @@ void main() {
       await tester.pumpAndSettle();
     }
 
+    // Свайп пальцем — серией мелких сдвигов, как живой жест.
+    Future<void> swipeRow(
+      WidgetTester tester,
+      double dx, {
+      String from = 'Агенты и боты',
+      int steps = 40,
+    }) async {
+      final swipe = await tester.startGesture(
+        tester.getCenter(find.text(from)),
+      );
+      for (var i = 0; i < steps; i++) {
+        await swipe.moveBy(Offset(dx, 0));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await swipe.up();
+      await tester.pumpAndSettle();
+    }
+
     setUp(() async {
       selected = [];
     });
@@ -345,26 +363,15 @@ void main() {
     });
 
     // AC:RL-chat-list-filter-reorder/6
-    testWidgets('AC-6: узкий телефон (360 px) — без переполнения, «Все» на '
-        'месте, хвост ряда доступен прокруткой', (tester) async {
+    testWidgets('AC-6: узкий телефон (360 px) — без переполнения, свайп '
+        'прокручивает ряд, а не переставляет', (tester) async {
       await loadRu(tester);
       SharedPreferences.setMockInitialValues({});
       prefs = await SharedPreferences.getInstance();
       await pumpRow(tester, width: 360);
 
       expect(tester.takeException(), isNull);
-      expect(find.text('Все'), findsOneWidget);
-      // Свайп пальцем — серией мелких сдвигов, как живой жест.
-      final swipe = await tester.startGesture(
-        tester.getCenter(find.text('Агенты и боты')),
-      );
-      for (var i = 0; i < 40; i++) {
-        await swipe.moveBy(const Offset(-20, 0));
-        await tester.pump(const Duration(milliseconds: 16));
-      }
-      await swipe.up();
-      await tester.pumpAndSettle();
-      expect(find.text('Все'), findsOneWidget, reason: '«Все» не уезжает');
+      await swipeRow(tester, -20);
       expect(
         prefs.getStringList(filterOrderPrefsKey(_userA)),
         isNull,
@@ -374,6 +381,46 @@ void main() {
       await tester.pumpAndSettle();
       expect(selected, [_F.unread]);
       expect(tester.takeException(), isNull);
+    });
+
+    // AC:RL-chat-list-filter-reorder/8
+    testWidgets('AC-8: «Все» прокручивается вместе с рядом и возвращается '
+        'свайпом обратно', (tester) async {
+      await loadRu(tester);
+      SharedPreferences.setMockInitialValues({});
+      prefs = await SharedPreferences.getInstance();
+      await pumpRow(tester, width: 360);
+
+      Rect rectOf(String label) => tester.getRect(find.text(label));
+      final all0 = rectOf('Все');
+      final next0 = rectOf('Агенты и боты');
+      final allChip = tester.getRect(
+        find.ancestor(of: find.text('Все'), matching: find.byType(FilterChip)),
+      );
+      final nextChip = tester.getRect(
+        find.ancestor(
+          of: find.text('Агенты и боты'),
+          matching: find.byType(FilterChip),
+        ),
+      );
+      expect(allChip.left, 16);
+      expect(allChip.center.dy, nextChip.center.dy);
+      expect(allChip.height, nextChip.height);
+
+      await swipeRow(tester, -5, from: 'Агенты и боты', steps: 10);
+      final all1 = rectOf('Все');
+      final next1 = rectOf('Агенты и боты');
+      expect(all1.left, lessThan(all0.left), reason: '«Все» уезжает влево');
+      expect(
+        all1.left - all0.left,
+        moreOrLessEquals(next1.left - next0.left, epsilon: 1),
+        reason: '«Все» сдвигается вместе с соседом, зазор тот же',
+      );
+      expect(all1.top, all0.top);
+
+      await swipeRow(tester, 5, from: 'Агенты и боты', steps: 40);
+      expect(rectOf('Все').left, moreOrLessEquals(all0.left, epsilon: 1));
+      expect(prefs.getStringList(filterOrderPrefsKey(_userA)), isNull);
     });
   });
 }

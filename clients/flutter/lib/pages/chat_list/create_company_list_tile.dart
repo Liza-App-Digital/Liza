@@ -4,6 +4,7 @@ import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat_list/chat_list.dart';
 import 'package:liza/utils/support_chat.dart';
+import 'package:liza/widgets/avatar.dart';
 
 /// Плашка видна только на чипе «Компании» и не в поиске.
 bool shouldShowCreateCompanyRow(
@@ -18,18 +19,18 @@ bool shouldShowCreateCompanyRow(
 class CreateCompanyListTile extends StatelessWidget {
   const CreateCompanyListTile({super.key});
 
-  static const _plusSize = 32.0;
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final l10n = L10n.of(context);
     final scheme = theme.colorScheme;
     final foreground = scheme.onPrimaryContainer;
-    // Карточка по макету: левый край на уровне аватаров списка (16), акцентная
-    // подложка, «+» в светлом квадрате слева, заголовок и пояснение.
+    // Геометрия повторяет строку ChatListItem (поля 8 + contentPadding 8,
+    // аватар 44, зазор 16): «+» стоит в слоте размера аватара на той же оси
+    // (край 16, центр 38), заголовок — на 76 как у названий компаний.
+    // Было 16+16 и «+» 32 → центр 48, «кривовато» (Надежда, 2026-10-21).
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
       child: Material(
         color: scheme.primaryContainer,
         borderRadius: BorderRadius.circular(AppConfig.borderRadius),
@@ -37,21 +38,23 @@ class CreateCompanyListTile extends StatelessWidget {
         child: InkWell(
           onTap: () => confirmCreateCompanyRequest(context),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: const EdgeInsets.fromLTRB(8, 12, 16, 12),
             child: Row(
               children: [
                 SizedBox.square(
                   key: const ValueKey('create_company_row_plus'),
-                  dimension: _plusSize,
+                  dimension: Avatar.defaultSize,
                   child: DecoratedBox(
                     decoration: BoxDecoration(
                       color: scheme.surface,
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(
+                        AppConfig.borderRadius / 4,
+                      ),
                     ),
-                    child: Icon(Icons.add, size: 20, color: foreground),
+                    child: Icon(Icons.add, color: foreground),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
