@@ -232,9 +232,12 @@ class _BotFatherPanelState extends State<BotFatherPanel> {
   Future<void> _openApp(AppEntry a) async {
     final url = a.appUrl;
     if (url == null) return;
-    final navigator = Navigator.of(context);
+    // open() немодален (miniApp встаёт панелью рядом с чатом) — открываем от
+    // контекста чата ПОСЛЕ закрытия панели BotFather.
+    final chatContext = Navigator.of(context).context;
+    Navigator.of(context).pop();
     await MiniAppWebView.open(
-      context: context,
+      context: chatContext,
       appUrl: url,
       appId: a.appId ?? 'unknown',
       appName: a.name,
@@ -242,7 +245,6 @@ class _BotFatherPanelState extends State<BotFatherPanel> {
       appType: a.appType,
       appStartPath: a.startPath,
     );
-    navigator.pop();
   }
 
   /// Хэндофф управляющего действия в чат BotFather: шлём боту callback c

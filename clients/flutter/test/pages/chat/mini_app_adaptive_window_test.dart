@@ -1,0 +1,463 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:matrix/matrix.dart';
+
+import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat/mini_app_manager.dart';
+import 'package:liza/pages/chat/mini_app_overlay.dart';
+
+import '../../utils/test_client.dart';
+
+/// Страж адаптивного окна miniApp: боковая панель на широком окне, двойной
+/// экран на узком, «на весь экран», свёрнутая плашка. Контент подменён через
+/// [MiniAppOverlay.debugContentBuilder] — WebView в widget-тесте не поднимается,
+/// а хост (шапка, раскладка, разделитель, Navigator) — настоящий.
+/// ledger:RL-miniapp-adaptive-window
+void main() {
+  late Client client;
+  late Room room;
+  final manager = MiniAppManager.instance;
+
+  // Счётчики жизни подменного контента и корня приложения: смена раскладки
+  // НЕ должна пересоздавать ни WebView, ни Router.
+  final contentInits = <String, int>{};
+  final contentPaths = <String, String>{};
+  var homeInits = 0;
+  Size? homeSize;
+
+  setUpAll(() async {
+    client = await prepareTestClient();
+    room = Room(id: '!shop:example.invalid', client: client);
+  });
+
+  setUp(() {
+    manager.closeAll();
+    manager.panelWidth.value = kMiniAppDefaultPanelWidth;
+    contentInits.clear();
+    contentPaths.clear();
+    homeInits = 0;
+    homeSize = null;
+    MiniAppOverlay.debugContentBuilder = (context, app) => _FakeContent(
+      app: app,
+      onInit: () {
+        contentInits[app.appId] = (contentInits[app.appId] ?? 0) + 1;
+        contentPaths[app.appId] = app.appStartPath;
+      },
+    );
+  });
+
+  tearDown(() {
+    manager.closeAll();
+    MiniAppOverlay.debugContentBuilder = null;
+  });
+
+  Future<void> pumpHost(WidgetTester tester, Size size) async {
+    tester.view.physicalSize = size;
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: L10n.localizationsDelegates,
+        supportedLocales: L10n.supportedLocales,
+        locale: const Locale('ru'),
+        builder: (context, child) => MiniAppOverlay(child: child!),
+        home: _ProbeHome(
+          onInit: () => homeInits++,
+          onSize: (s) => homeSize = s,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  void openShop({String path = ''}) => manager.open(
+    appUrl: 'https://shop.example.invalid/',
+    appId: 'shop',
+    appName: 'Магазин',
+    room: room,
+    appStartPath: path,
+  );
+
+  Rect panelRect(WidgetTester tester) =>
+      tester.getRect(find.byKey(const ValueKey('miniapp-content-shop')));
+
+  group('MiniAppManager', () {
+    test('по умолчанию: закреплённый с 1281 px, уже — на весь экран', () {
+      // AC:RL-miniapp-adaptive-window/1
+      expect(manager.isFullscreenFor(390), isTrue);
+      expect(manager.isFullscreenFor(1000), isTrue);
+      expect(manager.isFullscreenFor(1200), isTrue);
+      expect(manager.isFullscreenFor(1440), isFalse);
+      openShop();
+      manager.setFullscreen(true);
+      expect(manager.isFullscreenFor(1440), isTrue);
+      manager.closeAll();
+      openShop();
+      expect(
+        manager.fullscreenPreference,
+        isNull,
+        reason: 'новое открытие после закрытия всех — снова по ширине',
+      );
+    });
+
+    test('ширина панели ужимается под окно', () {
+      // AC:RL-miniapp-adaptive-window/5
+      expect(clampMiniAppPanelWidth(100, 1440), kMiniAppMinPanelWidth);
+      expect(clampMiniAppPanelWidth(5000, 1440), 1440 - kMiniAppMinChildWidth);
+      expect(
+        kMiniAppMinChildWidth,
+        841,
+        reason: 'панель не сжимает приложение ниже двух колонок',
+      );
+      expect(clampMiniAppPanelWidth(440, 1440), 440);
+    });
+
+    test('повторный open с новым deep-link пересоздаёт инстанс', () {
+      // AC:RL-miniapp-adaptive-window/7
+      openShop(path: '#!/a');
+      final first = manager.activeApp!;
+      openShop();
+      expect(
+        manager.activeApp!.contentKey,
+        first.contentKey,
+        reason: 'без пути — просто активировать открытый',
+      );
+      openShop(path: '#!/b');
+      expect(manager.activeApp!.appStartPath, '#!/b');
+      expect(manager.activeApp!.contentKey, isNot(first.contentKey));
+      expect(manager.appCount, 1);
+    });
+
+    test('closeForClient закрывает только miniApp вышедшего клиента', () {
+      // AC:RL-miniapp-adaptive-window/9
+      openShop();
+      manager.closeForClient(client);
+      expect(manager.hasApps, isFalse);
+    });
+  });
+
+  group('MiniAppOverlay', () {
+    testWidgets(
+      '1440: боковая панель справа, приложение сужено, не перекрыто',
+      (tester) async {
+        // AC:RL-miniapp-adaptive-window/1 AC:RL-miniapp-adaptive-window/2
+        await pumpHost(tester, const Size(1440, 900));
+        openShop();
+        await tester.pumpAndSettle();
+
+        final rect = panelRect(tester);
+        expect(rect.right, 1440);
+        expect(rect.width, kMiniAppDefaultPanelWidth);
+        expect(
+          homeSize!.width,
+          1440 - kMiniAppDefaultPanelWidth,
+          reason: 'MediaQuery приложения видит оставшуюся ширину',
+        );
+        expect(
+          tester.getRect(find.byType(_ProbeHome)).right,
+          1440 - kMiniAppDefaultPanelWidth,
+        );
+        expect(
+          find.byKey(const ValueKey('miniapp-fullscreen')),
+          findsOneWidget,
+        );
+        expect(find.byType(Dialog), findsNothing);
+        expect(homeInits, 1);
+      },
+    );
+
+    for (final size in const [
+      Size(390, 844),
+      Size(1000, 800),
+      Size(1200, 800),
+    ]) {
+      testWidgets('${size.width.toInt()}: по умолчанию на весь экран', (
+        tester,
+      ) async {
+        // AC:RL-miniapp-adaptive-window/1
+        await pumpHost(tester, size);
+        openShop();
+        await tester.pumpAndSettle();
+
+        final rect = panelRect(tester);
+        expect(rect.left, 0);
+        expect(rect.right, size.width);
+        expect(find.byKey(const ValueKey('miniapp-dock')), findsOneWidget);
+      });
+    }
+
+    testWidgets('1440: на весь экран → вернуть → свернуть → развернуть, '
+        'WebView и Router живы', (tester) async {
+      // AC:RL-miniapp-adaptive-window/4
+      await pumpHost(tester, const Size(1440, 900));
+      openShop();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('miniapp-fullscreen')));
+      await tester.pumpAndSettle();
+      expect(panelRect(tester).width, 1440);
+
+      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
+      await tester.pumpAndSettle();
+      expect(panelRect(tester).width, kMiniAppDefaultPanelWidth);
+
+      await tester.tap(find.byKey(const ValueKey('miniapp-minimize')));
+      await tester.pumpAndSettle();
+      expect(homeSize!.width, 1440);
+      // AC:RL-miniapp-adaptive-window/6
+      expect(find.text('Магазин'), findsOneWidget);
+
+      manager.expand();
+      await tester.pumpAndSettle();
+      expect(panelRect(tester).width, kMiniAppDefaultPanelWidth);
+
+      expect(contentInits['shop'], 1);
+      expect(homeInits, 1);
+    });
+
+    testWidgets('390: двойной экран — miniApp сверху, чат снизу; '
+        'клавиатура не роняет раскладку', (tester) async {
+      // AC:RL-miniapp-adaptive-window/3 AC:RL-miniapp-adaptive-window/4
+      await pumpHost(tester, const Size(390, 844));
+      openShop();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
+      await tester.pumpAndSettle();
+
+      final home = tester.getRect(find.byType(_ProbeHome));
+      final panel = tester.getRect(
+        find
+            .ancestor(
+              of: find.byKey(const ValueKey('miniapp-content-shop')),
+              matching: find.byType(Material),
+            )
+            .first,
+      );
+      expect(panel.top, 0);
+      expect(panel.bottom, lessThanOrEqualTo(home.top));
+      expect(home.top, closeTo(844 / 2, 1));
+      expect(home.bottom, 844);
+      expect(find.byKey(const ValueKey('miniapp-fullscreen')), findsOneWidget);
+
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      final squeezed = tester.getRect(find.byType(_ProbeHome));
+      expect(
+        squeezed.height - 300,
+        greaterThanOrEqualTo(160),
+        reason: 'над клавиатурой чату остаётся место под поле ввода',
+      );
+
+      expect(contentInits['shop'], 1);
+      expect(homeInits, 1);
+    });
+
+    testWidgets('1200: «вернуть панель» — сбоку, приложение остаётся в двух '
+        'колонках', (tester) async {
+      // AC:RL-miniapp-adaptive-window/2
+      await pumpHost(tester, const Size(1200, 800));
+      openShop();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
+      await tester.pumpAndSettle();
+
+      expect(panelRect(tester).right, 1200);
+      expect(homeSize!.width, greaterThan(840));
+      expect(homeInits, 1);
+    });
+
+    testWidgets(
+      '1100: на боковую панель ширины мало — закрепить = двойной экран',
+      (tester) async {
+        // AC:RL-miniapp-adaptive-window/3
+        await pumpHost(tester, const Size(1100, 800));
+        openShop();
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
+        await tester.pumpAndSettle();
+
+        final home = tester.getRect(find.byType(_ProbeHome));
+        expect(home.top, closeTo(400, 1));
+        expect(homeSize!.width, 1100);
+        expect(panelRect(tester).width, 1100);
+      },
+    );
+
+    testWidgets(
+      'Android «назад»: сначала диалог в панели, потом сворачивание',
+      (tester) async {
+        // AC:RL-miniapp-adaptive-window/8
+        await pumpHost(tester, const Size(390, 844));
+        openShop();
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const ValueKey('fake-content-dialog')));
+        await tester.pumpAndSettle();
+        expect(find.text('fake-dialog'), findsOneWidget);
+
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(find.text('fake-dialog'), findsNothing);
+        expect(manager.isExpanded, isTrue);
+
+        await tester.binding.handlePopRoute();
+        await tester.pumpAndSettle();
+        expect(manager.isExpanded, isFalse);
+        expect(homeInits, 1);
+      },
+    );
+
+    testWidgets('граница панели тянется мышью в пределах clamp', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/5
+      await pumpHost(tester, const Size(1440, 900));
+      openShop();
+      await tester.pumpAndSettle();
+
+      final handle = find.byKey(const ValueKey('miniapp-host-divider'));
+      await tester.drag(handle, const Offset(-2000, 0));
+      await tester.pumpAndSettle();
+      expect(panelRect(tester).width, 1440 - kMiniAppMinChildWidth);
+
+      await tester.drag(handle, const Offset(2000, 0));
+      await tester.pumpAndSettle();
+      expect(panelRect(tester).width, kMiniAppMinPanelWidth);
+      expect(contentInits['shop'], 1);
+    });
+
+    testWidgets('плашка 40 px только в свёрнутом состоянии', (tester) async {
+      // AC:RL-miniapp-adaptive-window/6
+      await pumpHost(tester, const Size(390, 844));
+      openShop();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('miniapp-host-bar')), findsNothing);
+
+      manager.minimize();
+      await tester.pumpAndSettle();
+      final bar = tester.getRect(
+        find.byKey(const ValueKey('miniapp-host-bar')),
+      );
+      expect(bar.height, kMiniAppCollapsedBarHeight);
+      final label = tester.widget<Text>(find.text('Магазин'));
+      expect(label.style?.fontSize, 14);
+    });
+
+    testWidgets('deep-link доходит до контента; новый путь пересоздаёт его', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/7
+      await pumpHost(tester, const Size(390, 844));
+      openShop(path: '#!/tproduct/1');
+      await tester.pumpAndSettle();
+      expect(contentPaths['shop'], '#!/tproduct/1');
+
+      openShop(path: '#!/tproduct/2');
+      await tester.pumpAndSettle();
+      expect(contentPaths['shop'], '#!/tproduct/2');
+      expect(contentInits['shop'], 2);
+    });
+
+    testWidgets('меню «⋮» и диалог из контента открываются внутри хоста', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/8 — хост смонтирован над Router; без
+      // своего Navigator тут было «context does not include a Navigator».
+      for (final size in const [Size(390, 844), Size(1440, 900)]) {
+        await pumpHost(tester, size);
+        openShop();
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const ValueKey('miniapp-more')));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(find.text('Скопировать ссылку'), findsOneWidget);
+        // Барьер меню живёт в Overlay панели — закрываем кликом внутри неё.
+        await tester.tapAt(
+          panelRect(tester).bottomCenter - const Offset(0, 10),
+        );
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const ValueKey('fake-content-dialog')));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(find.text('fake-dialog'), findsOneWidget);
+        await tester.tap(find.text('ok'));
+        await tester.pumpAndSettle();
+
+        manager.closeAll();
+        await tester.pumpAndSettle();
+      }
+    });
+  });
+}
+
+class _ProbeHome extends StatefulWidget {
+  final VoidCallback onInit;
+  final ValueChanged<Size> onSize;
+
+  const _ProbeHome({required this.onInit, required this.onSize});
+
+  @override
+  State<_ProbeHome> createState() => _ProbeHomeState();
+}
+
+class _ProbeHomeState extends State<_ProbeHome> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onInit();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    widget.onSize(MediaQuery.sizeOf(context));
+    return const Scaffold(body: SizedBox.expand());
+  }
+}
+
+class _FakeContent extends StatefulWidget {
+  final MiniAppInstance app;
+  final VoidCallback onInit;
+
+  const _FakeContent({required this.app, required this.onInit});
+
+  @override
+  State<_FakeContent> createState() => _FakeContentState();
+}
+
+class _FakeContentState extends State<_FakeContent> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onInit();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.expand(
+      key: ValueKey('miniapp-content-${widget.app.appId}'),
+      child: Align(
+        alignment: Alignment.topLeft,
+        child: TextButton(
+          key: const ValueKey('fake-content-dialog'),
+          onPressed: () => showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              content: const Text('fake-dialog'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('ok'),
+                ),
+              ],
+            ),
+          ),
+          child: const Text('dialog'),
+        ),
+      ),
+    );
+  }
+}

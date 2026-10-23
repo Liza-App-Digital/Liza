@@ -64,8 +64,11 @@ void main() {
       test(entry.key, () => expect(entry.value, isEmpty));
     }
 
-    test('пробник 200 → жива', () {
-      expect(classifyGhostProbe(ok: true), GhostProbe.alive);
+    test('пробник 200, членство join → жива', () {
+      expect(
+        classifyGhostProbe(ok: true, membership: 'join'),
+        GhostProbe.alive,
+      );
       final decision = decideGhostRemoval(
         probes: {'!lag': GhostProbe.alive},
         localJoinedCount: 40,
@@ -78,6 +81,9 @@ void main() {
   group('не можем судить → не удаляем', () {
     test('/joined_rooms не ответил', () {
       expect(_candidates([_room('!ghost')], server: null), isEmpty);
+    });
+    test('пробник 200 без membership → unknown', () {
+      expect(classifyGhostProbe(ok: true), GhostProbe.unknown);
     });
     for (final errcode in [
       null,
@@ -100,6 +106,15 @@ void main() {
       expect(decision.remove, isEmpty);
       expect(decision.aborted, isFalse);
     });
+    // AC:RL-ghost-room-local-prune/12
+    for (final membership in ['leave', 'ban', 'invite', 'knock']) {
+      test('пробник 200, членство $membership → gone', () {
+        expect(
+          classifyGhostProbe(ok: true, membership: membership),
+          GhostProbe.gone,
+        );
+      });
+    }
     for (final errcode in ['M_FORBIDDEN', 'M_NOT_FOUND']) {
       test('пробник errcode=$errcode → gone', () {
         expect(

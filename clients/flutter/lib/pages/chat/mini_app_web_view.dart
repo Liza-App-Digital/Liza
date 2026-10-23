@@ -16,10 +16,8 @@ import 'package:liza/utils/bot_miniapp_registry.dart';
 import 'package:liza/utils/miniapp_room.dart';
 import 'package:liza/utils/miniapp_start_path.dart';
 
-/// Точка входа для открытия MiniApp.
-///
-/// На мобильных — через глобальный MiniAppManager (overlay поверх всего UI).
-/// На desktop — через диалог (как раньше).
+/// Точка входа для открытия MiniApp — через глобальный MiniAppManager
+/// (хост MiniAppOverlay поверх всего UI).
 ///
 /// СТОРОННИЙ (third_party) app ВРЕМЕННО грузится напрямую (как Liza), пока
 /// не достроен доверенный shell-host для sandboxed-iframe (blocker B6). Когда
@@ -90,143 +88,24 @@ class MiniAppWebView {
     // Fire-and-forget, не блокирует и не роняет открытие.
     BotMiniAppRegistry.instance.recordOpen(room.client, appId);
 
-    final platform = Theme.of(context).platform;
-    final isMobile = platform == TargetPlatform.iOS ||
-        platform == TargetPlatform.android;
-
-    if (isMobile) {
-      // Открываем через глобальный MiniAppManager → MiniAppOverlay
-      MiniAppManager.instance.open(
-        appUrl: appUrl,
-        appId: appId,
-        appName: appName,
-        room: room,
-        appType: appType,
-        appStartPath: appStartPath,
-      );
-    } else {
-      // Desktop — диалог фиксированного размера (как раньше)
-      await showDialog(
-        context: context,
-        builder: (context) => Dialog(
-          insetPadding: const EdgeInsets.symmetric(
-            horizontal: 80,
-            vertical: 40,
-          ),
-          clipBehavior: Clip.antiAlias,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: SizedBox(
-            width: 480,
-            height: 720,
-            child: _DesktopMiniAppShell(
-              appUrl: appUrl,
-              appId: appId,
-              appName: appName,
-              room: room,
-              appType: appType,
-              appStartPath: appStartPath,
-            ),
-          ),
-        ),
-      );
-    }
-  }
-}
-
-/// Desktop-обёртка со своим Scaffold.
-class _DesktopMiniAppShell extends StatefulWidget {
-  final String appUrl;
-  final String appId;
-  final String appName;
-  final Room room;
-  final String appType;
-  final String appStartPath;
-
-  const _DesktopMiniAppShell({
-    required this.appUrl,
-    required this.appId,
-    required this.appName,
-    required this.room,
-    this.appType = 'first_party',
-    this.appStartPath = '',
-  });
-
-  @override
-  State<_DesktopMiniAppShell> createState() => _DesktopMiniAppShellState();
-}
-
-class _DesktopMiniAppShellState extends State<_DesktopMiniAppShell> {
-  // Ключ к состоянию webview — чтобы из шапки дёрнуть copyInviteLink (он знает
-  // текущий URL/комнату).
-  final _contentKey = GlobalKey<MiniAppWebViewContentState>();
-
-  Future<void> _copyLink() async {
-    final msg = await _contentKey.currentState?.copyInviteLink();
-    if (!mounted || msg == null) return;
-    // У desktop-shell свой Scaffold (внутри Dialog) — SnackBar виден над ним.
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      // Белый фон диалога mini App: иначе тёмная тема даёт near-black surface,
-      // который просвечивает сквозь transparentBackground webview (чёрные просветы).
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        centerTitle: true,
-        title: Text(widget.appName, style: const TextStyle(fontSize: 16)),
-        actions: [
-          PopupMenuButton<String>(
-            tooltip: L10n.of(context).miniAppMore,
-            icon: const Icon(Icons.more_vert),
-            onSelected: (v) {
-              if (v == 'copy_link') _copyLink();
-            },
-            itemBuilder: (_) => [
-              PopupMenuItem<String>(
-                value: 'copy_link',
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.link, size: 20),
-                    const SizedBox(width: 12),
-                    Text(L10n.of(context).miniAppCopyLink),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          IconButton(
-            icon: const Icon(Icons.close),
-            onPressed: () => Navigator.of(context).pop(),
-          ),
-        ],
-      ),
-      body: MiniAppWebViewContent(
-        key: _contentKey,
-        appUrl: widget.appUrl,
-        appId: widget.appId,
-        appName: widget.appName,
-        room: widget.room,
-        appType: widget.appType,
-        appStartPath: widget.appStartPath,
-        onClose: () => Navigator.of(context).pop(),
-        onMinimize: null,
-      ),
+    // Немодально на всех платформах: глобальный MiniAppManager → хост
+    // MiniAppOverlay сам выбирает раскладку по ширине окна (боковая панель /
+    // двойной экран / на весь экран).
+    MiniAppManager.instance.open(
+      appUrl: appUrl,
+      appId: appId,
+      appName: appName,
+      room: room,
+      appType: appType,
+      appStartPath: appStartPath,
     );
   }
 }
 
 /// Содержимое WebView miniApp — WebView + bridge + MainButton.
 ///
-/// Используется и в MiniAppOverlay (мобильные), и в desktop-диалоге.
-/// Сохраняет состояние WebView при сворачивании через GlobalKey.
+/// Живёт в хосте MiniAppOverlay. Сохраняет состояние WebView при сворачивании
+/// и смене раскладки через GlobalKey.
 class MiniAppWebViewContent extends StatefulWidget {
   final String appUrl;
   final String appId;

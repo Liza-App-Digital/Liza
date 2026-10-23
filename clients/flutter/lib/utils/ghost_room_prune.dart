@@ -151,10 +151,14 @@ Future<bool> clientHasUnsentEvents(Client client) async {
 
 Future<GhostProbe> _probe(Client client, String roomId) async {
   try {
-    await client
-        .getRoomStateWithKey(roomId, EventTypes.RoomCreate, '')
+    final member = await client
+        .getRoomStateWithKey(roomId, EventTypes.RoomMember, client.userID!)
         .timeout(_probeTimeout);
-    return classifyGhostProbe(ok: true);
+    final membership = member['membership'];
+    return classifyGhostProbe(
+      ok: true,
+      membership: membership is String ? membership : null,
+    );
   } on MatrixException catch (e) {
     // Не e.errcode: тот подставляет M_UNKNOWN, когда errcode в теле нет.
     final errcode = e.raw['errcode'];

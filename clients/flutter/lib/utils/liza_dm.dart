@@ -5,10 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:collection/collection.dart';
 import 'package:go_router/go_router.dart';
 import 'package:matrix/matrix.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:liza/l10n/l10n.dart';
-import 'package:liza/utils/composer_draft.dart';
 import 'package:liza/utils/direct_chat_ensure.dart';
 import 'package:liza/utils/miniapp_room.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
@@ -96,74 +94,6 @@ Future<bool> waitForMemberJoin(
   return true;
 }
 
-/// Ждёт первое сообщение [lizaMxid] в комнате [roomId] — приветствие
-/// комнаты-запроса. После join бот ещё читает маркер комнаты и шифрует, и
-/// вопрос, отправленный сразу, встал бы в чате НАД приветствием. `false` —
-/// не дождались (старый бот, сбой); вызывающий всё равно шлёт.
-Future<bool> waitForLizaGreeting(
-  Client client,
-  String roomId,
-  String lizaMxid, {
-  Duration timeout = const Duration(seconds: 8),
-}) async {
-  bool fromLiza(Event e) =>
-      e.roomId == roomId &&
-      e.senderId == lizaMxid &&
-      (e.type == EventTypes.Message || e.type == EventTypes.Encrypted);
-
-  // Проверка уже пришедшего и подписка — в одном синхронном куске: события
-  // потока доставляются асинхронно и вклиниться между ними не могут.
-  final last = client.getRoomById(roomId)?.lastEvent;
-  if (last != null && fromLiza(last)) return true;
-  try {
-    // `Stream.timeout` + `first` снимают подписку и по таймауту.
-    await client.onTimelineEvent.stream.where(fromLiza).timeout(timeout).first;
-    return true;
-  } on TimeoutException {
-    Logs().w('[LizaDm] приветствие $lizaMxid в $roomId не пришло за $timeout');
-    return false;
-  }
-}
-
-/// Первый вопрос нового запроса, набранный ДО создания комнаты (пустая
-/// правая панель). Лиза не вступила — не шлём: бот увидел бы вопрос
-/// вперемешку с приветствием; кладём в черновик чата, человек отправит сам.
-/// Отправку не ждём: локальное эхо и повтор при сбое — у SDK.
-///
-/// Не бросает: комната уже создана, и ошибка здесь оставила бы её сиротой, а
-/// текст в поле панели — повторный Enter создал бы второй «Новый запрос».
-Future<void> sendFirstRequestMessage(
-  Client client,
-  SharedPreferences store,
-  String roomId,
-  String lizaMxid,
-  String text, {
-  required bool lizaJoined,
-  Duration greetingTimeout = const Duration(seconds: 8),
-}) async {
-  if (lizaJoined) {
-    await waitForLizaGreeting(
-      client,
-      roomId,
-      lizaMxid,
-      timeout: greetingTimeout,
-    );
-    final room = client.getRoomById(roomId);
-    if (room != null) {
-      room.sendTextEvent(text).catchError((Object e, StackTrace s) {
-        Logs().w('[LizaDm] первый вопрос в $roomId не отправлен', e, s);
-        return null;
-      });
-      return;
-    }
-  }
-  try {
-    await writeComposerDraft(store, roomId, text);
-  } catch (e, s) {
-    Logs().w('[LizaDm] черновик первого вопроса в $roomId не сохранён', e, s);
-  }
-}
-
 /// Основной чат с Лизой: существующий или новый.
 ///
 /// SDK `startDirectChat` без skipExistingChat берёт из m.direct самый СВЕЖИЙ DM
@@ -187,16 +117,30 @@ Future<(String, bool)> startLizaRequestChat(
   String lizaMxid, {
   required String title,
 }) async {
-  final id = await client.ensureDirectChat(
-    lizaMxid,
-    forceNew: true,
-    initialState: [
-      StateEvent(type: lizaRequestStateType, content: {'placeholder': title}),
-      StateEvent(type: EventTypes.RoomName, content: {'name': title}),
-    ],
-  );
+  final id = await createLizaRequestRoom(client, lizaMxid, title: title);
   return (id, await waitForMemberJoin(client, id, lizaMxid));
 }
+
+/// Комната-запрос без ожидания Лизы. [firstMessage] — вопрос уйдёт сразу за
+/// созданием (пустая панель): маркер велит боту не слать приглашение к задаче,
+/// оно встало бы под вопросом. Комната нешифрованная, поэтому вопрос,
+/// отправленный до join Лизы, бот получит в первом же sync.
+Future<String> createLizaRequestRoom(
+  Client client,
+  String lizaMxid, {
+  required String title,
+  bool firstMessage = false,
+}) => client.ensureDirectChat(
+  lizaMxid,
+  forceNew: true,
+  initialState: [
+    StateEvent(
+      type: lizaRequestStateType,
+      content: {'placeholder': title, if (firstMessage) 'first_message': true},
+    ),
+    StateEvent(type: EventTypes.RoomName, content: {'name': title}),
+  ],
+);
 
 /// Открывает основной чат с Лизой и нажимает в нём кнопку её карточки
 /// [buttonId] (`agent.start` — мастер «Подключить своего агента»). Входы: пункт

@@ -13,7 +13,7 @@ import 'package:liza/widgets/update_read_only_bar.dart';
 /// Правая панель на компьютере, когда чат не выбран (`/rooms` в column-mode):
 /// вместо пустого силуэта — новый запрос к Лизе (задача 14, макет Надежды
 /// «Какую задачу решим, Надежда?»). Отправка = «Новый запрос» с этим текстом
-/// первым сообщением (`openNewLizaRequest`).
+/// первым сообщением (`sendNewLizaRequest`).
 class NewRequestEmptyPage extends StatefulWidget {
   const NewRequestEmptyPage({super.key});
 
@@ -65,12 +65,14 @@ class _NewRequestEmptyPageState extends State<NewRequestEmptyPage> {
     // Флаг — до первого await: Enter приходит в обход кнопки и раньше, чем
     // откроется барьер-диалог.
     setState(() => _sending = true);
-    final opened = await openNewLizaRequest(context, initialMessage: text);
-    if (!mounted) return;
-    setState(() => _sending = false);
-    // Панель остаётся под открытым чатом в стеке /rooms — без очистки текст
-    // встретил бы человека при возврате. При ошибке текст остаётся.
-    if (opened) _controller.clear();
+    try {
+      final opened = await sendNewLizaRequest(context, text);
+      // Панель остаётся под открытым чатом в стеке /rooms — без очистки текст
+      // встретил бы человека при возврате. При ошибке текст остаётся.
+      if (opened && mounted) _controller.clear();
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
   }
 
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent evt) =>
@@ -188,7 +190,14 @@ class _NewRequestEmptyPageState extends State<NewRequestEmptyPage> {
           builder: (context, value, _) => IconButton.filled(
             key: const Key('new_request_send'),
             tooltip: l10n.send,
-            icon: const Icon(Icons.arrow_upward),
+            // Барьер-диалога больше нет: пока создаётся чат (~1 с), отклик — здесь.
+            icon: _sending
+                ? const SizedBox.square(
+                    key: Key('new_request_sending'),
+                    dimension: 20,
+                    child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                  )
+                : const Icon(Icons.arrow_upward),
             onPressed: _sending || value.text.trim().isEmpty ? null : _send,
           ),
         ),

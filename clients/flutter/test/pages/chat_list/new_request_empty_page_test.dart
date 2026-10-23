@@ -2,21 +2,27 @@
 // ledger:RL-empty-panel-new-request
 // AC:RL-empty-panel-new-request/2 AC:RL-empty-panel-new-request/3
 // AC:RL-empty-panel-new-request/4 AC:RL-empty-panel-new-request/5
-// AC:RL-empty-panel-new-request/8
+// AC:RL-empty-panel-new-request/6 AC:RL-empty-panel-new-request/7
+// AC:RL-empty-panel-new-request/8 AC:RL-empty-panel-new-request/10
 // guard.render:real-widget
 //
 // Пустая правая панель на компьютере (задача 14): РЕАЛЬНЫЙ NewRequestEmptyPage
 // в ru-локали (ловит и дыру intl_ru). Отправка идёт по настоящей воронке
-// openNewLizaRequest → startLizaRequestChat → ensureDirectChat; клиент считает
-// startDirectChat. Порядок «приветствие → вопрос» — в
-// test/utils/new_request_first_message_test.dart.
+// sendNewLizaRequest → createLizaRequestRoom → ensureDirectChat; клиент считает
+// startDirectChat. С 22.10 (видео Надежды) — без барьер-диалога и без ожидания
+// Лизы: чат открывается сразу, вопрос в нём первым сообщением.
 //
 // Red-proof:
 //   RP-1 (AC-3): кнопка без проверки `trim().isEmpty` → на «   » активна, красный.
-//   RP-2 (AC-5): убрать проверку `_sending` в _send → второй Enter приходит
-//     раньше барьер-диалога, вопрос уходит дважды — `sent` красный.
+//   RP-2 (AC-5): убрать проверку `_sending` в _send → второй Enter создаёт
+//     второй запрос — `calls` красный.
 //   RP-3 (AC-4): `FocusNode()` без onKeyEvent → Enter не создаёт комнату.
 //   RP-4 (AC-8): показывать поле при read-only → `update_read_only_bar` не найден.
+//   RP-5 (AC-6): вернуть ожидание join Лизы → комната без Лизы, переход и PUT
+//     не наступают — красный; вернуть showFutureLoadingDialog → AlertDialog найден.
+//   RP-6 (AC-6): не ставить `first_message` → маркер без флага, красный.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -132,10 +138,12 @@ void main() {
   });
 
   testWidgets(
-    'AC-4/AC-5: Shift+Enter не шлёт; два Enter → один «Новый запрос», '
-    'вопрос отправлен один раз, чат открыт, поле очищено',
+    'AC-4/AC-5/AC-6: Shift+Enter не шлёт; два Enter → один «Новый запрос» '
+    'без диалога и без ожидания Лизы: вопрос отправлен один раз, чат открыт, '
+    'поле очищено',
     (tester) async {
       final client = await pumpPanel(tester, displayName: 'Иван');
+      final created = client.hold();
       await tester.enterText(find.byType(TextField), '  план на неделю ');
       await tester.pump();
 
@@ -147,14 +155,61 @@ void main() {
 
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      for (var i = 0; i < 10; i++) {
-        await tester.pump(const Duration(milliseconds: 100));
-      }
+      await tester.pump();
+      // Пока сервер создаёт комнату — спиннер на кнопке, барьер-диалога нет.
+      expect(find.byKey(const Key('new_request_sending')), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(sendButton(tester).onPressed, isNull);
+
+      created.complete();
+      await tester.pump();
+      await tester.pump();
       expect(client.calls, 1);
-      expect(client.lastInitialState, contains('com.liza.assistant.request'));
+      expect(client.marker, {
+        'placeholder': 'Новый запрос',
+        'first_message': true,
+      });
+      // Лиза ещё не вступила — вопрос всё равно ушёл и чат открыт.
       expect(client.room?.sent, ['план на неделю']);
       expect(find.text('room $_requestRoomId'), findsOneWidget);
       expect(store.getString('draft_$_requestRoomId'), isNull);
+    },
+  );
+
+  testWidgets(
+    'AC-7: комната ещё не пришла в sync — вопрос в черновике чата, чат открыт',
+    (tester) async {
+      final client = await pumpPanel(tester, displayName: 'Иван');
+      client.syncRoom = false;
+      await tester.enterText(find.byType(TextField), 'план на неделю');
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      for (var i = 0; i < 5; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(client.calls, 1);
+      expect(find.text('room $_requestRoomId'), findsOneWidget);
+      expect(store.getString('draft_$_requestRoomId'), 'план на неделю');
+      await store.remove('draft_$_requestRoomId');
+    },
+  );
+
+  testWidgets(
+    'AC-10: чат не создан — сообщение об ошибке, текст в поле, кнопка снова активна',
+    (tester) async {
+      final client = await pumpPanel(tester, displayName: 'Иван');
+      client.fail = true;
+      await tester.enterText(find.byType(TextField), 'план на неделю');
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      for (var i = 0; i < 5; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.text('Ой, что-то пошло не так…'), findsOneWidget);
+      expect(find.text('room $_requestRoomId'), findsNothing);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'план на неделю',
+      );
+      expect(sendButton(tester).onPressed, isNotNull);
     },
   );
 
@@ -177,7 +232,13 @@ class _PanelClient extends Client {
 
   final String? displayName;
   int calls = 0;
-  List<String> lastInitialState = const [];
+  Map<String, Object?>? marker;
+  bool syncRoom = true;
+  bool fail = false;
+  Completer<void>? _hold;
+
+  /// Задержать ответ сервера на создание комнаты до `complete()`.
+  Completer<void> hold() => _hold = Completer<void>();
 
   @override
   String? get userID => '@ivan:liza.local';
@@ -199,29 +260,14 @@ class _PanelClient extends Client {
     bool skipExistingChat = false,
   }) async {
     calls++;
-    lastInitialState = [for (final s in initialState ?? []) s.type];
-    // Комната «пришла» sync'ом: Лиза вступила и уже поприветствовала.
+    marker = initialState
+        ?.firstWhere((s) => s.type == 'com.liza.assistant.request')
+        .content;
+    await _hold?.future;
+    if (fail) throw Exception('M_LIMIT_EXCEEDED');
+    // Как на проде сразу после createRoom: Лиза только приглашена, не вступила.
     final created = room = _RecordingRoom(this);
-    created.setState(
-      Event(
-        type: EventTypes.RoomMember,
-        eventId: r'$liza-join',
-        senderId: mxid,
-        originServerTs: DateTime.now(),
-        room: created,
-        content: {'membership': 'join'},
-        stateKey: mxid,
-      ),
-    );
-    created.lastEvent = Event(
-      type: EventTypes.Message,
-      eventId: r'$greeting',
-      senderId: mxid,
-      originServerTs: DateTime.now(),
-      room: created,
-      content: {'msgtype': 'm.text', 'body': 'Какую задачу решим сегодня?'},
-    );
-    rooms.add(created);
+    if (syncRoom) rooms.add(created);
     return created.id;
   }
 
@@ -256,7 +302,7 @@ class _RecordingRoom extends Room {
   }
 }
 
-/// `openNewLizaRequest` берёт `Matrix.of(context).client` и `.store`; в тесте
+/// `sendNewLizaRequest` берёт `Matrix.of(context).client` и `.store`; в тесте
 /// смонтированного Matrix нет.
 class _TestMatrix extends MatrixState {
   _TestMatrix(this.testClient, this.testStore);

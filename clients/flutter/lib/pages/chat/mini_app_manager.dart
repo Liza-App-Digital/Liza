@@ -1,6 +1,13 @@
 import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 
+/// Ширина боковой панели miniApp по умолчанию (широкое окно).
+const double kMiniAppDefaultPanelWidth = 440;
+
+/// С какой ширины окна miniApp по умолчанию открывается закреплённой панелью
+/// сбоку, а не на весь экран: двухколоночный режим (841) + панель по умолчанию.
+const double kMiniAppDockedByDefaultMinWidth = 841 + kMiniAppDefaultPanelWidth;
+
 /// Описание одного открытого MiniApp-инстанса.
 class MiniAppInstance {
   final String appUrl;
@@ -16,6 +23,10 @@ class MiniAppInstance {
   /// открываем главную.
   final String appStartPath;
 
+  /// Поколение инстанса: растёт, когда уже открытый app переоткрывают с другим
+  /// deep-link. Входит в ключ контента — WebView пересоздаётся на новом пути.
+  final int generation;
+
   MiniAppInstance({
     required this.appUrl,
     required this.appId,
@@ -23,7 +34,10 @@ class MiniAppInstance {
     required this.room,
     this.appType = 'first_party',
     this.appStartPath = '',
+    this.generation = 0,
   });
+
+  String get contentKey => '$appId#$generation';
 }
 
 /// Глобальный менеджер открытых MiniApp.
@@ -38,11 +52,31 @@ class MiniAppManager extends ChangeNotifier {
   final List<MiniAppInstance> _apps = [];
   String? _activeAppId;
   bool _isExpanded = false;
+  bool? _fullscreen;
+
+  /// Ширина боковой панели на широком окне. ValueNotifier, а не поле с
+  /// notifyListeners: при перетаскивании границы перестраивается только
+  /// геометрия, а не весь overlay со всеми WebView.
+  final panelWidth = ValueNotifier<double>(kMiniAppDefaultPanelWidth);
 
   List<MiniAppInstance> get apps => List.unmodifiable(_apps);
   bool get hasApps => _apps.isNotEmpty;
   int get appCount => _apps.length;
   bool get isExpanded => _isExpanded;
+
+  /// Явный выбор пользователя «на весь экран» / «закреплённый» (боковая панель
+  /// на широком окне, двойной экран на узком). null — по умолчанию от ширины.
+  bool? get fullscreenPreference => _fullscreen;
+
+  /// Развёрнут ли miniApp на весь экран при данной ширине окна.
+  bool isFullscreenFor(double windowWidth) =>
+      _fullscreen ?? windowWidth < kMiniAppDockedByDefaultMinWidth;
+
+  void setFullscreen(bool value) {
+    if (_fullscreen == value) return;
+    _fullscreen = value;
+    notifyListeners();
+  }
 
   String? get activeAppId => _activeAppId;
 
@@ -64,22 +98,37 @@ class MiniAppManager extends ChangeNotifier {
     String appType = 'first_party',
     String appStartPath = '',
   }) {
-    final existing = _apps.where((a) => a.appId == appId);
-    if (existing.isNotEmpty) {
+    final index = _apps.indexWhere((a) => a.appId == appId);
+    if (index >= 0) {
+      final existing = _apps[index];
+      if (appStartPath.isNotEmpty && appStartPath != existing.appStartPath) {
+        _apps[index] = MiniAppInstance(
+          appUrl: appUrl,
+          appId: appId,
+          appName: appName,
+          room: room,
+          appType: appType,
+          appStartPath: appStartPath,
+          generation: existing.generation + 1,
+        );
+      }
       _activeAppId = appId;
       _isExpanded = true;
       notifyListeners();
       return;
     }
 
-    _apps.add(MiniAppInstance(
-      appUrl: appUrl,
-      appId: appId,
-      appName: appName,
-      room: room,
-      appType: appType,
-      appStartPath: appStartPath,
-    ));
+    if (_apps.isEmpty) _fullscreen = null;
+    _apps.add(
+      MiniAppInstance(
+        appUrl: appUrl,
+        appId: appId,
+        appName: appName,
+        room: room,
+        appType: appType,
+        appStartPath: appStartPath,
+      ),
+    );
     _activeAppId = appId;
     _isExpanded = true;
     notifyListeners();
@@ -110,6 +159,14 @@ class MiniAppManager extends ChangeNotifier {
       _isExpanded = false;
     }
     notifyListeners();
+  }
+
+  /// Закрывает miniApp, открытые от имени [client] (выход из аккаунта).
+  void closeForClient(Client client) {
+    if (!_apps.any((a) => a.room.client == client)) return;
+    for (final app in _apps.where((a) => a.room.client == client).toList()) {
+      close(app.appId);
+    }
   }
 
   /// Закрывает все miniApp.

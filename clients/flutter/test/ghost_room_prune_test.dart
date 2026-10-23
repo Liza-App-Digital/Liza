@@ -51,8 +51,12 @@ Future<Client> _clientWithGhost(FakeMatrixApi api) async {
   return client;
 }
 
+const _me = '@test:fakeServer.notExisting';
+final _probePath =
+    '$_ghostPath/state/m.room.member/${Uri.encodeComponent(_me)}';
+
 void _probeReturns(FakeMatrixApi api, Map<String, Object?> body) =>
-    api.api['GET']!['$_ghostPath/state/m.room.create'] = (_) => body;
+    api.api['GET']![_probePath] = (_) => body;
 
 void main() {
   late FakeMatrixApi api;
@@ -175,21 +179,41 @@ void main() {
   );
 
   // AC:RL-ghost-room-local-prune/2
-  test('пробник 200 — комната жива, остаётся', () async {
-    _probeReturns(api, {'creator': '@sasha:fakeServer.notExisting'});
+  test('пробник: мы в комнате (join) — жива, остаётся', () async {
+    expect(client.userID, _me);
+    _probeReturns(api, {'membership': 'join'});
     await pruneGhostRooms(client, seenInSync: {}, jitter: Duration.zero);
     expect(client.getRoomById(_ghost), isNotNull);
+    expect(FakeMatrixApi.calledEndpoints.keys, contains(_probePath));
   });
+
+  // AC:RL-ghost-room-local-prune/12
+  for (final membership in ['leave', 'ban']) {
+    test(
+      'пробник 200, членство $membership — уход пропущен, удаляем',
+      () async {
+        _probeReturns(api, {'membership': membership});
+        final removed = <String>[];
+        await pruneGhostRooms(
+          client,
+          seenInSync: {},
+          onRemoved: removed.add,
+          hasUnsentEvents: (_) async => true,
+          jitter: Duration.zero,
+        );
+        expect(removed, [_ghost]);
+        expect(client.rooms.map((r) => r.id), isNot(contains(_ghost)));
+      },
+    );
+  }
 
   // AC:RL-ghost-room-local-prune/2
   test('комната пришла в sync за сессию — даже пробник не зовём', () async {
     _probeReturns(api, {'errcode': 'M_FORBIDDEN'});
+    FakeMatrixApi.calledEndpoints.clear();
     await pruneGhostRooms(client, seenInSync: {_ghost}, jitter: Duration.zero);
     expect(client.getRoomById(_ghost), isNotNull);
-    expect(
-      FakeMatrixApi.calledEndpoints.keys,
-      isNot(contains('$_ghostPath/state/m.room.create')),
-    );
+    expect(FakeMatrixApi.calledEndpoints.keys, isNot(contains(_probePath)));
   });
 
   // AC:RL-ghost-room-local-prune/3

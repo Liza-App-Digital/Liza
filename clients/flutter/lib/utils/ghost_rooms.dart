@@ -23,13 +23,17 @@ class GhostRoomSnapshot {
   });
 }
 
-/// Ответ пробника `GET /rooms/{id}/state/m.room.create`.
+/// Ответ пробника `GET /rooms/{id}/state/m.room.member/{me}`.
+///
+/// Спрашиваем своё членство, а не `m.room.create`: бывшему участнику сервер
+/// отдаёт state комнаты на момент ухода с 200. Так у Надежды (21.10) остался
+/// чат, из которого она вышла 10.10 в окне, пропущенном клиентом после отката.
 enum GhostProbe {
-  /// 200 — комната жива (лаг кэша `/joined_rooms`).
+  /// Наше членство на сервере — `join` (лаг кэша `/joined_rooms`).
   alive,
 
-  /// Matrix-ошибка из [ghostProbeGoneErrcodes] — сервер не считает нас
-  /// участником, sync эту комнату не пришлёт.
+  /// Членство не `join` либо Matrix-ошибка из [ghostProbeGoneErrcodes] —
+  /// сервер не считает нас участником, sync эту комнату не пришлёт.
   gone,
 
   /// Сеть, таймаут, 429, 5xx, ответ без `errcode` — судить нельзя.
@@ -47,8 +51,15 @@ const ghostMinAge = Duration(minutes: 10);
 const ghostMaxProbes = 20;
 const ghostMaxRemovals = 5;
 
-GhostProbe classifyGhostProbe({required bool ok, String? errcode}) {
-  if (ok) return GhostProbe.alive;
+GhostProbe classifyGhostProbe({
+  required bool ok,
+  String? membership,
+  String? errcode,
+}) {
+  if (ok) {
+    if (membership == null) return GhostProbe.unknown;
+    return membership == 'join' ? GhostProbe.alive : GhostProbe.gone;
+  }
   if (errcode != null && ghostProbeGoneErrcodes.contains(errcode)) {
     return GhostProbe.gone;
   }

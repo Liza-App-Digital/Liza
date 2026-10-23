@@ -21,6 +21,7 @@ import 'package:url_launcher/url_launcher_string.dart';
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/utils/app_badge.dart';
 import 'package:liza/utils/push_rule_defaults.dart';
 import 'package:liza/utils/client_manager.dart';
@@ -663,6 +664,9 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
         unawaited(_reportDeviceCapability(c));
       }
       if (state == LoginState.loggedOut) {
+        // Хост miniApp глобален и держит Room вышедшего клиента — закрываем,
+        // иначе после выхода висит приложение чужой сессии.
+        MiniAppManager.instance.closeForClient(c);
         _cancelSubs(c.clientName);
         widget.clients.remove(c);
         _syncMonitoringIdentity();
