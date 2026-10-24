@@ -1,15 +1,12 @@
-enum CreateMenuAction {
-  newRequest,
-  group,
-  channel,
-  developers,
-  mcp,
-  invite,
-}
+enum CreateMenuAction { newRequest, group, channel, developers, mcp, invite }
 
 /// Пункты, видимые только роли developer: рядом с подписью ставится
 /// `DeveloperMark` (RL-developer-mark).
 const developerOnlyActions = {CreateMenuAction.mcp};
+
+/// Пункты с визуальным акцентом (шестиугольник «+» и жирная подпись) — главное
+/// действие меню (замечание Надежды 23.10: «сейчас все пункты равнозначны»).
+const highlightedActions = {CreateMenuAction.newRequest};
 
 /// Разделы меню «+» шапки списка чатов; между разделами — разделитель.
 ///

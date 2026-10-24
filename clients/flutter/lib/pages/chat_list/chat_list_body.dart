@@ -11,6 +11,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat_list/chat_list.dart';
 import 'package:liza/pages/chat_list/chat_list_filter_row.dart';
 import 'package:liza/pages/chat_list/chat_list_item.dart';
+import 'package:liza/pages/chat_list/compact_chat_list_column.dart';
 import 'package:liza/pages/chat_list/create_company_list_tile.dart';
 import 'package:liza/pages/chat_list/dummy_chat_list_item.dart';
 import 'package:liza/pages/chat_list/install_banner.dart';
@@ -22,6 +23,7 @@ import 'package:liza/pages/chat_list/space_view.dart';
 import '../stories/stories_bar.dart';
 import 'package:liza/pages/chat_list/update_banner.dart';
 import 'package:liza/pages/chat_list/web_update_banner.dart';
+import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/direct_chat_draft.dart';
 import 'package:liza/utils/federated_user_search_service.dart';
@@ -32,6 +34,7 @@ import 'package:liza/utils/version_gate_service.dart';
 import 'package:liza/widgets/adaptive_dialogs/public_room_dialog.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/horizontal_mouse_wheel.dart';
+import 'package:liza/widgets/layouts/mini_app_host_scope.dart';
 import 'package:liza/widgets/search_people_bots_sections.dart';
 import '../../config/themes.dart';
 import '../../widgets/matrix.dart';
@@ -65,6 +68,32 @@ class ChatListViewBody extends StatelessWidget {
         if (roomId == null) continue;
         spaceDelegateCandidates[roomId] = space;
       }
+    }
+
+    // Рядом широкая панель mini App — список свёрнут до аватарок. Тот же
+    // controller.scrollController: полный список в этот момент размонтирован,
+    // так что к контроллеру прикреплён ровно один scroll view. Чип и поиск
+    // живут в контроллере и переживают свёртку.
+    if (MiniAppHostScope.compactChatListOf(context) &&
+        !controller.isSearchMode) {
+      return StreamBuilder(
+        stream: client.onSync.stream
+            .where((s) => s.hasRoomUpdate)
+            .rateLimit(const Duration(seconds: 1)),
+        builder: (context, _) => CompactChatListColumn(
+          rooms: controller.filteredRooms,
+          activeChat: controller.activeChat,
+          filterActive: controller.activeFilter != ActiveFilter.allChats,
+          scrollController: controller.scrollController,
+          onTap: controller.onChatTap,
+          onContextAction: (room, ctx) => controller.chatContextAction(
+            room,
+            ctx,
+            spaceDelegateCandidates[room.id],
+          ),
+          onExpand: MiniAppManager.instance.expandChatList,
+        ),
+      );
     }
 
     // Каналы помечены room_type='com.liza.channel' модулем channel_guard:

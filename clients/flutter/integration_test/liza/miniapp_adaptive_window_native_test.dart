@@ -2,7 +2,8 @@
 //
 // Widget-тест хоста подменяет WebView заглушкой и не видит platform view.
 // Здесь в хост MiniAppOverlay подставлен НАСТОЯЩИЙ InAppWebView: смена раскладки
-// (боковая панель → на весь экран → обратно → свернуть → развернуть) и
+// (боковая панель → на весь экран → обратно → свернуть → развернуть →
+// свёртка списка чатов до аватарок → «развернуть список») и
 // перетаскивание границы не должны перезагружать страницу и пересоздавать
 // нативный view (иначе на проде теряется корзина магазина / страница оплаты).
 //
@@ -18,6 +19,7 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_overlay.dart';
+import 'package:liza/widgets/layouts/two_column_layout.dart';
 
 import '../../test/utils/test_client.dart';
 
@@ -61,7 +63,11 @@ void main() {
             ),
           ),
         ),
-        home: const Scaffold(body: Center(child: Text('chat'))),
+        home: const TwoColumnLayout(
+          compactable: true,
+          mainView: Center(child: Text('chats')),
+          sideView: Center(child: Text('chat')),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -98,6 +104,17 @@ void main() {
     await settle();
     manager.expand();
     await settle(2);
+
+    // Свёртка списка чатов до аватарок: панель тянется до W−514.
+    manager.chatListCompactable.value = true;
+    await settle();
+    await tester.drag(
+      find.byKey(const ValueKey('miniapp-host-divider')),
+      const Offset(-1500, 0),
+    );
+    await settle();
+    manager.expandChatList();
+    await settle();
 
     expect(tester.takeException(), isNull);
     expect(webViewCreated, 1, reason: 'нативный WebView не пересоздавался');

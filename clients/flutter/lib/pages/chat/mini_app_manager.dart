@@ -1,12 +1,20 @@
 import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/config/themes.dart';
+
+/// Сколько ширины боковая панель оставляет приложению при ПОЛНОМ списке чатов:
+/// порог двух колонок.
+const double kMiniAppMinChildWidth =
+    LizaThemes.columnWidth * 2 + LizaThemes.navRailWidth + 1;
+
 /// Ширина боковой панели miniApp по умолчанию (широкое окно).
 const double kMiniAppDefaultPanelWidth = 440;
 
 /// С какой ширины окна miniApp по умолчанию открывается закреплённой панелью
 /// сбоку, а не на весь экран: двухколоночный режим (841) + панель по умолчанию.
-const double kMiniAppDockedByDefaultMinWidth = 841 + kMiniAppDefaultPanelWidth;
+const double kMiniAppDockedByDefaultMinWidth =
+    kMiniAppMinChildWidth + kMiniAppDefaultPanelWidth;
 
 /// Описание одного открытого MiniApp-инстанса.
 class MiniAppInstance {
@@ -58,6 +66,42 @@ class MiniAppManager extends ChangeNotifier {
   /// notifyListeners: при перетаскивании границы перестраивается только
   /// геометрия, а не весь overlay со всеми WebView.
   final panelWidth = ValueNotifier<double>(kMiniAppDefaultPanelWidth);
+
+  /// Доля высоты miniApp в двойном экране (бегунок на узком окне).
+  final splitFraction = ValueNotifier<double>(0.5);
+
+  /// Список чатов сейчас можно свернуть до аватарок: его публикует ChatList
+  /// (открыт чат, нет поиска). Только тогда панель тянется дальше порога двух
+  /// колонок — в настройках и на пустой /rooms сворачивать нечего.
+  final chatListCompactable = ValueNotifier<bool>(false);
+  Object? _compactableOwner;
+
+  void publishChatListCompactable(Object owner, bool value) {
+    _compactableOwner = owner;
+    chatListCompactable.value = value;
+  }
+
+  /// Снять признак, если его выставлял именно [owner]: новый ChatList мог уже
+  /// опубликовать своё значение в том же кадре.
+  void releaseChatListCompactable(Object owner) {
+    if (!identical(_compactableOwner, owner)) return;
+    _compactableOwner = null;
+    chatListCompactable.value = false;
+  }
+
+  // Ширина окна из последней раскладки хоста — для «развернуть список».
+  double _windowWidth = 0;
+
+  void reportWindowWidth(double width) => _windowWidth = width;
+
+  /// Кнопка «развернуть список» в колонке аватарок: ужать панель так, чтобы
+  /// список снова поместился целиком.
+  void expandChatList() {
+    if (_windowWidth <= 0) return;
+    // +1: при дробной ширине окна (масштаб 125%) разность может выйти
+    // 840.999… — ниже порога, и список так и не развернулся бы.
+    panelWidth.value = _windowWidth - kMiniAppMinChildWidth - 1;
+  }
 
   List<MiniAppInstance> get apps => List.unmodifiable(_apps);
   bool get hasApps => _apps.isNotEmpty;

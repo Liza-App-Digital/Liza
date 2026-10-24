@@ -7,6 +7,7 @@ import 'package:liza/config/routes.dart';
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat_list/chat_list.dart';
+import 'package:liza/pages/chat_list/create_menu_item_label.dart';
 import 'package:liza/pages/chat_list/create_menu_sections.dart';
 import 'package:liza/utils/direct_chat_ensure.dart';
 import 'package:liza/utils/liza_dm.dart';
@@ -14,7 +15,6 @@ import 'package:liza/utils/liza_new_request.dart';
 import 'package:liza/pages/chat_list/client_chooser_button.dart';
 import 'package:liza/utils/liza_share.dart';
 import 'package:liza/utils/sync_status_localization.dart';
-import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import '../../widgets/matrix.dart';
 
@@ -157,17 +157,14 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
                             for (final action in section)
                               PopupMenuItem(
                                 value: action,
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(_createMenuLabel(context, action)),
-                                    if (developerOnlyActions.contains(
-                                      action,
-                                    )) ...[
-                                      const SizedBox(width: 8),
-                                      const DeveloperMark(),
-                                    ],
-                                  ],
+                                child: CreateMenuItemLabel(
+                                  label: _createMenuLabel(context, action),
+                                  highlighted: highlightedActions.contains(
+                                    action,
+                                  ),
+                                  developerMark: developerOnlyActions.contains(
+                                    action,
+                                  ),
                                 ),
                               ),
                           ],

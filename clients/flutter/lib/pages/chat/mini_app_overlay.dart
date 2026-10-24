@@ -6,6 +6,8 @@ import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_web_view.dart';
+import 'package:liza/pages/chat_list/compact_chat_list_column.dart';
+import 'package:liza/widgets/layouts/mini_app_host_scope.dart';
 import 'package:liza/widgets/liza_app.dart';
 
 /// Высота контента свёрнутой плашки (без bottom safe-area).
@@ -17,19 +19,33 @@ const double kMiniAppCollapsedBarHeight = 40;
 /// Минимальная ширина боковой панели miniApp.
 const double kMiniAppMinPanelWidth = 320;
 
-/// Сколько ширины панель обязана оставить приложению слева: не меньше порога
-/// двух колонок. Иначе при открытии панели приложение схлопнется в одну
-/// колонку (пропадёт список чатов), а ShellRoute перестроится и потеряет
-/// состояние открытого чата.
-const double kMiniAppMinChildWidth =
-    LizaThemes.columnWidth * 2 + LizaThemes.navRailWidth + 1;
-
 /// С какой ширины окна возможна боковая панель; уже — двойной экран.
 const double kMiniAppSideMinWindowWidth =
     kMiniAppMinChildWidth + kMiniAppMinPanelWidth;
 
+/// Сколько ширины панель оставляет приложению, когда список чатов свёрнут до
+/// аватарок: rail + колонка аватарок + разделители + чат ≥360.
+const double kMiniAppCompactMinChildWidth =
+    LizaThemes.navRailWidth + kCompactChatListWidth + 2 + 360;
+
+/// Список сворачивается, когда приложение уже порога двух колонок на это
+/// число, а разворачивается — на пороге. Без зазора колонка мигает, пока
+/// курсор стоит на границе.
+const double _kCompactHysteresis = 24;
+
 /// Сколько высоты двойной экран оставляет чату над клавиатурой.
 const double _kSplitMinChatHeight = 160;
+
+/// Минимальная высота miniApp в двойном экране (шапка + полоска контента +
+/// полоса бегунка).
+const double kMiniAppSplitMinPanelHeight = 150;
+
+/// Полоса бегунка внизу miniApp в двойном экране: во всю ширину, вне WebView и
+/// вне шапки чата — тянется и не крадёт касания ни у того, ни у другого.
+const double kMiniAppSplitHandleHeight = 28;
+
+/// Доля, с которой отпущенный бегунок переводит miniApp на весь экран.
+const double kMiniAppSplitFullscreenSnap = 0.9;
 
 /// Как сейчас показан развёрнутый miniApp.
 enum MiniAppLayoutMode {
@@ -55,10 +71,20 @@ MiniAppLayoutMode miniAppLayoutModeFor(
       : MiniAppLayoutMode.split;
 }
 
-/// Ширина боковой панели, ужатая под текущее окно.
-double clampMiniAppPanelWidth(double width, double windowWidth) => width.clamp(
+/// Ширина боковой панели, ужатая под текущее окно. [compactable] — список
+/// чатов можно свернуть до аватарок, и панель тянется дальше порога двух
+/// колонок.
+double clampMiniAppPanelWidth(
+  double width,
+  double windowWidth, {
+  bool compactable = false,
+}) => width.clamp(
   kMiniAppMinPanelWidth,
-  math.max(kMiniAppMinPanelWidth, windowWidth - kMiniAppMinChildWidth),
+  math.max(
+    kMiniAppMinPanelWidth,
+    windowWidth -
+        (compactable ? kMiniAppCompactMinChildWidth : kMiniAppMinChildWidth),
+  ),
 );
 
 /// Глобальный хост miniApp — оборачивает child (Router) и раскладывает рядом
@@ -102,6 +128,15 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
   bool _resizing = false;
   double _resizeStartWidth = 0;
   double _resizeDx = 0;
+
+  // Список чатов свёрнут до аватарок (с гистерезисом — см. _updateCompact).
+  bool _compact = false;
+
+  // Бегунок двойного экрана: пока тянут, двигается только линия-превью —
+  // ресайз platform view на каждый кадр дорог на iOS/Android.
+  double? _splitPreview;
+  double _splitDragStart = 0;
+  double _splitDragDy = 0;
 
   @override
   void initState() {
@@ -176,10 +211,13 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
 
   // Ширину считаем от точки старта по суммарному смещению: тогда граница
   // не дёргается, когда курсор ушёл за предел и возвращается.
+  bool get _compactable => _manager.chatListCompactable.value;
+
   void _onResizeStart(double windowWidth) {
     _resizeStartWidth = clampMiniAppPanelWidth(
       _manager.panelWidth.value,
       windowWidth,
+      compactable: _compactable,
     );
     _resizeDx = 0;
     setState(() => _resizing = true);
@@ -190,7 +228,74 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     _manager.panelWidth.value = clampMiniAppPanelWidth(
       _resizeStartWidth - _resizeDx,
       windowWidth,
+      compactable: _compactable,
     );
+  }
+
+  void _updateCompact(bool compactable, double childWidth) {
+    if (!compactable) {
+      _compact = false;
+    } else if (!_compact &&
+        childWidth < kMiniAppMinChildWidth - _kCompactHysteresis) {
+      _compact = true;
+    } else if (_compact && childWidth >= kMiniAppMinChildWidth - 0.5) {
+      _compact = false;
+    }
+  }
+
+  double _splitMinFraction(double available) =>
+      math.min(kMiniAppSplitMinPanelHeight / available, 0.5);
+
+  /// Сколько можно отдать miniApp, не оставив чат без поля ввода.
+  double _splitMaxFraction(double available) => math.max(
+    _splitMinFraction(available),
+    math.min(kMiniAppSplitFullscreenSnap, 1 - _kSplitMinChatHeight / available),
+  );
+
+  void _onSplitDragStart(double fraction) {
+    _splitDragStart = fraction;
+    _splitDragDy = 0;
+    setState(() {
+      _splitPreview = fraction;
+      _resizing = true;
+    });
+  }
+
+  void _onSplitDragUpdate(double dy, double available) {
+    _splitDragDy += dy;
+    setState(() {
+      _splitPreview = (_splitDragStart + _splitDragDy / available).clamp(
+        _splitMinFraction(available),
+        1.0,
+      );
+    });
+  }
+
+  void _onSplitDragCancel() {
+    if (_splitPreview == null && !_resizing) return;
+    setState(() {
+      _splitPreview = null;
+      _resizing = false;
+    });
+  }
+
+  void _onSplitDragEnd(double available) {
+    final preview = _splitPreview;
+    setState(() {
+      _splitPreview = null;
+      _resizing = false;
+    });
+    if (preview == null) return;
+    // Дотянули почти до низа — на весь экран; сохранённая доля остаётся
+    // прежней, чтобы «двойной экран» вернулся к ней, а не к 90%.
+    if (preview >= kMiniAppSplitFullscreenSnap) {
+      _manager.setFullscreen(true);
+    } else {
+      _manager.splitFraction.value = math.min(
+        preview,
+        _splitMaxFraction(available),
+      );
+    }
   }
 
   void _onResizeEnd() {
@@ -216,16 +321,23 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     return inPanel;
   }
 
+  double _splitFraction(double available) => _manager.splitFraction.value.clamp(
+    _splitMinFraction(available),
+    _splitMaxFraction(available),
+  );
+
   double _splitPanelHeight(MediaQueryData mq) {
     final available = mq.size.height - mq.padding.top;
-    var height = available * 0.5;
+    // Ужатие под клавиатуру — только здесь, в долю не записывается: после
+    // закрытия клавиатуры панель возвращается к выбранной бегунком высоте.
+    var height = available * _splitFraction(available);
     final keyboard = mq.viewInsets.bottom;
     // Клавиатура вызвана полем в miniApp — панель не ужимаем: она сверху и
     // клавиатура закрывает чат, а не форму miniApp.
     if (keyboard > 0 && !_focusInPanel()) {
       height = math.min(height, available - keyboard - _kSplitMinChatHeight);
     }
-    return math.max(height, 120);
+    return math.max(height, kMiniAppSplitMinPanelHeight);
   }
 
   @override
@@ -236,6 +348,12 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     final wide = LizaThemes.isColumnModeByWidth(size.width);
     final sideAvailable = size.width >= kMiniAppSideMinWindowWidth;
     final mode = miniAppLayoutModeFor(_manager, size.width);
+    _manager.reportWindowWidth(size.width);
+    // Режим сменился посреди перетаскивания (поворот, ширина окна, «на весь
+    // экран» из панели) — ручка размонтирована и onEnd не придёт: не оставляем
+    // висеть щит и линию-превью.
+    if (mode != MiniAppLayoutMode.split) _splitPreview = null;
+    if (mode == MiniAppLayoutMode.sheet) _resizing = false;
 
     final panel = hasApps
         ? KeyedSubtree(
@@ -274,7 +392,12 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
         : null;
 
     return AnimatedBuilder(
-      animation: Listenable.merge([_slideController, _manager.panelWidth]),
+      animation: Listenable.merge([
+        _slideController,
+        _manager.panelWidth,
+        _manager.splitFraction,
+        _manager.chatListCompactable,
+      ]),
       builder: (context, _) {
         final t = _slideController.value;
         var childMq = mq;
@@ -282,14 +405,26 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
         final Rect panelRect;
         var panelMq = mq;
         Rect? dividerRect;
+        Rect? splitHandleRect;
+        var splitAvailable = 0.0;
+        var splitStartFraction = 0.0;
+        double? splitPreviewY;
+        var compactable = false;
+        var targetChildWidth = size.width;
 
         switch (mode) {
           case MiniAppLayoutMode.side:
+            compactable = _compactable && _manager.isExpanded;
             final pw = clampMiniAppPanelWidth(
               _manager.panelWidth.value,
               size.width,
+              compactable: compactable,
             );
             final shown = pw * t;
+            // Свёртку считаем от ЦЕЛЕВОЙ ширины, а не анимированной: иначе при
+            // открытии с запомненной широкой панелью список схлопывался бы
+            // рывком в конце анимации.
+            targetChildWidth = size.width - pw;
             childRect = Rect.fromLTWH(0, 0, size.width - shown, size.height);
             childMq = mq.copyWith(size: childRect.size);
             panelRect = Rect.fromLTWH(size.width - shown, 0, pw, size.height);
@@ -303,6 +438,7 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
               );
             }
           case MiniAppLayoutMode.split:
+            final available = size.height - mq.padding.top;
             final ph = _splitPanelHeight(mq);
             final fullHeight = mq.padding.top + ph;
             final top = fullHeight * t;
@@ -310,11 +446,12 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
             childMq = (t > 0 ? mq.removePadding(removeTop: true) : mq).copyWith(
               size: childRect.size,
             );
+            // Снизу панели — полоса бегунка, сама панель на неё короче.
             panelRect = Rect.fromLTWH(
               0,
               top - fullHeight,
               size.width,
-              fullHeight,
+              fullHeight - kMiniAppSplitHandleHeight,
             );
             // Клавиатура и нижний safe-area — забота чата снизу; панели они
             // не касаются (иначе MainButton miniApp подпрыгнул бы дважды).
@@ -323,7 +460,23 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
             panelMq = mq
                 .removePadding(removeTop: true, removeBottom: true)
                 .removeViewInsets(removeBottom: true)
-                .copyWith(size: Size(panelRect.width, ph));
+                .copyWith(
+                  size: Size(panelRect.width, ph - kMiniAppSplitHandleHeight),
+                );
+            if (t > 0) {
+              splitHandleRect = Rect.fromLTWH(
+                0,
+                top - kMiniAppSplitHandleHeight,
+                size.width,
+                kMiniAppSplitHandleHeight,
+              );
+              splitAvailable = available;
+              splitStartFraction = ph / available;
+            }
+            final preview = _splitPreview;
+            if (preview != null) {
+              splitPreviewY = mq.padding.top + preview * available;
+            }
           case MiniAppLayoutMode.sheet:
             // Лист стартует сразу под статус-баром — без лишнего зазора
             // сверху, чтобы интерфейс магазина занимал максимум высоты.
@@ -340,12 +493,21 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
             );
         }
 
+        _updateCompact(compactable, targetChildWidth);
+
         return Stack(
           children: [
             Positioned.fromRect(
               key: const ValueKey('miniapp-host-child'),
               rect: childRect,
-              child: MediaQuery(data: childMq, child: widget.child),
+              child: MediaQuery(
+                data: childMq,
+                child: MiniAppHostScope(
+                  forceColumnMode: mode == MiniAppLayoutMode.side,
+                  compactChatList: _compact,
+                  child: widget.child,
+                ),
+              ),
             ),
             if (hasApps && !_manager.isExpanded)
               Positioned(
@@ -389,9 +551,41 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
               Positioned.fromRect(
                 key: const ValueKey('miniapp-host-shield'),
                 rect: panelRect,
-                child: const MouseRegion(
-                  cursor: SystemMouseCursors.resizeColumn,
-                  child: SizedBox.expand(),
+                child: MouseRegion(
+                  cursor: mode == MiniAppLayoutMode.split
+                      ? SystemMouseCursors.resizeRow
+                      : SystemMouseCursors.resizeColumn,
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            if (splitPreviewY != null)
+              Positioned(
+                key: const ValueKey('miniapp-host-split-preview'),
+                left: 0,
+                right: 0,
+                top: splitPreviewY - 1.5,
+                height: 3,
+                child: IgnorePointer(
+                  child: ColoredBox(
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+              ),
+            if (splitHandleRect != null)
+              Positioned.fromRect(
+                key: const ValueKey('miniapp-host-split-handle'),
+                rect: splitHandleRect,
+                child: ColoredBox(
+                  color: Theme.of(context).colorScheme.surface,
+                  child: _PanelResizeHandle(
+                    axis: Axis.vertical,
+                    // Старт от фактической высоты панели (её могла ужать
+                    // клавиатура), а не от сохранённой доли — без скачка.
+                    onStart: () => _onSplitDragStart(splitStartFraction),
+                    onUpdate: (dy) => _onSplitDragUpdate(dy, splitAvailable),
+                    onEnd: () => _onSplitDragEnd(splitAvailable),
+                    onCancel: _onSplitDragCancel,
+                  ),
                 ),
               ),
             if (dividerRect != null)
@@ -573,36 +767,53 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
 
 /// Граница боковой панели — тянется мышью.
 class _PanelResizeHandle extends StatelessWidget {
+  /// horizontal — граница боковой панели (тянут по X), vertical — бегунок
+  /// двойного экрана (тянут по Y).
+  final Axis axis;
   final VoidCallback onStart;
   final ValueChanged<double> onUpdate;
   final VoidCallback onEnd;
 
+  /// Жест отменён (перехвачен) — откатить, не применяя. По умолчанию = onEnd.
+  final VoidCallback? onCancel;
+
   const _PanelResizeHandle({
+    this.axis = Axis.horizontal,
     required this.onStart,
     required this.onUpdate,
     required this.onEnd,
+    this.onCancel,
   });
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final vertical = axis == Axis.vertical;
     return Semantics(
       label: L10n.of(context).miniAppResizePanel,
       child: MouseRegion(
-        cursor: SystemMouseCursors.resizeColumn,
+        cursor: vertical
+            ? SystemMouseCursors.resizeRow
+            : SystemMouseCursors.resizeColumn,
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onHorizontalDragStart: (_) => onStart(),
-          onHorizontalDragUpdate: (d) => onUpdate(d.delta.dx),
-          onHorizontalDragEnd: (_) => onEnd(),
-          onHorizontalDragCancel: onEnd,
+          onHorizontalDragStart: vertical ? null : (_) => onStart(),
+          onHorizontalDragUpdate: vertical ? null : (d) => onUpdate(d.delta.dx),
+          onHorizontalDragEnd: vertical ? null : (_) => onEnd(),
+          onHorizontalDragCancel: vertical ? null : onEnd,
+          onVerticalDragStart: vertical ? (_) => onStart() : null,
+          onVerticalDragUpdate: vertical ? (d) => onUpdate(d.delta.dy) : null,
+          onVerticalDragEnd: vertical ? (_) => onEnd() : null,
+          onVerticalDragCancel: vertical ? (onCancel ?? onEnd) : null,
           child: Center(
             child: Container(
-              width: 4,
-              height: 40,
+              width: vertical ? 36 : 4,
+              height: vertical ? 5 : 40,
               decoration: BoxDecoration(
-                color: colorScheme.outlineVariant,
-                borderRadius: BorderRadius.circular(2),
+                color: vertical
+                    ? colorScheme.outline
+                    : colorScheme.outlineVariant,
+                borderRadius: BorderRadius.circular(3),
               ),
             ),
           ),

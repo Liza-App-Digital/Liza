@@ -6,6 +6,7 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/composer_draft.dart';
 import 'package:liza/utils/liza_dm.dart';
+import 'package:liza/utils/new_request_transition.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/matrix.dart';
 
@@ -79,6 +80,7 @@ Future<bool> sendNewLizaRequest(BuildContext context, String text) async {
       Logs().w('[LizaRequest] черновик вопроса в $roomId не сохранён', e, s);
     }
   }
+  NewRequestTransition.arm(roomId);
   router.go('/rooms/$roomId');
   return true;
 }

@@ -13,6 +13,7 @@ import 'package:matrix/matrix.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat_list/chat_list_view.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_locals.dart';
@@ -844,6 +845,10 @@ class ChatListController extends State<ChatList>
 
   @override
   void dispose() {
+    // В dispose дерево заблокировано — хост пересчитается после кадра.
+    scheduleMicrotask(
+      () => MiniAppManager.instance.releaseChatListCompactable(this),
+    );
     _intentDataStreamSubscription?.cancel();
     _intentFileStreamSubscription?.cancel();
     _intentUriStreamSubscription?.cancel();
@@ -1281,7 +1286,28 @@ class ChatListController extends State<ChatList>
   }
 
   @override
-  Widget build(BuildContext context) => ChatListView(this);
+  Widget build(BuildContext context) {
+    _publishCompactable();
+    return ChatListView(this);
+  }
+
+  // Можно ли свернуть список до аватарок ради широкой панели mini App: открыт
+  // чат (на пустой /rooms справа «Новый запрос», сворачивать незачем), нет
+  // поиска и пространства. Хост читает это после кадра — менять
+  // ValueNotifier посреди build нельзя.
+  bool get _compactable =>
+      activeChat != null && !isSearchMode && activeSpaceId == null;
+
+  void _publishCompactable() {
+    if (MiniAppManager.instance.chatListCompactable.value == _compactable) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        MiniAppManager.instance.publishChatListCompactable(this, _compactable);
+      }
+    });
+  }
 
   void _hackyWebRTCFixForWeb() {
     ChatList.contextForVoip = context;

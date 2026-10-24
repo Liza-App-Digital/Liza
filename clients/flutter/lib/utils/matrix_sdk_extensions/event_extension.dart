@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -108,8 +107,9 @@ String mediaFailureKind(Object error) {
 /// `RL-mediadiag-no-secret`: в `FileSystemException` лежит путь с mxc id).
 /// Дженерики срезаем (`_Map<String, dynamic>` → `_Map`), длину ограничиваем.
 String mediaFailureErrorType(Object error) {
-  final name = RegExp(r'^[A-Za-z0-9_$]+')
-      .stringMatch(error.runtimeType.toString());
+  final name = RegExp(
+    r'^[A-Za-z0-9_$]+',
+  ).stringMatch(error.runtimeType.toString());
   if (name == null || name.isEmpty) return 'unknown';
   return name.length > 40 ? name.substring(0, 40) : name;
 }
@@ -240,7 +240,9 @@ MediaDiagClass classifyMediaDiag({
     'HttpException',
     'TimeoutException',
   };
-  if (statusCode == null && errorType != null && networkErrors.contains(errorType)) {
+  if (statusCode == null &&
+      errorType != null &&
+      networkErrors.contains(errorType)) {
     return MediaDiagClass.networkError;
   }
   // 3. HTTP не-200.
@@ -259,7 +261,8 @@ MediaDiagClass classifyMediaDiag({
   }
   // 5. Усечение — ТОЛЬКО при отсутствии content-encoding: при gzip/br
   // `contentLength`=сжатый, а `receivedBytes`=расжатый → сравнение невалидно.
-  final gzipped = contentEncoding != null &&
+  final gzipped =
+      contentEncoding != null &&
       contentEncoding.isNotEmpty &&
       contentEncoding != 'identity';
   if (!gzipped &&
@@ -349,6 +352,177 @@ String mediaDiagFirst16Hex(Uint8List bytes) {
   ].join(' ');
 }
 
+/// Обрыв тела ответа, после которого имеет смысл докачать остаток Range-запросом.
+/// Отмена, гейт ([MediaDownloadException]) и прочее — НЕ сюда: их не повторяем.
+/// `TimeoutException` — idle-таймаут стрима `FixedTimeoutHttpClient`.
+bool isResumableDownloadError(Object error) =>
+    error is http.ClientException ||
+    error is SocketException ||
+    error is HttpException ||
+    error is TlsException ||
+    error is TimeoutException;
+
+/// `Content-Range: bytes <start>-<end>/<total>` → (start, total). `total` = `*`
+/// → null. Невалидный заголовок → null целиком.
+({int start, int? total})? parseContentRange(String? header) {
+  if (header == null) return null;
+  final m = RegExp(r'^\s*bytes\s+(\d+)-\d+/(\d+|\*)\s*$').firstMatch(header);
+  if (m == null) return null;
+  return (start: int.parse(m.group(1)!), total: int.tryParse(m.group(2)!));
+}
+
+/// GET вложения с докачкой по Range от фактически полученного байта.
+///
+/// Зачем (заявка №56, 2026-10-23): matrix-media-repo v1.3.8 держит отдачу под
+/// контекстом `BlockForReadUntil` (20 с, ≤60 с) и рвёт её посреди тела —
+/// `Connection closed while receiving data`. Файл 255 МБ на 200 КБ/с так не
+/// скачать никогда. Видео это переживает через `E2eeMediaProxy._resumableUpstream`,
+/// файлы — нет. Здесь та же формула «прогресс, а не часы»: счётчик неудач
+/// сбрасывается на каждом полученном байте, терминал — [maxRetriesWithoutProgress]
+/// обрывов ПОДРЯД без единого байта.
+///
+/// Ловушки MMR, под которые писано:
+/// - на `bytes=N-` он отдаёт 206 КУСКОМ (`defaultRangeChunkSizeBytes`, 10 МБ), а не
+///   хвостом — качаем до `total`, а не до конца одного 206;
+/// - не сумев seek, отдаёт 200 с полным телом — дописывать его нельзя, начинаем
+///   с нуля;
+/// - при `Content-Encoding` смещения не совпадают с распакованными байтами —
+///   такой ответ не докачиваем;
+/// - паникуя посреди отдачи, MMR ДОПИСЫВАЕТ в уже идущий 200-ответ свой JSON
+///   (`{"errcode":"M_UNKNOWN","error":"unexpected error",…}`, 75 байт) и только
+///   потом рвёт соединение. Докачка «с полученного байта» вклеила бы его в файл
+///   (размер сходится, sha — нет; пойман живым прогоном 2026-10-23). Поэтому на
+///   каждом обрыве откатываемся на [resumeRewindBytes] назад: мусор только в
+///   хвосте и много меньше отката, Range перезапишет его верными байтами.
+///
+/// Статус и заголовки ПЕРВОГО ответа отдаются в [onFirstResponse] (гейт
+/// доставки и `[MediaDiag]` смотрят именно их). Не-200 первый ответ читается как
+/// есть, без докачки: это ошибка или 206 на чужой Range, решает вызывающий.
+@visibleForTesting
+Future<Uint8List> downloadWithRangeResume({
+  required http.Client client,
+  required Uri url,
+  String? accessToken,
+  void Function(http.StreamedResponse response)? onFirstResponse,
+  void Function(int received)? onProgress,
+  int maxRetriesWithoutProgress = 6,
+  int resumeRewindBytes = 4 * 1024,
+  Duration Function(int retry)? backoff,
+}) async {
+  // Куски держим списком, а не в BytesBuilder: откат хвоста на обрыве не должен
+  // копировать сотни мегабайт (BytesBuilder умеет только takeBytes целиком).
+  final chunks = <Uint8List>[];
+  var length = 0;
+  int? total;
+  var resumable = false;
+  var isFirst = true;
+  var retries = 0;
+  var reported = 0;
+
+  void addChunk(List<int> chunk) {
+    final bytes = chunk is Uint8List ? chunk : Uint8List.fromList(chunk);
+    chunks.add(bytes);
+    length += bytes.length;
+    // Счётчик неудач сбрасывает только НОВЫЙ максимум: перекачка отката и рестарт
+    // после 200 прогрессом не считаются. Но onProgress зовём на КАЖДОМ чанке (с
+    // неубывающим значением): им же кормится дедлайн простоя голосовых
+    // (`withForegroundDeadline`, #2085) — молчание во время перекачки отката
+    // уронило бы живую загрузку.
+    if (length > reported) {
+      reported = length;
+      retries = 0;
+    }
+    onProgress?.call(reported);
+  }
+
+  void truncateTo(int keep) {
+    while (length > keep) {
+      final last = chunks.removeLast();
+      length -= last.length;
+      if (length < keep) {
+        chunks.add(Uint8List.sublistView(last, 0, keep - length));
+        length = keep;
+      }
+    }
+  }
+
+  while (true) {
+    final request = http.Request('GET', url);
+    if (accessToken != null) {
+      request.headers['authorization'] = 'Bearer $accessToken';
+    }
+    final received = length;
+    if (!isFirst) request.headers['range'] = 'bytes=$received-';
+    try {
+      final response = await client.send(request);
+      if (isFirst) {
+        isFirst = false;
+        onFirstResponse?.call(response);
+        final encoding = response.headers['content-encoding'];
+        resumable =
+            response.statusCode == 200 &&
+            response.contentLength != null &&
+            (encoding == null || encoding.isEmpty || encoding == 'identity');
+        if (resumable) total = response.contentLength;
+      } else if (response.statusCode == 206) {
+        final range = parseContentRange(response.headers['content-range']);
+        if (range == null ||
+            (range.total != null && range.total != total) ||
+            range.start != received) {
+          throw http.ClientException(
+            'Unexpected Content-Range ${response.headers['content-range']} '
+            'for resume at $received/$total',
+            url,
+          );
+        }
+      } else if (response.statusCode == 200) {
+        Logs().w('[Download] сервер проигнорировал Range — качаю заново');
+        truncateTo(0);
+        if (response.contentLength != null) total = response.contentLength;
+      } else if (response.statusCode == 416 && received == total) {
+        break;
+      } else {
+        throw MediaDownloadException(
+          statusCode: response.statusCode,
+          contentType: response.headers['content-type'],
+        );
+      }
+      final before = reported;
+      await for (final chunk in response.stream) {
+        addChunk(chunk);
+      }
+      if (!resumable || length >= total!) break;
+      // 206-кусок кончился раньше файла — штатно, просим следующий. Но кусок без
+      // единого нового байта (пустой 206, поток закрылся сразу) — та же неудача, что
+      // обрыв: иначе вечный цикл Range-запросов.
+      if (reported == before && ++retries > maxRetriesWithoutProgress) {
+        throw http.ClientException(
+          'Range-ответы без прогресса на $length/$total',
+          url,
+        );
+      }
+    } catch (e) {
+      if (!resumable || !isResumableDownloadError(e)) rethrow;
+      if (++retries > maxRetriesWithoutProgress) rethrow;
+      Logs().w(
+        '[Download] обрыв на $length/$total, докачка (попытка $retries)',
+        e,
+      );
+      truncateTo(length > resumeRewindBytes ? length - resumeRewindBytes : 0);
+      await Future<void>.delayed(
+        backoff?.call(retries) ?? Duration(milliseconds: 300 * retries),
+      );
+    }
+  }
+  final result = Uint8List(length);
+  var offset = 0;
+  for (final c in chunks) {
+    result.setRange(offset, offset + c.length, c);
+    offset += c.length;
+  }
+  return result;
+}
+
 /// Захваченная HTTP-мета одной попытки загрузки (per-вызов, НЕ static). `bytes`
 /// держим ссылкой ТОЛЬКО чтобы посчитать sha/first16 на СБОЕ (на успехе GC
 /// освобождает) — sha на happy-path не считаем.
@@ -366,8 +540,9 @@ extension LocalizedBody on Event {
   /// Скачивает и расшифровывает вложение под прогресс-диалогом. Публичная точка
   /// для всех, кому нужны байты вложения (save/share/copy) — единый прогресс и
   /// одно место правки логики размера.
-  Future<async.Result<MatrixFile?>> downloadWithProgress(BuildContext context) =>
-      _getFile(context);
+  Future<async.Result<MatrixFile?>> downloadWithProgress(
+    BuildContext context,
+  ) => _getFile(context);
 
   /// Как [downloadAndDecryptAttachment], но с self-heal отравленного дискового
   /// файл-кэша SDK. Во время переезда медиа (2026-07-26) сервер мог кратко
@@ -555,21 +730,20 @@ extension LocalizedBody on Event {
     _MediaDiagMeta meta,
   ) async {
     meta.callbackInvoked = true;
-    final request = http.Request('GET', url);
-    final token = room.client.accessToken;
-    if (token != null) request.headers['authorization'] = 'Bearer $token';
-    final response = await room.client.httpClient.send(request);
-    meta
-      ..statusCode = response.statusCode
-      ..contentLength = response.contentLength
-      ..contentType = response.headers['content-type']
-      ..contentEncoding = response.headers['content-encoding'];
-    final builder = BytesBuilder(copy: false);
-    await for (final chunk in response.stream) {
-      builder.add(chunk);
-      onDownloadProgress?.call(builder.length);
-    }
-    final bytes = builder.toBytes();
+    final bytes = await downloadWithRangeResume(
+      client: room.client.httpClient,
+      url: url,
+      accessToken: room.client.accessToken,
+      onFirstResponse: (response) => meta
+        ..statusCode = response.statusCode
+        ..contentLength = response.contentLength
+        ..contentType = response.headers['content-type']
+        ..contentEncoding = response.headers['content-encoding'],
+      onProgress: (received) {
+        meta.receivedBytes = received;
+        onDownloadProgress?.call(received);
+      },
+    );
     meta
       ..receivedBytes = bytes.length
       ..bytes = bytes;
@@ -694,12 +868,15 @@ extension LocalizedBody on Event {
     final file = matrixFile.result;
     if (file == null) return;
     final tmpDir = await getTemporaryDirectory();
-    final fileName =
-        Platform.isIOS ? sanitizeFilenameForIOS(file.name) : file.name;
+    final fileName = Platform.isIOS
+        ? sanitizeFilenameForIOS(file.name)
+        : file.name;
     // basename отрезает любой path-traversal из имени, пришедшего от отправителя
     // (`../../foo` или абсолютный путь иначе вывели бы запись за пределы temp).
     final safeName = p.basename(fileName);
-    final dir = Directory(p.join(tmpDir.path, 'attachments', _attachmentTmpKey));
+    final dir = Directory(
+      p.join(tmpDir.path, 'attachments', _attachmentTmpKey),
+    );
     await dir.create(recursive: true);
     final tmpFile = File(p.join(dir.path, safeName));
     await tmpFile.writeAsBytes(file.bytes);

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:liza/config/setting_keys.dart';
+import 'package:liza/widgets/layouts/mini_app_host_scope.dart';
 import 'app_config.dart';
 
 abstract class LizaThemes {
@@ -14,8 +15,11 @@ abstract class LizaThemes {
   static bool isColumnModeByWidth(double width) =>
       width > columnWidth * 2 + navRailWidth;
 
+  /// Колоночный режим. Рядом с боковой панелью mini App приложение остаётся в
+  /// нём и уже порога (см. [MiniAppHostScope.forceColumnMode]).
   static bool isColumnMode(BuildContext context) =>
-      isColumnModeByWidth(MediaQuery.sizeOf(context).width);
+      isColumnModeByWidth(MediaQuery.sizeOf(context).width) ||
+      MiniAppHostScope.forceColumnModeOf(context);
 
   static bool isThreeColumnMode(BuildContext context) =>
       MediaQuery.sizeOf(context).width > LizaThemes.columnWidth * 3.5;

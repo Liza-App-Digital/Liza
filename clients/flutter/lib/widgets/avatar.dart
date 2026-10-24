@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import 'package:matrix/matrix.dart';
 
-import 'package:liza/utils/string_color.dart';
 import 'package:liza/widgets/hexagon_clipper.dart';
 import 'package:liza/widgets/mxc_image.dart';
 // ignore: unused_import
@@ -35,6 +34,36 @@ class Avatar extends StatelessWidget {
   /// приоритет над [onTap]: тап по кружку открывает сторис-просмотрщик.
   final void Function()? onStoryTap;
 
+  // Фон буквенного аватара без картинки — нейтральные серые, по одному из трёх
+  // на имя (Надежда 23.10: «для людей сделаем фон не цветной … оттенков серого
+  // в стиле интерфейса»; цветные — только пастельные ИИ-запросы). Константы, а
+  // не токены темы: seed темы берётся из системы (Material You, акцент macOS),
+  // и «серые» на разных устройствах окрасились бы по-разному. Буква — тёмная
+  // на светлом / светлая на тёмном, контраст ≥ 5.4.
+  // Спека: docs/superpowers/specs/2026-10-23-avatar-unified-style-design.md
+  // ledger:RL-avatar-unified-style
+  static const List<Color> lightFallbackBackgrounds = [
+    Color(0xFFE3E5E8),
+    Color(0xFFD6D9DE),
+    Color(0xFFC9CDD3),
+  ];
+  static const List<Color> darkFallbackBackgrounds = [
+    Color(0xFF3C4043),
+    Color(0xFF4A4E54),
+    Color(0xFF5A5E66),
+  ];
+  static const Color lightFallbackLetter = Color(0xFF3C4043);
+  static const Color darkFallbackLetter = Color(0xFFE8EAED);
+
+  static int fallbackShade(String? name) {
+    if (name == null) return 0;
+    var sum = 0;
+    for (final unit in name.codeUnits) {
+      sum += unit;
+    }
+    return sum % lightFallbackBackgrounds.length;
+  }
+
   const Avatar({
     this.mxContent,
     this.name,
@@ -63,6 +92,21 @@ class Avatar extends StatelessWidget {
     final fallbackLetters = name == null || name.isEmpty
         ? '@'
         : name.substring(0, 1);
+
+    final isDark = theme.brightness == Brightness.dark;
+    final fallbackBackground =
+        backgroundColor ??
+        (isDark
+            ? darkFallbackBackgrounds
+            : lightFallbackBackgrounds)[fallbackShade(name)];
+    // Явный фон вызывающего рассчитан на белую букву (space_view, панели).
+    final fallbackText =
+        textColor ??
+        (backgroundColor != null
+            ? Colors.white
+            : isDark
+            ? darkFallbackLetter
+            : lightFallbackLetter);
 
     final noPic =
         mxContent == null ||
@@ -121,7 +165,7 @@ class Avatar extends StatelessWidget {
                     placeholder: (_) => noPic
                         ? Container(
                             decoration: BoxDecoration(
-                              color: backgroundColor ?? name?.lightColorAvatar,
+                              color: fallbackBackground,
                             ),
                             alignment: Alignment.center,
                             child: Text(
@@ -129,7 +173,7 @@ class Avatar extends StatelessWidget {
                               textAlign: TextAlign.center,
                               style: TextStyle(
                                 fontFamily: 'RobotoMono',
-                                color: textColor ?? Colors.white,
+                                color: fallbackText,
                                 fontWeight: FontWeight.bold,
                                 fontSize: (innerSize / 2.5).roundToDouble(),
                               ),

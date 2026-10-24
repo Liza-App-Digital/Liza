@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_overlay.dart';
+import 'package:liza/pages/chat_list/compact_chat_list_column.dart';
+import 'package:liza/widgets/layouts/mini_app_host_scope.dart';
+import 'package:liza/widgets/layouts/two_column_layout.dart';
 
 import '../../utils/test_client.dart';
 
@@ -24,6 +28,9 @@ void main() {
   final contentPaths = <String, String>{};
   var homeInits = 0;
   Size? homeSize;
+  // Что видит приложение под хостом: колоночный режим и свёртка списка.
+  final columnModes = <bool>[];
+  var compact = false;
 
   setUpAll(() async {
     client = await prepareTestClient();
@@ -33,6 +40,10 @@ void main() {
   setUp(() {
     manager.closeAll();
     manager.panelWidth.value = kMiniAppDefaultPanelWidth;
+    manager.splitFraction.value = 0.5;
+    manager.chatListCompactable.value = false;
+    columnModes.clear();
+    compact = false;
     contentInits.clear();
     contentPaths.clear();
     homeInits = 0;
@@ -51,7 +62,11 @@ void main() {
     MiniAppOverlay.debugContentBuilder = null;
   });
 
-  Future<void> pumpHost(WidgetTester tester, Size size) async {
+  Future<void> pumpHost(
+    WidgetTester tester,
+    Size size, {
+    bool twoColumn = false,
+  }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
@@ -62,8 +77,13 @@ void main() {
         locale: const Locale('ru'),
         builder: (context, child) => MiniAppOverlay(child: child!),
         home: _ProbeHome(
+          twoColumn: twoColumn,
           onInit: () => homeInits++,
           onSize: (s) => homeSize = s,
+          onScope: (columnMode, isCompact) {
+            columnModes.add(columnMode);
+            compact = isCompact;
+          },
         ),
       ),
     );
@@ -392,13 +412,315 @@ void main() {
       }
     });
   });
+
+  group('Бегунок двойного экрана', () {
+    Rect homeRect(WidgetTester tester) =>
+        tester.getRect(find.byType(_ProbeHome));
+    final handle = find.byKey(const ValueKey('miniapp-host-split-handle'));
+
+    Future<void> openSplit(WidgetTester tester) async {
+      await pumpHost(tester, const Size(390, 844));
+      openShop();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('тянется от минимума до 0.7 и держит долю', (tester) async {
+      // AC:RL-miniapp-adaptive-window/11
+      await openSplit(tester);
+      expect(homeRect(tester).top, closeTo(422, 1));
+
+      await tester.drag(handle, const Offset(0, -2000));
+      await tester.pumpAndSettle();
+      expect(homeRect(tester).top, closeTo(kMiniAppSplitMinPanelHeight, 1));
+
+      await tester.drag(handle, Offset(0, 844 * 0.7 - kMiniAppSplitMinPanelHeight));
+      await tester.pumpAndSettle();
+      expect(homeRect(tester).top, closeTo(844 * 0.7, 2));
+
+      manager.minimize();
+      await tester.pumpAndSettle();
+      manager.expand();
+      await tester.pumpAndSettle();
+      expect(homeRect(tester).top, closeTo(844 * 0.7, 2));
+      expect(contentInits['shop'], 1);
+      expect(homeInits, 1);
+    });
+
+    testWidgets('пока тянут — двигается только превью, WebView не ресайзится', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/11
+      await openSplit(tester);
+      final gesture = await tester.startGesture(tester.getCenter(handle));
+      await gesture.moveBy(const Offset(0, 40));
+      await gesture.moveBy(const Offset(0, 160));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('miniapp-host-split-preview')),
+        findsOneWidget,
+      );
+      expect(homeRect(tester).top, closeTo(422, 1));
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('miniapp-host-split-preview')),
+        findsNothing,
+      );
+      expect(homeRect(tester).top, greaterThan(422 + 150));
+    });
+
+    testWidgets('отпущен у низа — на весь экран, на 0.78 — двойной экран', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/12
+      await openSplit(tester);
+      await tester.drag(handle, Offset(0, 844 * 0.28));
+      await tester.pumpAndSettle();
+      expect(manager.fullscreenPreference, isFalse);
+      expect(homeRect(tester).top, closeTo(844 * 0.78, 2));
+
+      await tester.drag(handle, const Offset(0, 2000));
+      await tester.pumpAndSettle();
+      expect(manager.fullscreenPreference, isTrue);
+      expect(panelRect(tester).left, 0);
+      expect(find.byKey(const ValueKey('miniapp-dock')), findsOneWidget);
+      expect(contentInits['shop'], 1);
+    });
+
+    testWidgets('клавиатура при доле 0.78: чату ≥160, доля не меняется', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/13
+      await openSplit(tester);
+      await tester.drag(handle, Offset(0, 844 * 0.28));
+      await tester.pumpAndSettle();
+      final fraction = manager.splitFraction.value;
+
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(homeRect(tester).height - 300, greaterThanOrEqualTo(160));
+      expect(manager.splitFraction.value, fraction);
+
+      tester.view.resetViewInsets();
+      await tester.pumpAndSettle();
+      expect(homeRect(tester).top, closeTo(844 * 0.78, 2));
+    });
+  });
+
+  group('Свёртка списка чатов до аватарок', () {
+    final divider = find.byKey(const ValueKey('miniapp-host-divider'));
+    double mainWidth(WidgetTester tester) =>
+        tester.getSize(find.byKey(const ValueKey('probe-main'))).width;
+
+    Future<void> openSide(WidgetTester tester) async {
+      await pumpHost(tester, const Size(1440, 900), twoColumn: true);
+      manager.chatListCompactable.value = true;
+      openShop();
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('панель тянется дальше двух колонок — список сворачивается', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/14 AC:RL-miniapp-adaptive-window/15
+      // AC:RL-miniapp-adaptive-window/16
+      await openSide(tester);
+      expect(compact, isFalse);
+      expect(
+        mainWidth(tester),
+        LizaThemes.columnWidth + LizaThemes.navRailWidth,
+      );
+
+      await tester.drag(divider, const Offset(-2000, 0));
+      await tester.pumpAndSettle();
+      expect(panelRect(tester).width, 1440 - kMiniAppCompactMinChildWidth);
+      expect(compact, isTrue);
+      expect(
+        mainWidth(tester),
+        LizaThemes.navRailWidth + 1 + kCompactChatListWidth,
+      );
+      expect(
+        columnModes,
+        everyElement(isTrue),
+        reason: 'builder шелла не переключается посреди перетаскивания',
+      );
+      expect(homeInits, 1);
+      expect(contentInits['shop'], 1);
+    });
+
+    testWidgets('гистерезис: сворачивается за 817, разворачивается с 841', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/14
+      await openSide(tester);
+      Future<void> childTo(double width) async {
+        final current = 1440 - panelRect(tester).width;
+        await tester.drag(divider, Offset(width - current, 0));
+        await tester.pumpAndSettle();
+        expect(1440 - panelRect(tester).width, closeTo(width, 1));
+      }
+
+      await childTo(830);
+      expect(compact, isFalse, reason: 'зона гистерезиса — ещё полный');
+      await childTo(810);
+      expect(compact, isTrue);
+      await childTo(830);
+      expect(compact, isTrue, reason: 'зона гистерезиса — ещё свёрнут');
+      await childTo(845);
+      expect(compact, isFalse);
+    });
+
+    testWidgets('без открытого чата панель не шире порога двух колонок', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/18
+      await openSide(tester);
+      await tester.drag(divider, const Offset(-2000, 0));
+      await tester.pumpAndSettle();
+      expect(compact, isTrue);
+
+      manager.chatListCompactable.value = false;
+      await tester.pumpAndSettle();
+      expect(panelRect(tester).width, 1440 - kMiniAppMinChildWidth);
+      expect(compact, isFalse);
+      expect(
+        mainWidth(tester),
+        LizaThemes.columnWidth + LizaThemes.navRailWidth,
+      );
+    });
+
+    testWidgets('доля не съедает чат: потолок оставляет ≥160 px', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/12
+      await pumpHost(tester, const Size(390, 844));
+      openShop();
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
+      await tester.pumpAndSettle();
+      await tester.drag(
+        find.byKey(const ValueKey('miniapp-host-split-handle')),
+        Offset(0, 844 * 0.38),
+      );
+      await tester.pumpAndSettle();
+      expect(manager.fullscreenPreference, isFalse);
+      expect(
+        tester.getRect(find.byType(_ProbeHome)).height,
+        greaterThanOrEqualTo(160),
+      );
+    });
+
+    testWidgets('«развернуть» срабатывает и при дробной ширине окна', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/19
+      await pumpHost(tester, const Size(1209.6, 900), twoColumn: true);
+      manager.chatListCompactable.value = true;
+      openShop();
+      await tester.pumpAndSettle();
+      // 1209.6 < 1281 — по умолчанию на весь экран; закрепляем сбоку.
+      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
+      await tester.pumpAndSettle();
+      await tester.drag(divider, const Offset(-2000, 0));
+      await tester.pumpAndSettle();
+      expect(compact, isTrue);
+      manager.expandChatList();
+      await tester.pumpAndSettle();
+      expect(compact, isFalse);
+    });
+
+    testWidgets('«развернуть список» и закрытие miniApp возвращают полный', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/19
+      await openSide(tester);
+      await tester.drag(divider, const Offset(-2000, 0));
+      await tester.pumpAndSettle();
+      expect(compact, isTrue);
+
+      manager.expandChatList();
+      await tester.pumpAndSettle();
+      expect(compact, isFalse);
+      expect(panelRect(tester).width, 1440 - kMiniAppMinChildWidth - 1);
+
+      await tester.drag(divider, const Offset(-2000, 0));
+      await tester.pumpAndSettle();
+      expect(compact, isTrue);
+      manager.closeAll();
+      await tester.pumpAndSettle();
+      expect(compact, isFalse);
+      expect(homeSize!.width, 1440);
+    });
+
+    testWidgets('колонка аватарок: тап открывает чат, «развернуть» зовётся', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/16
+      final rooms = [
+        Room(id: '!a:example.invalid', client: client),
+        Room(id: '!b:example.invalid', client: client),
+      ];
+      final tapped = <String>[];
+      var expanded = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: L10n.localizationsDelegates,
+          supportedLocales: L10n.supportedLocales,
+          locale: const Locale('ru'),
+          home: Scaffold(
+            body: SizedBox(
+              width: kCompactChatListWidth,
+              child: CompactChatListColumn(
+                rooms: rooms,
+                activeChat: '!b:example.invalid',
+                filterActive: true,
+                onTap: (r) => tapped.add(r.id),
+                onContextAction: (_, _) {},
+                onExpand: () => expanded++,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      await tester.tap(
+        find.byKey(const ValueKey('compact_chat_!a:example.invalid')),
+      );
+      await tester.pumpAndSettle();
+      expect(tapped, ['!a:example.invalid']);
+
+      await tester.tap(find.byKey(const ValueKey('compact-chat-list-expand')));
+      expect(expanded, 1);
+      final badge = tester.widget<Badge>(find.byType(Badge));
+      expect(
+        badge.isLabelVisible,
+        isTrue,
+        reason: 'активный фильтр не «Все» — точка на кнопке',
+      );
+      // Avatar (MxcImage) держит таймер повторной загрузки — дать ему истечь.
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump(const Duration(seconds: 3));
+    });
+  });
 }
 
 class _ProbeHome extends StatefulWidget {
+  final bool twoColumn;
   final VoidCallback onInit;
   final ValueChanged<Size> onSize;
+  final void Function(bool columnMode, bool compact) onScope;
 
-  const _ProbeHome({required this.onInit, required this.onSize});
+  const _ProbeHome({
+    required this.onInit,
+    required this.onSize,
+    required this.onScope,
+    this.twoColumn = false,
+  });
 
   @override
   State<_ProbeHome> createState() => _ProbeHomeState();
@@ -414,7 +736,16 @@ class _ProbeHomeState extends State<_ProbeHome> {
   @override
   Widget build(BuildContext context) {
     widget.onSize(MediaQuery.sizeOf(context));
-    return const Scaffold(body: SizedBox.expand());
+    widget.onScope(
+      LizaThemes.isColumnMode(context),
+      MiniAppHostScope.compactChatListOf(context),
+    );
+    if (!widget.twoColumn) return const Scaffold(body: SizedBox.expand());
+    return const TwoColumnLayout(
+      compactable: true,
+      mainView: SizedBox.expand(key: ValueKey('probe-main')),
+      sideView: SizedBox.expand(key: ValueKey('probe-side')),
+    );
   }
 }
 

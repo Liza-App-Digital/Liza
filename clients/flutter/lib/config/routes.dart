@@ -12,6 +12,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/channel_handle.dart';
 import 'package:liza/utils/client_manager.dart';
 import 'package:liza/utils/deep_link_target.dart';
+import 'package:liza/utils/new_request_transition.dart';
 import 'package:liza/utils/open_user_profile.dart';
 import 'package:liza/utils/pending_deep_link.dart';
 import 'package:liza/utils/stories/open_user_stories.dart';
@@ -275,6 +276,7 @@ abstract class AppRoutes {
         LizaThemes.isColumnMode(context) &&
                 state.fullPath?.startsWith('/rooms/settings') == false
             ? TwoColumnLayout(
+                compactable: true,
                 mainView: ChatList(
                   activeChat: state.pathParameters['roomid'],
                   activeSpace: state.uri.queryParameters['spaceId'],
@@ -598,7 +600,7 @@ abstract class AppRoutes {
                   shareItems ??= [];
                   shareItems.add(TextShareItem(body));
                 }
-                return defaultPageBuilder(
+                return chatPageBuilder(
                   context,
                   state,
                   ChatPage(
@@ -765,6 +767,35 @@ abstract class AppRoutes {
           restorationId: state.pageKey.value,
           child: child,
         );
+
+  /// Страница чата `/rooms/:roomid`. В column-mode — всегда один класс
+  /// страницы: go_router зовёт pageBuilder повторно, и смена `runtimeType`
+  /// пересоздала бы ChatPage. Меняется только длительность — кроссфейд из
+  /// пустой панели «Новый запрос», для остальных чатов 0, как у NoTransitionPage.
+  @visibleForTesting
+  static Page chatPageBuilder(
+    BuildContext context,
+    GoRouterState state,
+    Widget child,
+  ) {
+    if (!LizaThemes.isColumnMode(context)) {
+      return defaultPageBuilder(context, state, child);
+    }
+    final duration = MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : NewRequestTransition.durationFor(state.pathParameters['roomid']!);
+    return CustomTransitionPage(
+      key: state.pageKey,
+      restorationId: state.pageKey.value,
+      transitionDuration: duration,
+      reverseTransitionDuration: Duration.zero,
+      // Обёртка всегда одна и та же: голый child при нуле поменял бы
+      // структуру над ChatPage на ребилде после протухания токена.
+      transitionsBuilder: (_, animation, _, child) =>
+          FadeTransition(opacity: animation, child: child),
+      child: child,
+    );
+  }
 }
 
 /// Обрабатывает инвайт-код: если сессия не установлена — сохраняет ссылку и

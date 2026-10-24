@@ -45,20 +45,23 @@ void main() {
   });
 
   // AC:RL-create-menu-order-agent-entry/2
-  test('AC-2: «Создать канал» есть у всех ролей, канал создаётся приватным', () {
-    for (final role in _Role.values) {
-      expect(
-        sections(role).first.contains(_A.channel),
-        isTrue,
-        reason: 'role=$role',
-      );
-    }
-    // Публичность канала — как у группы: по умолчанию выключена.
-    final newGroup = File(
-      'lib/pages/new_group/new_group.dart',
-    ).readAsStringSync();
-    expect(newGroup, contains('bool publicGroup = false;'));
-  });
+  test(
+    'AC-2: «Создать канал» есть у всех ролей, канал создаётся приватным',
+    () {
+      for (final role in _Role.values) {
+        expect(
+          sections(role).first.contains(_A.channel),
+          isTrue,
+          reason: 'role=$role',
+        );
+      }
+      // Публичность канала — как у группы: по умолчанию выключена.
+      final newGroup = File(
+        'lib/pages/new_group/new_group.dart',
+      ).readAsStringSync();
+      expect(newGroup, contains('bool publicGroup = false;'));
+    },
+  );
 
   // AC:RL-create-menu-order-agent-entry/4
   test('AC-4: метку разработчика получает только МСР', () {
@@ -67,7 +70,10 @@ void main() {
       'lib/pages/chat_list/chat_list_header.dart',
     ).readAsStringSync();
     expect(header, contains('developerOnlyActions.contains('));
-    expect(header, contains('const DeveloperMark()'));
+    final label = File(
+      'lib/pages/chat_list/create_menu_item_label.dart',
+    ).readAsStringSync();
+    expect(label, contains('const DeveloperMark()'));
   });
 
   // AC:RL-create-menu-order-agent-entry/5
@@ -115,6 +121,9 @@ void main() {
       'lib/pages/chat_list/chat_list_header.dart',
     ).readAsStringSync();
     expect(header, contains('tooltip: L10n.of(context).create,'));
-    expect(header, contains('CreateMenuAction.developers => l10n.forDevelopers'));
+    expect(
+      header,
+      contains('CreateMenuAction.developers => l10n.forDevelopers'),
+    );
   });
 }

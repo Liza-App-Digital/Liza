@@ -4,6 +4,9 @@
 // AC:RL-empty-panel-new-request/4 AC:RL-empty-panel-new-request/5
 // AC:RL-empty-panel-new-request/6 AC:RL-empty-panel-new-request/7
 // AC:RL-empty-panel-new-request/8 AC:RL-empty-panel-new-request/10
+// AC:RL-empty-panel-new-request/11 AC:RL-empty-panel-new-request/12
+// AC:RL-empty-panel-new-request/13 AC:RL-empty-panel-new-request/14
+// AC:RL-empty-panel-new-request/15 AC:RL-empty-panel-new-request/16
 // guard.render:real-widget
 //
 // Пустая правая панель на компьютере (задача 14): РЕАЛЬНЫЙ NewRequestEmptyPage
@@ -21,6 +24,13 @@
 //   RP-5 (AC-6): вернуть ожидание join Лизы → комната без Лизы, переход и PUT
 //     не наступают — красный; вернуть showFutureLoadingDialog → AlertDialog найден.
 //   RP-6 (AC-6): не ставить `first_message` → маркер без флага, красный.
+//   RP-7 (AC-13): убрать лимит кругов (`_loopsLeft--`) → кадры планируются
+//     бесконечно, красный.
+//   RP-8 (AC-14): плашка без проверки `_sending` → плашка + Enter = 2 запроса.
+//   RP-9 (AC-12): `active` без учёта текста → подсказка меняется под набором.
+//
+// С 23.10 (видео Надежды): бегущие примеры в поле, три плашки, морф перед
+// переходом. Сам кроссфейд маршрута — new_request_transition_test.dart.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -34,6 +44,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat_list/new_request_empty_page.dart';
+import 'package:liza/utils/new_request_transition.dart';
 import 'package:liza/utils/update_policy.dart';
 import 'package:liza/widgets/matrix.dart';
 
@@ -51,20 +62,29 @@ void main() {
     store = await SharedPreferences.getInstance();
   });
 
-  tearDown(() => UpdatePolicyController.current.value = UpdatePolicy.none);
+  tearDown(() {
+    UpdatePolicyController.current.value = UpdatePolicy.none;
+    NewRequestTransition.reset();
+  });
 
   Future<_PanelClient> pumpPanel(
     WidgetTester tester, {
     String? displayName,
+    bool disableAnimations = false,
   }) async {
     final client = _PanelClient(database, displayName);
     final router = GoRouter(
       routes: [
         GoRoute(
           path: '/',
-          builder: (_, _) => Provider<MatrixState>.value(
-            value: _TestMatrix(client, store),
-            child: const NewRequestEmptyPage(),
+          builder: (context, _) => MediaQuery(
+            data: MediaQuery.of(
+              context,
+            ).copyWith(disableAnimations: disableAnimations),
+            child: Provider<MatrixState>.value(
+              value: _TestMatrix(client, store),
+              child: const NewRequestEmptyPage(),
+            ),
           ),
         ),
         GoRoute(
@@ -94,6 +114,68 @@ void main() {
   String greeting(WidgetTester tester) =>
       tester.widget<Text>(find.byKey(const Key('new_request_greeting'))).data!;
 
+  String hint(WidgetTester tester) => tester
+      .widget<Text>(find.byKey(const Key('new_request_typewriter')))
+      .data!;
+
+  double hintOpacity(WidgetTester tester) => tester
+      .widget<Opacity>(
+        find
+            .ancestor(
+              of: find.byKey(const Key('new_request_typewriter')),
+              matching: find.byType(Opacity),
+            )
+            .first,
+      )
+      .opacity;
+
+  /// Высота блока, сворачиваемого морфом (ClipRect вокруг AnimatedAlign).
+  double collapsedHeight(WidgetTester tester, Key key) => tester
+      .getSize(
+        find
+            .ancestor(of: find.byKey(key), matching: find.byType(ClipRect))
+            .first,
+      )
+      .height;
+
+  const ruExamples = [
+    'Сгенерируй 5 идей постов для блога психолога',
+    'Напиши поздравление коллеге с днём рождения',
+    'Составь план поездки в Казань на выходные',
+    'Объясни простыми словами, что такое нейросеть',
+    'Напиши вежливый ответ на жалобу клиента',
+  ];
+  const ruPresets = [
+    'Найди 3 рецепта лёгкого ужина',
+    'Подбери топ-3 ноутбука для работы',
+    'Придумай шутку про понедельник',
+  ];
+
+  /// Середина паузы `i`-го примера, отсчёт от старта первого.
+  Duration midHold(int i) {
+    var t = Duration.zero;
+    for (var k = 0; k < i; k++) {
+      t += NewRequestTypewriter.cycleOf(ruExamples[k]);
+    }
+    return t +
+        NewRequestTypewriter.typeStep * ruExamples[i].length +
+        NewRequestTypewriter.hold ~/ 2;
+  }
+
+  /// Подвести часы к моменту `at` от старта анимации (старт — кадр после
+  /// pumpPanel, поэтому точное время не важно: точки берём в середине пауз).
+  Future<void> pumpTo(WidgetTester tester, Duration at, Duration now) async {
+    var left = at - now;
+    while (left > Duration.zero) {
+      // Шаг — кадр: каждый следующий пример стартует со следующего кадра.
+      final step = left > const Duration(milliseconds: 20)
+          ? const Duration(milliseconds: 20)
+          : left;
+      await tester.pump(step);
+      left -= step;
+    }
+  }
+
   group('AC-2: обращение по имени', () {
     test('первое слово; email, пусто, пробелы, null — без имени', () {
       expect(greetingFirstName('Иван Петров'), 'Иван');
@@ -109,13 +191,15 @@ void main() {
     testWidgets('ru: «Какую задачу решим, Надежда?» и без имени', (
       tester,
     ) async {
-      await pumpPanel(tester, displayName: 'Надежда Розенталь');
+      await pumpPanel(
+        tester,
+        displayName: 'Надежда Розенталь',
+        disableAnimations: true,
+      );
       expect(greeting(tester), 'Какую задачу решим, Надежда?');
       expect(find.text('Напишите, что нужно сделать.'), findsOneWidget);
-      expect(
-        find.text('Например: сгенерируй 5 идей постов для блога'),
-        findsOneWidget,
-      );
+      // Без анимаций подсказка — первый пример целиком.
+      expect(hint(tester), ruExamples.first);
     });
 
     testWidgets('ru: имени нет (не залогинен / email)', (tester) async {
@@ -213,6 +297,293 @@ void main() {
     },
   );
 
+  group('AC-11/12/13: бегущие примеры в поле', () {
+    testWidgets(
+      '∀ 5 примеров по порядку, текст растёт и убывает, круг замкнут',
+      (tester) async {
+        await pumpPanel(tester, displayName: 'Иван');
+        // pumpPanel уже прокрутил 300 мс.
+        var now = const Duration(milliseconds: 300);
+        for (var i = 0; i < ruExamples.length; i++) {
+          final at = midHold(i);
+          await pumpTo(tester, at, now);
+          now = at;
+          expect(hint(tester), ruExamples[i], reason: 'пример $i');
+          expect(hintOpacity(tester), 1);
+        }
+        // Второй круг начинается снова с первого примера.
+        final second =
+            midHold(ruExamples.length - 1) +
+            NewRequestTypewriter.cycleOf(ruExamples.last) -
+            NewRequestTypewriter.typeStep * ruExamples.last.length -
+            NewRequestTypewriter.hold ~/ 2 +
+            midHold(0);
+        await pumpTo(tester, second, now);
+        expect(hint(tester), ruExamples.first);
+
+        // Печать: длина не убывает до полной; стирание: не растёт до нуля.
+        final third = second + NewRequestTypewriter.hold;
+        await pumpTo(tester, third, second);
+        final lengths = <int>[];
+        for (var k = 0; k < 120; k++) {
+          await tester.pump(const Duration(milliseconds: 20));
+          lengths.add(hint(tester).length);
+        }
+        final erased = lengths.indexOf(0);
+        expect(erased, greaterThan(0), reason: 'стирание дошло до нуля');
+        for (var k = 1; k <= erased; k++) {
+          expect(lengths[k], lessThanOrEqualTo(lengths[k - 1]));
+        }
+        final restart = lengths.indexWhere((l) => l > 0, erased);
+        expect(restart, greaterThan(erased), reason: 'следующий пример начат');
+        for (var k = restart + 1; k < lengths.length; k++) {
+          expect(lengths[k], greaterThanOrEqualTo(lengths[k - 1]));
+        }
+      },
+    );
+
+    testWidgets('стоит под набором; при пустом поле снова идёт', (
+      tester,
+    ) async {
+      await pumpPanel(tester, displayName: 'Иван');
+      await tester.enterText(find.byType(TextField), 'мой вопрос');
+      await tester.pump();
+      expect(hintOpacity(tester), 0);
+      final frozen = hint(tester);
+      await tester.pump(const Duration(seconds: 3));
+      expect(hint(tester), frozen);
+      expect(tester.binding.hasScheduledFrame, isFalse);
+
+      await tester.enterText(find.byType(TextField), '');
+      await tester.pump();
+      expect(hintOpacity(tester), 1);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(hint(tester), isNot(frozen));
+    });
+
+    testWidgets('disableAnimations — первый пример целиком, без кадров', (
+      tester,
+    ) async {
+      await pumpPanel(tester, displayName: 'Иван', disableAnimations: true);
+      await tester.pump(const Duration(seconds: 5));
+      expect(hint(tester), ruExamples.first);
+      expect(tester.binding.hasScheduledFrame, isFalse);
+    });
+
+    testWidgets('после 2 кругов встаёт на первом примере', (tester) async {
+      await pumpPanel(tester, displayName: 'Иван');
+      final loop = ruExamples.fold(
+        Duration.zero,
+        (t, e) => t + NewRequestTypewriter.cycleOf(e),
+      );
+      await pumpTo(
+        tester,
+        loop * NewRequestTypewriter.loops + const Duration(seconds: 1),
+        const Duration(milliseconds: 300),
+      );
+      expect(hint(tester), ruExamples.first);
+      expect(tester.binding.hasScheduledFrame, isFalse);
+    });
+  });
+
+  group('AC-14: плашки-пресеты', () {
+    for (var i = 0; i < 3; i++) {
+      testWidgets('тап по плашке $i — запрос с её текстом, чат открыт', (
+        tester,
+      ) async {
+        final client = await pumpPanel(tester, displayName: 'Иван');
+        expect(
+          tester
+              .widget<ActionChip>(find.byKey(Key('new_request_preset_$i')))
+              .label,
+          isA<Text>().having((t) => t.data, 'data', ruPresets[i]),
+        );
+        await tester.tap(find.byKey(Key('new_request_preset_$i')));
+        for (var k = 0; k < 5; k++) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
+        expect(client.calls, 1);
+        expect(client.marker?['first_message'], true);
+        expect(client.room?.sent, [ruPresets[i]]);
+        expect(find.text('room $_requestRoomId'), findsOneWidget);
+      });
+    }
+
+    testWidgets('плашка + Enter → один запрос; плашки гаснут на отправке', (
+      tester,
+    ) async {
+      final client = await pumpPanel(tester, displayName: 'Иван');
+      final created = client.hold();
+      await tester.enterText(find.byType(TextField), 'свой вопрос');
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('new_request_preset_0')));
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(
+        tester
+            .widget<ActionChip>(find.byKey(const Key('new_request_preset_1')))
+            .onPressed,
+        isNull,
+      );
+      created.complete();
+      for (var k = 0; k < 5; k++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(client.calls, 1);
+      expect(client.room?.sent, [ruPresets[0]]);
+      // Набранное до тапа по плашке не стирается.
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'свой вопрос',
+      );
+    });
+  });
+
+  testWidgets(
+    'AC-15: отправка — шапка и плашки свёрнуты, вопрос пузырём, диалога нет',
+    (tester) async {
+      final client = await pumpPanel(tester, displayName: 'Иван');
+      final created = client.hold();
+      const header = Key('new_request_header');
+      const bubble = Key('new_request_bubble');
+      expect(collapsedHeight(tester, header), greaterThan(0));
+      expect(collapsedHeight(tester, bubble), 0);
+
+      await tester.enterText(find.byType(TextField), 'придумай шутку');
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      for (var k = 0; k < 5; k++) {
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byType(AlertDialog), findsNothing);
+      }
+      expect(collapsedHeight(tester, header), 0);
+      expect(collapsedHeight(tester, const Key('new_request_preset_0')), 0);
+      expect(collapsedHeight(tester, bubble), greaterThan(0));
+      expect(
+        find.descendant(
+          of: find.byKey(bubble),
+          matching: find.text('придумай шутку'),
+        ),
+        findsOneWidget,
+      );
+      created.complete();
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('room $_requestRoomId'), findsOneWidget);
+      expect(
+        NewRequestTransition.durationFor(_requestRoomId),
+        NewRequestTransition.fade,
+      );
+    },
+  );
+
+  testWidgets('AC-16: ошибка — экран возвращается, текст плашки в поле', (
+    tester,
+  ) async {
+    final client = await pumpPanel(tester, displayName: 'Иван');
+    client.fail = true;
+    await tester.tap(find.byKey(const Key('new_request_preset_2')));
+    for (var k = 0; k < 8; k++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Ой, что-то пошло не так…'), findsOneWidget);
+    expect(collapsedHeight(tester, const Key('new_request_bubble')), 0);
+    expect(
+      collapsedHeight(tester, const Key('new_request_header')),
+      greaterThan(0),
+    );
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      ruPresets[2],
+    );
+    expect(NewRequestTransition.durationFor(_requestRoomId), Duration.zero);
+  });
+
+  testWidgets('AC-15: чат открыт поверх панели — свёрнутое не принимает тапов; '
+      'возврат на панель — морф сброшен, примеры идут заново', (tester) async {
+    final client = _PanelClient(database, 'Иван');
+    // Как в приложении: чат — дочерний маршрут, панель живёт под ним.
+    final router = GoRouter(
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (_, _) => Provider<MatrixState>.value(
+            value: _TestMatrix(client, store),
+            child: const NewRequestEmptyPage(),
+          ),
+          routes: [
+            GoRoute(
+              path: 'rooms/:roomid',
+              builder: (_, state) => ColoredBox(
+                color: Colors.white,
+                child: Text('room ${state.pathParameters['roomid']}'),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp.router(
+        localizationsDelegates: L10n.localizationsDelegates,
+        supportedLocales: L10n.supportedLocales,
+        locale: const Locale('ru'),
+        routerConfig: router,
+      ),
+    );
+    for (var i = 0; i < 3; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    final created = client.hold();
+    await tester.tap(find.byKey(const Key('new_request_preset_0')));
+    await tester.pump();
+    created.complete();
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('room $_requestRoomId'), findsOneWidget);
+    // Панель ещё в дереве под чатом (offstage): плашки выключены.
+    final chip = find.byKey(
+      const Key('new_request_preset_1'),
+      skipOffstage: false,
+    );
+    expect(tester.widget<ActionChip>(chip).onPressed, isNull);
+    expect(client.calls, 1);
+
+    router.go('/');
+    for (var k = 0; k < 5; k++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(collapsedHeight(tester, const Key('new_request_bubble')), 0);
+    expect(
+      collapsedHeight(tester, const Key('new_request_header')),
+      greaterThan(0),
+    );
+    expect(
+      tester
+          .widget<ActionChip>(find.byKey(const Key('new_request_preset_1')))
+          .onPressed,
+      isNotNull,
+    );
+    expect(tester.binding.hasScheduledFrame, isTrue, reason: 'примеры идут');
+  });
+
+  testWidgets('AC-16: ошибка плашки не затирает набранный текст', (
+    tester,
+  ) async {
+    final client = await pumpPanel(tester, displayName: 'Иван');
+    client.fail = true;
+    await tester.enterText(find.byType(TextField), 'мой черновик');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('new_request_preset_1')));
+    for (var k = 0; k < 8; k++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Ой, что-то пошло не так…'), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'мой черновик',
+    );
+  });
+
   testWidgets('AC-8: режим чтения — плашка обновления вместо поля', (
     tester,
   ) async {
@@ -222,6 +593,7 @@ void main() {
     final client = await pumpPanel(tester, displayName: 'Иван');
     expect(find.byKey(const Key('update_read_only_bar')), findsOneWidget);
     expect(find.byKey(const Key('new_request_field')), findsNothing);
+    expect(find.byKey(const Key('new_request_preset_0')), findsNothing);
     expect(client.calls, 0);
   });
 }

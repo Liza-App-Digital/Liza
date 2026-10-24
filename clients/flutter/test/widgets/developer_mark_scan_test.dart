@@ -23,6 +23,14 @@ const _notUi = {
 // удаляет свою строку в том же коммите, где ставит метку.
 const _pendingByTask = <String, String>{};
 
+// Гейт, чью метку рисует виджет-делегат: файл обязан передавать флаг `developerMark:`,
+// а делегат — сам ставить DeveloperMark. Не послабление: пропадёт любое из двух —
+// снова красное (2026-10-23: меню «+» вынесло пункт в CreateMenuItemLabel).
+const _markedVia = <String, String>{
+  'lib/pages/chat_list/chat_list_header.dart':
+      'lib/pages/chat_list/create_menu_item_label.dart',
+};
+
 void main() {
   test('каждый developer-гейт UI в lib/** ставит DeveloperMark', () {
     final unmarked = <String>[];
@@ -35,13 +43,21 @@ void main() {
       if (!_gate.hasMatch(src)) continue;
       gated.add(path);
       if (_notUi.contains(path) || _pendingByTask.containsKey(path)) continue;
-      if (!src.contains('DeveloperMark')) unmarked.add(path);
+      if (src.contains('DeveloperMark')) continue;
+      final delegate = _markedVia[path];
+      if (delegate != null &&
+          src.contains('developerMark:') &&
+          File(delegate).readAsStringSync().contains('DeveloperMark')) {
+        continue;
+      }
+      unmarked.add(path);
     }
     expect(unmarked, isEmpty, reason: 'гейт без DeveloperMark');
     // Списки не протухают: каждая исключённая строка указывает на живой гейт.
     final stale = {
       ..._notUi,
       ..._pendingByTask.keys,
+      ..._markedVia.keys,
     }.where((p) => !gated.contains(p)).toList();
     expect(stale, isEmpty, reason: 'в allowlist файл без гейта — убери строку');
   });

@@ -4,6 +4,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat_list/chat_list.dart';
 import 'package:liza/utils/liza_new_request.dart';
 import 'package:liza/widgets/avatar.dart';
+import 'package:liza/widgets/hexagon_clipper.dart';
 
 /// Строка «+ Новый запрос» — последней под переписками на чипах «Все» и
 /// «Агенты и боты» (задание Надежды 18.10: «сейчас важнее мотивировать
@@ -48,17 +49,19 @@ class _NewLizaRequestListTileState extends State<NewLizaRequestListTile> {
     // Геометрия выровнена по ChatListItem: аватар 44 (Avatar.defaultSize) в
     // фиксированном SizedBox, visualDensity(-0.5), левый край leading 16px —
     // см. docs/superpowers/specs/2026-08-20-invite-people-row-alignment-design.md.
+    // Шестиугольник — как у всех ИИ-аватаров (Надежда 23.10: «единообразие по
+    // ИИ»); тап — у ListTile, своего InkWell у значка нет.
     return ListTile(
       visualDensity: const VisualDensity(vertical: -0.5),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16),
       leading: SizedBox(
+        key: const ValueKey('new_liza_request_icon'),
         width: Avatar.defaultSize,
         height: Avatar.defaultSize,
-        child: CircleAvatar(
-          radius: Avatar.defaultSize / 2,
-          backgroundColor: theme.colorScheme.primary,
-          foregroundColor: theme.colorScheme.onPrimary,
-          child: const Icon(Icons.add),
+        child: Material(
+          color: theme.colorScheme.primary,
+          shape: const HexagonBorder(),
+          child: Icon(Icons.add, color: theme.colorScheme.onPrimary),
         ),
       ),
       title: Text(

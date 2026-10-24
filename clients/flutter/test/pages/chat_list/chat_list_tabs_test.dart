@@ -278,12 +278,13 @@ void main() {
       expect(tile.visualDensity, const VisualDensity(vertical: -0.5));
       expect(tile.contentPadding, const EdgeInsets.symmetric(horizontal: 16));
 
-      final avatar = tester.getSize(find.byType(CircleAvatar));
+      final icon = find.byKey(const ValueKey('new_liza_request_icon'));
+      final avatar = tester.getSize(icon);
       expect(avatar.width, Avatar.defaultSize);
       expect(avatar.height, Avatar.defaultSize);
 
       final tileLeft = tester.getTopLeft(find.byType(ListTile)).dx;
-      final avatarLeft = tester.getTopLeft(find.byType(CircleAvatar)).dx;
+      final avatarLeft = tester.getTopLeft(icon).dx;
       expect(avatarLeft - tileLeft, moreOrLessEquals(16, epsilon: 0.5));
       // titleStart = 16 + 44 + 16, как у ChatListItem.
       final titleLeft = tester.getTopLeft(find.text('Новый запрос')).dx;
