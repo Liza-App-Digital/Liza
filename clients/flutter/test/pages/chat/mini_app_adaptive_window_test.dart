@@ -27,6 +27,7 @@ void main() {
   final contentInits = <String, int>{};
   final contentPaths = <String, String>{};
   var homeInits = 0;
+  var titleTaps = 0;
   Size? homeSize;
   // Что видит приложение под хостом: колоночный режим и свёртка списка.
   final columnModes = <bool>[];
@@ -47,6 +48,7 @@ void main() {
     contentInits.clear();
     contentPaths.clear();
     homeInits = 0;
+    titleTaps = 0;
     homeSize = null;
     MiniAppOverlay.debugContentBuilder = (context, app) => _FakeContent(
       app: app,
@@ -79,6 +81,7 @@ void main() {
         home: _ProbeHome(
           twoColumn: twoColumn,
           onInit: () => homeInits++,
+          onTitleTap: () => titleTaps++,
           onSize: (s) => homeSize = s,
           onScope: (columnMode, isCompact) {
             columnModes.add(columnMode);
@@ -435,7 +438,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(homeRect(tester).top, closeTo(kMiniAppSplitMinPanelHeight, 1));
 
-      await tester.drag(handle, Offset(0, 844 * 0.7 - kMiniAppSplitMinPanelHeight));
+      await tester.drag(
+        handle,
+        Offset(0, 844 * 0.7 - kMiniAppSplitMinPanelHeight),
+      );
       await tester.pumpAndSettle();
       expect(homeRect(tester).top, closeTo(844 * 0.7, 2));
 
@@ -446,6 +452,77 @@ void main() {
       expect(homeRect(tester).top, closeTo(844 * 0.7, 2));
       expect(contentInits['shop'], 1);
       expect(homeInits, 1);
+    });
+
+    testWidgets('нет полосы: панель вплотную к чату при любой доле', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/20
+      await openSplit(tester);
+      void expectNoGap() =>
+          expect(panelRect(tester).bottom, closeTo(homeRect(tester).top, 0.5));
+      expectNoGap();
+      await tester.drag(handle, const Offset(0, -2000));
+      await tester.pumpAndSettle();
+      expectNoGap();
+      await tester.drag(
+        handle,
+        Offset(0, 844 * 0.78 - kMiniAppSplitMinPanelHeight),
+      );
+      await tester.pumpAndSettle();
+      expect(homeRect(tester).top, closeTo(844 * 0.78, 2));
+      expectNoGap();
+    });
+
+    testWidgets('на стыке только пилюля и линия 1 px, без фона', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/21
+      await openSplit(tester);
+      final seam = homeRect(tester).top;
+      final pill = tester.getRect(
+        find.descendant(of: handle, matching: find.byType(DecoratedBox)),
+      );
+      expect(pill.size, const Size(36, 5));
+      expect(pill.center.dx, closeTo(195, 0.5));
+      expect(pill.center.dy, closeTo(seam, 1));
+      expect(
+        find.descendant(of: handle, matching: find.byType(ColoredBox)),
+        findsNothing,
+      );
+      final divider = tester.getRect(
+        find.byKey(const ValueKey('miniapp-host-split-divider')),
+      );
+      expect(divider.height, 1);
+      expect(divider.width, 390);
+      expect(divider.center.dy, closeTo(seam, 0.5));
+    });
+
+    testWidgets('бегунок не крадёт тап у заголовка чата, но тянется', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/22
+      await openSplit(tester);
+      final seam = homeRect(tester).top;
+      final zone = tester.getRect(handle);
+      expect(zone.bottom - seam, lessThanOrEqualTo(26));
+      expect(seam - zone.top, lessThanOrEqualTo(6));
+      for (final point in [
+        Offset(195, seam + 4),
+        Offset(195, seam + 14),
+        Offset(20, seam + 14),
+      ]) {
+        final before = titleTaps;
+        await tester.tapAt(point);
+        await tester.pumpAndSettle();
+        expect(titleTaps, before + 1, reason: 'тап в $point');
+      }
+      expect(homeRect(tester).top, closeTo(seam, 0.5));
+
+      await tester.dragFrom(Offset(195, seam + 20), const Offset(0, 100));
+      await tester.pumpAndSettle();
+      expect(homeRect(tester).top, closeTo(seam + 100, 2));
+      expect(titleTaps, 3);
     });
 
     testWidgets('пока тянут — двигается только превью, WebView не ресайзится', (
@@ -712,11 +789,13 @@ void main() {
 class _ProbeHome extends StatefulWidget {
   final bool twoColumn;
   final VoidCallback onInit;
+  final VoidCallback onTitleTap;
   final ValueChanged<Size> onSize;
   final void Function(bool columnMode, bool compact) onScope;
 
   const _ProbeHome({
     required this.onInit,
+    required this.onTitleTap,
     required this.onSize,
     required this.onScope,
     this.twoColumn = false,
@@ -740,7 +819,22 @@ class _ProbeHomeState extends State<_ProbeHome> {
       LizaThemes.isColumnMode(context),
       MiniAppHostScope.compactChatListOf(context),
     );
-    if (!widget.twoColumn) return const Scaffold(body: SizedBox.expand());
+    // Сверху — кликабельный «заголовок чата» во всю ширину: в двойном экране
+    // бегунок лежит поверх него и не должен красть тапы.
+    if (!widget.twoColumn) {
+      return Scaffold(
+        body: Column(
+          children: [
+            InkWell(
+              key: const ValueKey('probe-title'),
+              onTap: widget.onTitleTap,
+              child: const SizedBox(height: 56, width: double.infinity),
+            ),
+            const Expanded(child: SizedBox.expand()),
+          ],
+        ),
+      );
+    }
     return const TwoColumnLayout(
       compactable: true,
       mainView: SizedBox.expand(key: ValueKey('probe-main')),

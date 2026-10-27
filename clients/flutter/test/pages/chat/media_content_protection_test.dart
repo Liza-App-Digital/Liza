@@ -132,6 +132,9 @@ void main() {
       );
     });
 
+    // ledger:RL-windows-video-viewer-playback
+    // AC:RL-windows-video-viewer-playback/5 — тап по видео при поддержке
+    // плеера (теперь и Windows) открывает просмотрщик, а не saveFile.
     test('showDialog просмотра видео в video_player.dart НЕ гейтится (воспроизведение)', () {
       final source = compact('lib/pages/chat/events/video_player.dart');
       expect(

@@ -26,3 +26,30 @@ bool isMediaMime(String? mime) =>
 /// расхождение этих двух решений и дало LABA-2620.
 bool isMediaAlbum(List<XFile> files) =>
     files.length >= 2 && files.every((f) => isMediaMime(resolveXFileMime(f)));
+
+/// MIME ВИДЕО для `MatrixVideoFile` при отправке (заявка №52).
+///
+/// Без явного типа SDK сниффит заголовок: в `package:mime` сигнатура EBML
+/// (`1A 45 DF A3`, общая у WebM и MKV) записана как `audio/weba` и бьёт
+/// расширение. Так любой WebM с Android, где у `XFile` нет `mimeType`, уходил
+/// в событие как аудио. Звать ТОЛЬКО для видео: `audio/*` здесь переписывается.
+///
+/// [transcoded] — байты от `video_compress` (всегда mp4), а имя и заявленный
+/// тип остались от исходника: верить можно только содержимому.
+String resolveVideoSendMime({
+  required String? declared,
+  required String name,
+  required List<int> bytes,
+  required bool transcoded,
+}) {
+  final String? found;
+  if (transcoded) {
+    found = lookupMimeType('', headerBytes: bytes) ?? 'video/mp4';
+  } else if (declared != null && declared.isNotEmpty) {
+    found = declared;
+  } else {
+    found = lookupMimeType(name) ?? lookupMimeType('', headerBytes: bytes);
+  }
+  if (found == 'audio/weba' || found == 'audio/webm') return 'video/webm';
+  return found ?? 'video/mp4';
+}

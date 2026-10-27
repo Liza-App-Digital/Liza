@@ -1,6 +1,7 @@
 // ledger:RL-create-menu-order-agent-entry
 // AC:RL-create-menu-order-agent-entry/11 AC:RL-create-menu-order-agent-entry/12
 // AC:RL-create-menu-order-agent-entry/13 AC:RL-create-menu-order-agent-entry/14
+// AC:RL-create-menu-order-agent-entry/16
 // guard.render:real-widget
 //
 // Замечание Надежды 23.10: «В меню по + нужно визуально выделить пункт Новый
@@ -20,9 +21,19 @@ import 'package:liza/widgets/hexagon_clipper.dart';
 
 const _iconKey = ValueKey('create_menu_new_request_icon');
 
-Future<void> _openMenu(WidgetTester tester, Brightness brightness) async {
+Future<void> _openMenu(
+  WidgetTester tester,
+  Brightness brightness, {
+  double textScale = 1,
+}) async {
   await tester.pumpWidget(
     MaterialApp(
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(
+          context,
+        ).copyWith(textScaler: TextScaler.linear(textScale)),
+        child: child!,
+      ),
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.deepPurple,
@@ -129,5 +140,35 @@ void main() {
         ),
       );
     });
+  }
+
+  // Замечание Надежды 26.10: «расстояние между иконкой и словом Новый
+  // сократим. Не впритык, … примерно как между словами Новый и Запрос».
+  for (final brightness in Brightness.values) {
+    for (final textScale in [1.0, 1.3]) {
+      testWidgets('AC-16 зазор значок→подпись = пробел, тема=$brightness, '
+          'масштаб=$textScale', (tester) async {
+        await _openMenu(tester, brightness, textScale: textScale);
+        final icon = _in(CreateMenuAction.newRequest, find.byKey(_iconKey));
+        final textFinder = _in(
+          CreateMenuAction.newRequest,
+          find.text('newRequest'),
+        );
+        final textElement = tester.element(textFinder);
+        final style = DefaultTextStyle.of(
+          textElement,
+        ).style.merge(tester.widget<Text>(textFinder).style);
+        final space = TextPainter(
+          text: TextSpan(text: ' ', style: style),
+          textDirection: TextDirection.ltr,
+          textScaler: MediaQuery.textScalerOf(textElement),
+        )..layout();
+        final gap =
+            tester.getTopLeft(textFinder).dx - tester.getTopRight(icon).dx;
+        expect(space.width, greaterThan(0), reason: 'не впритык');
+        expect(gap, moreOrLessEquals(space.width, epsilon: 0.5));
+        space.dispose();
+      });
+    }
   }
 }

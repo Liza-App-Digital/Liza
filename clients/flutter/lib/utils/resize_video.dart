@@ -8,6 +8,7 @@ import 'package:matrix/matrix.dart';
 import 'package:video_compress/video_compress.dart';
 
 import 'package:liza/utils/platform_infos.dart';
+import 'package:liza/utils/xfile_mime.dart';
 
 /// Таймаут на ЛЮБОЙ нативный вызов извлечения кадра.
 ///
@@ -49,8 +50,7 @@ int videoThumbnailRetryPositionFor(TargetPlatform platform) =>
 bool isStaleCompressTick({
   required bool sawRealTick,
   required double percent,
-}) =>
-    !sawRealTick && percent >= 100;
+}) => !sawRealTick && percent >= 100;
 
 /// Оборачивает ОДИН нативный заход за кадром в обязательный таймаут и глушит
 /// исключения: провал постера — это деградация (шлём без него), а не отказ
@@ -165,10 +165,17 @@ extension ResizeVideo on XFile {
     // Workaround применяем для обоих веток (с компрессией и без), потому что
     // источник перепутывания — нативный API, а не сама компрессия.
     final swap = PlatformInfos.isAndroid;
+    final transcoded = compress && mediaInfo?.file != null;
+    final bytes = (await mediaInfo?.file?.readAsBytes()) ?? await readAsBytes();
     return MatrixVideoFile(
-      bytes: (await mediaInfo?.file?.readAsBytes()) ?? await readAsBytes(),
+      bytes: bytes,
       name: name,
-      mimeType: mimeType,
+      mimeType: resolveVideoSendMime(
+        declared: mimeType,
+        name: name,
+        bytes: bytes,
+        transcoded: transcoded,
+      ),
       width: swap ? mediaInfo?.height : mediaInfo?.width,
       height: swap ? mediaInfo?.width : mediaInfo?.height,
       duration: mediaInfo?.duration?.round(),

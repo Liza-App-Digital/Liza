@@ -63,6 +63,86 @@ void main() {
     });
   });
 
+  group('videoRebufferReason — причина по замеру, не по допущению (AC-16)', () {
+    // AC:RL-video-playback-monitoring-signal/16 — кейс #2146: 10-МБ файл, байты
+    // приходят быстро (5 МБ/с ≫ битрейта), а плеер стоит → НЕ slow-network.
+    test('AC-16: вход быстрее битрейта → local-stall', () {
+      expect(
+        videoRebufferReason(
+          inputBytesPerSec: 5 * 1024 * 1024,
+          sizeBytes: 10 * 1024 * 1024,
+          durationMs: 30000,
+        ),
+        'local-stall',
+      );
+    });
+
+    // AC:RL-video-playback-monitoring-signal/16
+    test('AC-16: вход медленнее битрейта → slow-network', () {
+      // 10 МБ / 30 с ≈ 350 КБ/с нужно, приходит 100 КБ/с.
+      expect(
+        videoRebufferReason(
+          inputBytesPerSec: 100 * 1024,
+          sizeBytes: 10 * 1024 * 1024,
+          durationMs: 30000,
+        ),
+        'slow-network',
+      );
+    });
+
+    // AC:RL-video-playback-monitoring-signal/16
+    test('AC-16: нет size/duration → порог 1 МБ/с', () {
+      expect(videoRebufferReason(inputBytesPerSec: 200 * 1024), 'slow-network');
+      expect(
+        videoRebufferReason(inputBytesPerSec: 2 * 1024 * 1024),
+        'local-stall',
+      );
+      expect(
+        videoRebufferReason(inputBytesPerSec: 2 * 1024 * 1024, durationMs: 0),
+        'local-stall',
+      );
+    });
+
+    // AC:RL-video-playback-monitoring-signal/16 — без замера не угадываем.
+    test('AC-16: замера нет (null/отрицательный) → rate-unknown', () {
+      expect(videoRebufferReason(sizeBytes: 1, durationMs: 1), 'rate-unknown');
+      expect(videoRebufferReason(inputBytesPerSec: -1), 'rate-unknown');
+    });
+
+    // AC:RL-video-playback-monitoring-signal/16 — ∀ reason ребуфера голова и
+    // самые ценные поля контекста влезают в бюджет title.
+    test(
+      'AC-16 ∀: по всем reason ребуфера title ≤ бюджета и несёт e2ee/size',
+      () {
+        for (final reason in ['slow-network', 'local-stall', 'rate-unknown']) {
+          final title = Monitoring.buildAlertTitle(
+            prefix: Monitoring.videoRebufferPrefix,
+            reason: reason,
+            host: 'synapse.liza.laba.prodamus.tech',
+            context: {
+              'e2ee': 'true',
+              'mime': 'video/mp4',
+              'size': '<10MB',
+              'platform': 'android',
+              'mmr': 'true',
+            },
+          );
+          expect(
+            title.length,
+            lessThanOrEqualTo(Monitoring.maxAlertTitleLength),
+          );
+          expect(
+            title,
+            startsWith(
+              '[video-rebuffer] reason=$reason host=synapse.liza e2ee=true',
+            ),
+          );
+          expect(title, contains('size=<10MB'), reason: reason);
+        }
+      },
+    );
+  });
+
   group('Свап-сигнал гейтится хостом + инертность (AC-2/AC-5)', () {
     // AC:RL-video-playback-monitoring-signal/2
     test('AC-2: свап сигналим ТОЛЬКО на MMR-хосте (гейт _reportVideoSwap)', () {

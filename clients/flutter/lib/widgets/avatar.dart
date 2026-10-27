@@ -34,26 +34,23 @@ class Avatar extends StatelessWidget {
   /// приоритет над [onTap]: тап по кружку открывает сторис-просмотрщик.
   final void Function()? onStoryTap;
 
-  // Фон буквенного аватара без картинки — нейтральные серые, по одному из трёх
-  // на имя (Надежда 23.10: «для людей сделаем фон не цветной … оттенков серого
-  // в стиле интерфейса»; цветные — только пастельные ИИ-запросы). Константы, а
-  // не токены темы: seed темы берётся из системы (Material You, акцент macOS),
-  // и «серые» на разных устройствах окрасились бы по-разному. Буква — тёмная
-  // на светлом / светлая на тёмном, контраст ≥ 5.4.
-  // Спека: docs/superpowers/specs/2026-10-23-avatar-unified-style-design.md
+  // Фон буквенного аватара без картинки — пастель чатов-запросов Лизы
+  // (`PALETTE` в servers/bots/liza/request_avatar.py), по хэшу имени, буква
+  // #1A1A1A. Надежда 26.10: «сделай аватарки обратно цветными, как было»
+  // + Роман: «не такая ляпистая палитра, а ближе к аватаркам, которые для
+  // Лизы сейчас генерятся». Один набор на обе темы — как PNG запросов, которые
+  // тоже не перекрашиваются тёмной темой. Константы, не токены темы: seed темы
+  // берётся из системы (Material You, акцент macOS).
+  // Спека: docs/superpowers/specs/2026-10-26-avatar-pastel-colors-design.md
   // ledger:RL-avatar-unified-style
-  static const List<Color> lightFallbackBackgrounds = [
-    Color(0xFFE3E5E8),
-    Color(0xFFD6D9DE),
-    Color(0xFFC9CDD3),
+  static const List<Color> fallbackBackgrounds = [
+    Color(0xFFEEF5B8),
+    Color(0xFFCDE8C0),
+    Color(0xFFC4D6F2),
+    Color(0xFFDCCBEA),
+    Color(0xFFF6D5BF),
   ];
-  static const List<Color> darkFallbackBackgrounds = [
-    Color(0xFF3C4043),
-    Color(0xFF4A4E54),
-    Color(0xFF5A5E66),
-  ];
-  static const Color lightFallbackLetter = Color(0xFF3C4043);
-  static const Color darkFallbackLetter = Color(0xFFE8EAED);
+  static const Color fallbackLetter = Color(0xFF1A1A1A);
 
   static int fallbackShade(String? name) {
     if (name == null) return 0;
@@ -61,7 +58,7 @@ class Avatar extends StatelessWidget {
     for (final unit in name.codeUnits) {
       sum += unit;
     }
-    return sum % lightFallbackBackgrounds.length;
+    return sum % fallbackBackgrounds.length;
   }
 
   const Avatar({
@@ -93,20 +90,11 @@ class Avatar extends StatelessWidget {
         ? '@'
         : name.substring(0, 1);
 
-    final isDark = theme.brightness == Brightness.dark;
     final fallbackBackground =
-        backgroundColor ??
-        (isDark
-            ? darkFallbackBackgrounds
-            : lightFallbackBackgrounds)[fallbackShade(name)];
+        backgroundColor ?? fallbackBackgrounds[fallbackShade(name)];
     // Явный фон вызывающего рассчитан на белую букву (space_view, панели).
     final fallbackText =
-        textColor ??
-        (backgroundColor != null
-            ? Colors.white
-            : isDark
-            ? darkFallbackLetter
-            : lightFallbackLetter);
+        textColor ?? (backgroundColor != null ? Colors.white : fallbackLetter);
 
     final noPic =
         mxContent == null ||

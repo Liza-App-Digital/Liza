@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import 'package:liza/config/themes.dart';
@@ -36,13 +37,19 @@ const double _kCompactHysteresis = 24;
 /// Сколько высоты двойной экран оставляет чату над клавиатурой.
 const double _kSplitMinChatHeight = 160;
 
-/// Минимальная высота miniApp в двойном экране (шапка + полоска контента +
-/// полоса бегунка).
+/// Минимальная высота miniApp в двойном экране (шапка + полоска контента).
 const double kMiniAppSplitMinPanelHeight = 150;
 
-/// Полоса бегунка внизу miniApp в двойном экране: во всю ширину, вне WebView и
-/// вне шапки чата — тянется и не крадёт касания ни у того, ни у другого.
-const double kMiniAppSplitHandleHeight = 28;
+/// Зона касания бегунка двойного экрана. Полосы нет — на стыке только пилюля,
+/// а зона прозрачна для тапов: тап доходит до заголовка чата, перехватывается
+/// лишь вертикальное перетаскивание.
+const double kMiniAppSplitHandleWidth = 88;
+const double kMiniAppSplitHandleHeight = 32;
+
+/// Сколько зоны бегунка лежит над стыком. Над WebView касание ненадёжно
+/// (iframe на Web, platform view на мобилках), поэтому зона смещена на чат и
+/// не достаёт до MainButton miniApp (его низ — 8 px над стыком).
+const double kMiniAppSplitHandleAbove = 6;
 
 /// Доля, с которой отпущенный бегунок переводит miniApp на весь экран.
 const double kMiniAppSplitFullscreenSnap = 0.9;
@@ -406,6 +413,7 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
         var panelMq = mq;
         Rect? dividerRect;
         Rect? splitHandleRect;
+        double? splitTop;
         var splitAvailable = 0.0;
         var splitStartFraction = 0.0;
         double? splitPreviewY;
@@ -446,12 +454,11 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
             childMq = (t > 0 ? mq.removePadding(removeTop: true) : mq).copyWith(
               size: childRect.size,
             );
-            // Снизу панели — полоса бегунка, сама панель на неё короче.
             panelRect = Rect.fromLTWH(
               0,
               top - fullHeight,
               size.width,
-              fullHeight - kMiniAppSplitHandleHeight,
+              fullHeight,
             );
             // Клавиатура и нижний safe-area — забота чата снизу; панели они
             // не касаются (иначе MainButton miniApp подпрыгнул бы дважды).
@@ -460,14 +467,13 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
             panelMq = mq
                 .removePadding(removeTop: true, removeBottom: true)
                 .removeViewInsets(removeBottom: true)
-                .copyWith(
-                  size: Size(panelRect.width, ph - kMiniAppSplitHandleHeight),
-                );
+                .copyWith(size: Size(panelRect.width, ph));
             if (t > 0) {
+              splitTop = top;
               splitHandleRect = Rect.fromLTWH(
-                0,
-                top - kMiniAppSplitHandleHeight,
-                size.width,
+                (size.width - kMiniAppSplitHandleWidth) / 2,
+                top - kMiniAppSplitHandleAbove,
+                kMiniAppSplitHandleWidth,
                 kMiniAppSplitHandleHeight,
               );
               splitAvailable = available;
@@ -571,21 +577,32 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
                   ),
                 ),
               ),
+            if (splitTop != null)
+              Positioned(
+                key: const ValueKey('miniapp-host-split-divider'),
+                left: 0,
+                right: 0,
+                top: splitTop - 0.5,
+                height: 1,
+                child: IgnorePointer(
+                  child: ColoredBox(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                ),
+              ),
             if (splitHandleRect != null)
               Positioned.fromRect(
                 key: const ValueKey('miniapp-host-split-handle'),
                 rect: splitHandleRect,
-                child: ColoredBox(
-                  color: Theme.of(context).colorScheme.surface,
-                  child: _PanelResizeHandle(
-                    axis: Axis.vertical,
-                    // Старт от фактической высоты панели (её могла ужать
-                    // клавиатура), а не от сохранённой доли — без скачка.
-                    onStart: () => _onSplitDragStart(splitStartFraction),
-                    onUpdate: (dy) => _onSplitDragUpdate(dy, splitAvailable),
-                    onEnd: () => _onSplitDragEnd(splitAvailable),
-                    onCancel: _onSplitDragCancel,
-                  ),
+                child: _PanelResizeHandle(
+                  axis: Axis.vertical,
+                  pillCenterY: kMiniAppSplitHandleAbove,
+                  // Старт от фактической высоты панели (её могла ужать
+                  // клавиатура), а не от сохранённой доли — без скачка.
+                  onStart: () => _onSplitDragStart(splitStartFraction),
+                  onUpdate: (dy) => _onSplitDragUpdate(dy, splitAvailable),
+                  onEnd: () => _onSplitDragEnd(splitAvailable),
+                  onCancel: _onSplitDragCancel,
                 ),
               ),
             if (dividerRect != null)
@@ -777,8 +794,13 @@ class _PanelResizeHandle extends StatelessWidget {
   /// Жест отменён (перехвачен) — откатить, не применяя. По умолчанию = onEnd.
   final VoidCallback? onCancel;
 
+  /// Центр пилюли от верха зоны (бегунок двойного экрана: пилюля на стыке,
+  /// а не в центре зоны). null — по центру.
+  final double? pillCenterY;
+
   const _PanelResizeHandle({
     this.axis = Axis.horizontal,
+    this.pillCenterY,
     required this.onStart,
     required this.onUpdate,
     required this.onEnd,
@@ -789,34 +811,54 @@ class _PanelResizeHandle extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final vertical = axis == Axis.vertical;
-    return Semantics(
-      label: L10n.of(context).miniAppResizePanel,
-      child: MouseRegion(
-        cursor: vertical
-            ? SystemMouseCursors.resizeRow
-            : SystemMouseCursors.resizeColumn,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onHorizontalDragStart: vertical ? null : (_) => onStart(),
-          onHorizontalDragUpdate: vertical ? null : (d) => onUpdate(d.delta.dx),
-          onHorizontalDragEnd: vertical ? null : (_) => onEnd(),
-          onHorizontalDragCancel: vertical ? null : onEnd,
-          onVerticalDragStart: vertical ? (_) => onStart() : null,
-          onVerticalDragUpdate: vertical ? (d) => onUpdate(d.delta.dy) : null,
-          onVerticalDragEnd: vertical ? (_) => onEnd() : null,
-          onVerticalDragCancel: vertical ? (onCancel ?? onEnd) : null,
-          child: Center(
-            child: Container(
-              width: vertical ? 36 : 4,
-              height: vertical ? 5 : 40,
-              decoration: BoxDecoration(
-                color: vertical
-                    ? colorScheme.outline
-                    : colorScheme.outlineVariant,
-                borderRadius: BorderRadius.circular(3),
-              ),
-            ),
-          ),
+    final pill = Container(
+      width: vertical ? 36 : 4,
+      height: vertical ? 5 : 40,
+      decoration: BoxDecoration(
+        color: vertical ? colorScheme.outline : colorScheme.outlineVariant,
+        borderRadius: BorderRadius.circular(3),
+      ),
+    );
+    final pillCenterY = this.pillCenterY;
+    // Бегунок двойного экрана лежит поверх заголовка чата: translucent и
+    // MouseRegion.opaque=false пропускают хит-тест дальше по Stack, так что
+    // тап достаётся заголовку, а бегунок забирает только вертикальный drag.
+    // У MouseRegion по умолчанию opaque — без этого зона снова глухая.
+    final behavior = vertical
+        ? HitTestBehavior.translucent
+        : HitTestBehavior.opaque;
+    return MouseRegion(
+      opaque: !vertical,
+      hitTestBehavior: behavior,
+      cursor: vertical
+          ? SystemMouseCursors.resizeRow
+          : SystemMouseCursors.resizeColumn,
+      child: GestureDetector(
+        behavior: behavior,
+        // Бегунок делит арену с тапом заголовка и побеждает лишь после slop —
+        // с down смещение до победы не теряется, граница идёт за пальцем.
+        dragStartBehavior: vertical
+            ? DragStartBehavior.down
+            : DragStartBehavior.start,
+        onHorizontalDragStart: vertical ? null : (_) => onStart(),
+        onHorizontalDragUpdate: vertical ? null : (d) => onUpdate(d.delta.dx),
+        onHorizontalDragEnd: vertical ? null : (_) => onEnd(),
+        onHorizontalDragCancel: vertical ? null : onEnd,
+        onVerticalDragStart: vertical ? (_) => onStart() : null,
+        onVerticalDragUpdate: vertical ? (d) => onUpdate(d.delta.dy) : null,
+        onVerticalDragEnd: vertical ? (_) => onEnd() : null,
+        onVerticalDragCancel: vertical ? (onCancel ?? onEnd) : null,
+        child: Semantics(
+          label: L10n.of(context).miniAppResizePanel,
+          child: pillCenterY == null
+              ? Center(child: pill)
+              : Align(
+                  alignment: Alignment.topCenter,
+                  child: Padding(
+                    padding: EdgeInsets.only(top: pillCenterY - 2.5),
+                    child: pill,
+                  ),
+                ),
         ),
       ),
     );

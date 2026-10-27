@@ -197,15 +197,18 @@ extension MatrixFileExtension on MatrixFile {
     return;
   }
 
+  /// MIME передаём явно: без него конструктор SDK сниффит magic-байты, а
+  /// `mime` 2.0.0 маппит EBML-заголовок (WebM/MKV) в несуществующий
+  /// `audio/weba` — видео уходило `m.video` с аудио-MIME (заявка №57).
   MatrixFile get detectFileType {
     if (msgType == MessageTypes.Image) {
-      return MatrixImageFile(bytes: bytes, name: name);
+      return MatrixImageFile(bytes: bytes, name: name, mimeType: mimeType);
     }
     if (msgType == MessageTypes.Video) {
-      return MatrixVideoFile(bytes: bytes, name: name);
+      return MatrixVideoFile(bytes: bytes, name: name, mimeType: mimeType);
     }
     if (msgType == MessageTypes.Audio) {
-      return MatrixAudioFile(bytes: bytes, name: name);
+      return MatrixAudioFile(bytes: bytes, name: name, mimeType: mimeType);
     }
     return this;
   }

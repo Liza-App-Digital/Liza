@@ -7,7 +7,9 @@ import 'package:liza/widgets/hexagon_clipper.dart';
 /// шестиугольник primary с «+» и жирный текст — тот же облик, что у строки
 /// «+ Новый запрос» в списке (`NewLizaRequestListTile`), только мельче.
 /// Сдвиг подписи относительно соседей — сам акцент (спека
-/// `2026-10-23-create-menu-new-request-highlight-design.md`).
+/// `2026-10-23-create-menu-new-request-highlight-design.md`). Зазор значок →
+/// подпись = ширина пробела в стиле подписи (Надежда 26.10: «как между
+/// словами Новый и Запрос»), поэтому меряется, а не задан константой.
 /// ledger:RL-create-menu-order-agent-entry
 class CreateMenuItemLabel extends StatelessWidget {
   final String label;
@@ -22,6 +24,20 @@ class CreateMenuItemLabel extends StatelessWidget {
   });
 
   static const iconSize = 24.0;
+
+  static const _highlightedStyle = TextStyle(fontWeight: FontWeight.bold);
+
+  /// Ширина пробела в [style] с учётом масштаба текста — межсловный зазор.
+  static double wordGap(BuildContext context, TextStyle style) {
+    final painter = TextPainter(
+      text: TextSpan(text: ' ', style: style),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+    )..layout();
+    final width = painter.width;
+    painter.dispose();
+    return width;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -50,14 +66,14 @@ class CreateMenuItemLabel extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 12),
+          SizedBox(
+            width: wordGap(
+              context,
+              DefaultTextStyle.of(context).style.merge(_highlightedStyle),
+            ),
+          ),
         ],
-        Text(
-          label,
-          style: highlighted
-              ? const TextStyle(fontWeight: FontWeight.bold)
-              : null,
-        ),
+        Text(label, style: highlighted ? _highlightedStyle : null),
         if (developerMark) ...[const SizedBox(width: 8), const DeveloperMark()],
       ],
     );

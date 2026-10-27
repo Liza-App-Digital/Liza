@@ -12,6 +12,33 @@ import 'package:liza/utils/show_scaffold_dialog.dart';
 import 'package:liza/widgets/share_scaffold_dialog.dart';
 import '../../utils/matrix_sdk_extensions/event_extension.dart';
 
+/// Страницы просмотрщика и стартовая — тапнутое событие.
+///
+/// Тапнутого нет в отфильтрованной ленте (видео без плеера, событие вне
+/// таймлайна) — открываем ТОЛЬКО его. Прежний фолбэк `index = 0` показывал
+/// первую попавшуюся картинку чата вместо видео (заявка №57, Windows).
+(List<Event>, int) viewerEvents(
+  List<Event>? timelineEvents,
+  Event tapped, {
+  required bool supportsVideo,
+}) {
+  if (timelineEvents == null) return ([tapped], 0);
+  final events = timelineEvents
+      .where(
+        (event) => {
+          MessageTypes.Image,
+          MessageTypes.Sticker,
+          if (supportsVideo) MessageTypes.Video,
+        }.contains(event.messageType),
+      )
+      .toList()
+      .reversed
+      .toList();
+  final index = events.indexWhere((event) => event.eventId == tapped.eventId);
+  if (index < 0) return ([tapped], 0);
+  return (events, index);
+}
+
 class ImageViewer extends StatefulWidget {
   final Event event;
   final Timeline? timeline;
@@ -34,23 +61,12 @@ class ImageViewerController extends State<ImageViewer> {
   @override
   void initState() {
     super.initState();
-    allEvents =
-        widget.timeline?.events
-            .where(
-              (event) => {
-                MessageTypes.Image,
-                MessageTypes.Sticker,
-                if (PlatformInfos.supportsVideoPlayer) MessageTypes.Video,
-              }.contains(event.messageType),
-            )
-            .toList()
-            .reversed
-            .toList() ??
-        [widget.event];
-    var index = allEvents.indexWhere(
-      (event) => event.eventId == widget.event.eventId,
+    final (events, index) = viewerEvents(
+      widget.timeline?.events,
+      widget.event,
+      supportsVideo: PlatformInfos.supportsVideoPlayer,
     );
-    if (index < 0) index = 0;
+    allEvents = events;
     _index = index;
     pageController = PageController(initialPage: index);
   }

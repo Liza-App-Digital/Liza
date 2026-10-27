@@ -29,6 +29,7 @@ import 'package:liza/utils/video_poster_cache.dart';
 import 'package:liza/widgets/blur_hash.dart';
 import '../../widgets/mxc_image.dart';
 import 'carousel_video_controls.dart';
+import 'video_first_frame_gate.dart';
 
 /// Обёртка для ошибок воспроизведения видео.
 ///
@@ -206,6 +207,31 @@ String videoSizeBucket(int? bytes) {
   if (mb < 50) return '10-50MB';
   if (mb < 150) return '50-150MB';
   return '>150MB';
+}
+
+/// Битрейт, который считаем «нужным» видео, когда у события нет size/duration
+/// (~8 Мбит/с — верх обычного телефонного 1080p).
+const int _fallbackVideoBytesPerSec = 1024 * 1024;
+
+/// Причина устойчивого ребуферинга — по ЗАМЕРУ, а не по допущению. Раньше
+/// reason всегда был `slow-network`, и #2146 (2026-10-26) пришёл с ним, хотя
+/// Traefik отдал устройству весь 10-МБ файл за 2 с (~40 Мбит/с): разбор ушёл
+/// не в ту сторону. [inputBytesPerSec] — mpv `cache-speed` в момент паузы за
+/// буфером (скорость поступления байт в кэш плеера; у E2EE это выход
+/// локального прокси). Байты идут медленнее битрейта файла → `slow-network`;
+/// идут не медленнее, а плеер всё равно стоит → `local-stall` (декод/прокси/
+/// главный изолят). Замера нет → `rate-unknown`, а не догадка.
+@visibleForTesting
+String videoRebufferReason({
+  int? inputBytesPerSec,
+  int? sizeBytes,
+  int? durationMs,
+}) {
+  if (inputBytesPerSec == null || inputBytesPerSec < 0) return 'rate-unknown';
+  final needed = (sizeBytes != null && durationMs != null && durationMs > 0)
+      ? sizeBytes * 1000 ~/ durationMs
+      : _fallbackVideoBytesPerSec;
+  return inputBytesPerSec < needed ? 'slow-network' : 'local-stall';
 }
 
 /// Хост для видео-алёрта: ORIGIN медиа приоритетен над хоумсервером читателя.
@@ -388,6 +414,18 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
   // (позиция == 0, не playing) — трактуем как тихий сбой декодирования.
   Timer? _watchdogTimer;
 
+  // Гейт первого кадра (заявка №52): между `open` и первым кадром держим
+  // постер + индикатор загрузки, а не чёрный `Video` с «паузой» и 0:00/0:00.
+  // Ждём кадр только ПОСЛЕ `await open` — события прошлого открытия до этого
+  // игнорируются (см. [_openWatchingFirstFrame]).
+  bool _frameShown = false;
+  bool _awaitingFirstFrame = false;
+  bool _firstFrameDeadlinePassed = false;
+  bool _pausedByViewer = false;
+  Timer? _firstFrameDeadlineTimer;
+  StreamSubscription<int?>? _firstFrameWidthSubscription;
+  StreamSubscription<Duration>? _firstFramePositionSubscription;
+
   // --- Телеметрия видео-проблем (комната «Liza · Видео») ---
   // Сессионные защёлки: один сигнал на жизнь плеера, чтобы не спамить чат.
   bool _swapReported = false;
@@ -433,6 +471,12 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
   void initState() {
     super.initState();
     _errorSubscription = _player.stream.error.listen(_onPlayerError);
+    _firstFrameWidthSubscription = _player.stream.width.listen(
+      (_) => _evaluateFirstFrameGate(),
+    );
+    _firstFramePositionSubscription = _player.stream.position.listen(
+      (_) => _evaluateFirstFrameGate(),
+    );
     // log-поток libmpv. Высокий уровень (info) нужен, чтобы видеть demuxer/
     // hwdec/stream-сообщения, но он шумит на каждом chunk-е. Поэтому:
     //   - error/fatal → Logs().w + fail-safe swap (см. ниже)
@@ -543,13 +587,20 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
         setState(() => _pausedForCache = pausedForCache);
       }
 
-      if (pausedForCache) {
+      // Только после первого кадра: стартовая буферизация (cache-pause-initial,
+      // Range-прыжки к moov) — не андерран воспроизведения, у неё свой гейт и
+      // watchdog. Иначе медленный старт сам набирал 3 тика и слал «ребуфер».
+      if (pausedForCache && _frameShown) {
         // Телеметрия ребуферинга (наблюдаемость): один сигнал за сессию.
         // UX-баннер «Скачать полностью?» УБРАН (2026-08-31, требование
         // руководителя): при слабом канале честно буферизуемся, а не предлагаем
         // бесполезное скачивание того же оборванного пути/битрейта.
         if (_rebufferAggregator.observe(DateTime.now())) {
-          _reportVideoRebuffer();
+          final speedStr = await getMpvProperty(_player, 'cache-speed');
+          if (_disposed) return;
+          _reportVideoRebuffer(
+            inputBytesPerSec: double.tryParse(speedStr ?? '')?.round(),
+          );
         }
       }
       // stalled-reconnect: мёртвый цикл reconnect (обрыв отдачи/пустой источник) —
@@ -773,11 +824,17 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
 
   /// Устойчивый ребуферинг («медленно, но играет»). Сигнал low, один раз за
   /// сессию (агрегатор). Контекст (size-бакет/mime) — чтобы отличить тяжёлый
-  /// файл (аргумент за транскодер) от слабой сети пользователя.
-  void _reportVideoRebuffer() {
+  /// файл (аргумент за транскодер) от слабой сети пользователя; reason — по
+  /// замеру входной скорости, см. [videoRebufferReason].
+  void _reportVideoRebuffer({int? inputBytesPerSec}) {
+    final info = widget.event.content.tryGetMap<String, dynamic>('info');
     Monitoring.reportVideoIssue(
       prefix: Monitoring.videoRebufferPrefix,
-      reason: 'slow-network',
+      reason: videoRebufferReason(
+        inputBytesPerSec: inputBytesPerSec,
+        sizeBytes: info?.tryGet<int>('size'),
+        durationMs: info?.tryGet<int>('duration'),
+      ),
       host: _alertHost,
       context: _videoContext(),
     );
@@ -810,6 +867,10 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
     // (media-v-format.md §8.9).
     if (oldWidget.isActive && !widget.isActive && _started) {
       _player.pause();
+      // На паузе кадр может не прийти никогда — открываем гейт, чтобы при
+      // возврате на страницу была кнопка play, а не вечная крутилка.
+      _pausedByViewer = true;
+      _evaluateFirstFrameGate();
     }
     // Обратный переход (isActive false -> true) — авто-play ТОЛЬКО в
     // story-режиме: story-viewer снимает паузу диалога подтверждения
@@ -1123,7 +1184,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
           Logs().i('Video play from prefetch cache: ${cachedFile.path}');
           _useLocalFile = true;
           await setMpvProperty(_player, 'cache', 'no');
-          await _player.open(Media(cachedFile.path));
+          await _openWatchingFirstFrame(Media(cachedFile.path));
           if (mounted) {
             setState(() => _ready = true);
             _startWatchdog();
@@ -1163,7 +1224,9 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
             'Video stream open: $url '
             '(authHeader=${token == null ? 'no' : 'yes'}, mmr=$onMmr)',
           );
-          await _player.open(Media(url.toString(), httpHeaders: headers));
+          await _openWatchingFirstFrame(
+            Media(url.toString(), httpHeaders: headers),
+          );
           if (mounted) {
             setState(() => _ready = true);
             // При снятом seekable non-faststart файл делает Range-seek к moov-
@@ -1203,7 +1266,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
             return;
           }
           Logs().i('Video E2EE stream via proxy: $proxyUrl');
-          await _player.open(Media(proxyUrl));
+          await _openWatchingFirstFrame(Media(proxyUrl));
           if (mounted) {
             setState(() => _ready = true);
             // 15с (как MMR-ветка): оживлённый E2EE-прокси делает Range-seek к
@@ -1381,7 +1444,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
         final blob = html.Blob([relocated ?? videoFile.bytes]);
         final blobUrl = html.Url.createObjectUrlFromBlob(blob);
         Logs().i('Video open local (web blob)');
-        await _player.open(Media(blobUrl));
+        await _openWatchingFirstFrame(Media(blobUrl));
       } else {
         // faststart-перекладка moov→в начало на ПРИЁМЕ. iPhone-оригинал пишет
         // moov в хвост; libmpv тогда либо тянет весь файл до индекса, либо (через
@@ -1428,7 +1491,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
           'first16=$probe ascii="$probeAscii"',
         );
         if (_disposed) return;
-        await _player.open(Media(file.path));
+        await _openWatchingFirstFrame(Media(file.path));
       }
 
       if (_disposed) return;
@@ -1443,6 +1506,50 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
       witness?.dispose();
       downloadClient.close();
     }
+  }
+
+  /// Единственная точка `open` просмотрщика: перед открытием гейт первого
+  /// кадра взводится заново (свап, «Повторить», каждая ветка `_start`), после —
+  /// начинаем ждать кадр и запускаем дедлайн.
+  Future<void> _openWatchingFirstFrame(Media media) async {
+    _firstFrameDeadlineTimer?.cancel();
+    _awaitingFirstFrame = false;
+    _firstFrameDeadlinePassed = false;
+    _pausedByViewer = false;
+    if (mounted) {
+      setState(() => _frameShown = false);
+    } else {
+      _frameShown = false;
+    }
+    await _player.open(media);
+    if (_disposed) return;
+    _awaitingFirstFrame = true;
+    _firstFrameDeadlineTimer = Timer(firstFrameGateDeadline, () {
+      if (_disposed || !_awaitingFirstFrame) return;
+      Logs().w(
+        '[video-first-frame-timeout] нет первого кадра за '
+        '${firstFrameGateDeadline.inSeconds}с — показываем видео без гейта',
+      );
+      _firstFrameDeadlinePassed = true;
+      _evaluateFirstFrameGate();
+    });
+    _evaluateFirstFrameGate();
+  }
+
+  void _evaluateFirstFrameGate() {
+    if (!_awaitingFirstFrame || _disposed || !mounted) return;
+    final state = _player.state;
+    if (!firstFrameGateOpen(
+      width: state.width,
+      position: state.position,
+      pausedByViewer: _pausedByViewer,
+      deadlinePassed: _firstFrameDeadlinePassed,
+    )) {
+      return;
+    }
+    _awaitingFirstFrame = false;
+    _firstFrameDeadlineTimer?.cancel();
+    setState(() => _frameShown = true);
   }
 
   Future<void> _seekWhenReady(Duration target) async {
@@ -1761,6 +1868,9 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
     _scaffoldMessenger?.clearSnackBars();
     _watchdogTimer?.cancel();
     _adaptiveTimer?.cancel();
+    _firstFrameDeadlineTimer?.cancel();
+    _firstFrameWidthSubscription?.cancel();
+    _firstFramePositionSubscription?.cancel();
     _errorSubscription?.cancel();
     _logSubscription?.cancel();
     _durationSubscription?.cancel();
@@ -1858,7 +1968,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
       );
     }
 
-    final showVideo = _started && _ready && !_swappingToLocal;
+    final showVideo = _started && _ready && !_swappingToLocal && _frameShown;
     // Video-виджет ВСЕГДА в дереве (даже до _ready). Без этого media_kit
     // на macOS не получает рабочий Flutter compositor tick → mpv VO не
     // успевает инициализироваться к моменту selection track → libmpv

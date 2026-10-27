@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -7,8 +9,8 @@ import 'package:liza/pages/chat_list/new_liza_request_list_tile.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/hexagon_clipper.dart';
 
-// Страж единой стилистики аватарок (Надежда, 23.10).
-// Спека: docs/superpowers/specs/2026-10-23-avatar-unified-style-design.md
+// Страж единой стилистики аватарок (Надежда, 23.10; цвет вернули 26.10).
+// Спека: docs/superpowers/specs/2026-10-26-avatar-pastel-colors-design.md
 // ledger:RL-avatar-unified-style
 //
 // Рендерим РЕАЛЬНЫЕ Avatar и NewLizaRequestListTile, ассерт — по цвету фона и
@@ -49,50 +51,40 @@ Color _letterColor(WidgetTester tester, String letter) =>
 
 void main() {
   // AC:RL-avatar-unified-style/2 — ∀ {человек, группа, компания, без имени} ×
-  // {светлая, тёмная}: фон из серого набора темы, без насыщенности, буква не
-  // белая, контраст ≥ 4.5; одно имя → один оттенок.
+  // {светлая, тёмная}: фон — пастель запросов Лизы по хэшу имени (одна на обе
+  // темы), буква #1A1A1A, контраст ≥ 4.5; одно имя → один цвет.
   const cases = {
     'Мерчант Розенталь': 'М', // человек
     'Laba: Интерфейс Prodamus ID': 'L', // группа
     'Компания Розенталь': 'К', // компания
     'Даниэль Фурман': 'Д',
   };
+  const palette = Avatar.fallbackBackgrounds;
   for (final brightness in Brightness.values) {
-    final palette = brightness == Brightness.dark
-        ? Avatar.darkFallbackBackgrounds
-        : Avatar.lightFallbackBackgrounds;
-    final letterColor = brightness == Brightness.dark
-        ? Avatar.darkFallbackLetter
-        : Avatar.lightFallbackLetter;
-
     for (final entry in cases.entries) {
-      testWidgets('AC-2 ${brightness.name}: «${entry.key}» — серый фон, '
-          'тёмная/светлая буква — AC:RL-avatar-unified-style/2', (
-        tester,
-      ) async {
+      testWidgets('AC-2 ${brightness.name}: «${entry.key}» — пастельный фон, '
+          'тёмная буква — AC:RL-avatar-unified-style/2', (tester) async {
         await tester.pumpWidget(_app(Avatar(name: entry.key), brightness));
         final bg = _letterBackground(tester, entry.value);
         final fg = _letterColor(tester, entry.value);
         expect(palette, contains(bg));
         expect(bg, palette[Avatar.fallbackShade(entry.key)]);
-        expect(HSLColor.fromColor(bg).saturation, lessThan(0.12));
-        expect(fg, letterColor);
-        expect(fg, isNot(Colors.white));
+        expect(fg, Avatar.fallbackLetter);
         expect(_contrast(bg, fg), greaterThanOrEqualTo(4.5));
         await _drain(tester);
       });
     }
 
-    testWidgets('AC-2 ${brightness.name}: без имени — «@» на сером, а не белое '
-        'на белом — AC:RL-avatar-unified-style/2', (tester) async {
+    testWidgets('AC-2 ${brightness.name}: без имени — «@» на пастели, а не '
+        'белое на белом — AC:RL-avatar-unified-style/2', (tester) async {
       await tester.pumpWidget(_app(Avatar(), brightness));
       expect(_letterBackground(tester, '@'), palette[0]);
-      expect(_letterColor(tester, '@'), letterColor);
+      expect(_letterColor(tester, '@'), Avatar.fallbackLetter);
       await _drain(tester);
     });
 
     testWidgets('AC-4 ${brightness.name}: ИИ без картинки (шестиугольник) — '
-        'тоже серый — AC:RL-avatar-unified-style/4', (tester) async {
+        'та же пастель — AC:RL-avatar-unified-style/4', (tester) async {
       await tester.pumpWidget(
         _app(Avatar(name: 'SomeBot', isHexagonal: true), brightness),
       );
@@ -101,20 +93,35 @@ void main() {
     });
   }
 
-  test('AC-2: все оттенки набора — контраст буквы ≥ 4.5 — '
+  test('AC-2: разные имена дают разные цвета — палитра используется вся — '
       'AC:RL-avatar-unified-style/2', () {
-    for (final bg in Avatar.lightFallbackBackgrounds) {
-      expect(
-        _contrast(bg, Avatar.lightFallbackLetter),
-        greaterThanOrEqualTo(4.5),
-      );
+    final shades = {
+      for (final n in ['А', 'Б', 'В', 'Г', 'Д']) Avatar.fallbackShade(n),
+    };
+    expect(shades.length, palette.length);
+  });
+
+  test('AC-2: все цвета палитры — контраст буквы ≥ 4.5 — '
+      'AC:RL-avatar-unified-style/2', () {
+    for (final bg in palette) {
+      expect(_contrast(bg, Avatar.fallbackLetter), greaterThanOrEqualTo(4.5));
     }
-    for (final bg in Avatar.darkFallbackBackgrounds) {
-      expect(
-        _contrast(bg, Avatar.darkFallbackLetter),
-        greaterThanOrEqualTo(4.5),
-      );
-    }
+  });
+
+  test('AC-8: палитра клиента = PALETTE запросов Лизы (request_avatar.py) — '
+      'AC:RL-avatar-unified-style/8', () {
+    final py = File(
+      '../../servers/bots/liza/request_avatar.py',
+    ).readAsStringSync();
+    final tuple = RegExp(
+      r'^PALETTE = \(([^)]*)\)',
+      multiLine: true,
+    ).firstMatch(py)!.group(1)!;
+    final hex = RegExp(r'#([0-9A-Fa-f]{6})')
+        .allMatches(tuple)
+        .map((m) => Color(int.parse('FF${m.group(1)}', radix: 16)))
+        .toList();
+    expect(palette, hex);
   });
 
   testWidgets('AC-4: явный backgroundColor/textColor вызывающего главнее — '
@@ -140,7 +147,7 @@ void main() {
     await _drain(tester);
   });
 
-  testWidgets('AC-3: удалённый аккаунт — призрак, не серая буква — '
+  testWidgets('AC-3: удалённый аккаунт — призрак, не буква — '
       'AC:RL-avatar-unified-style/3', (tester) async {
     await tester.pumpWidget(
       _app(const Avatar(name: 'Gone', isDeleted: true), Brightness.light),

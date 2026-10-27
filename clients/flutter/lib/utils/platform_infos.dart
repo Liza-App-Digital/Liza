@@ -9,6 +9,15 @@ import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/voice_recording_codec.dart';
 
+/// Встроенный видеоплеер (media_kit/libmpv). Гейт `!isWindows` достался от
+/// FluffyChat, где плеер был на `video_player` без Windows, и молча держал
+/// Windows без плеера: тап по видео скачивал файл, а альбом открывал чужую
+/// картинку (заявка №57). libmpv на Windows уже в проде — сторис, превью при
+/// отправке, голосовые. Linux: libmpv системный, сборок нет.
+/// `isWindows` параметром — `Platform.isWindows` в тестах не подменить.
+bool videoPlayerSupported({required bool isWindows, required bool isLinux}) =>
+    !isLinux;
+
 abstract class PlatformInfos {
   static bool get isWeb => kIsWeb;
   static bool get isLinux => !kIsWeb && Platform.isLinux;
@@ -29,7 +38,7 @@ abstract class PlatformInfos {
   static bool get usesTouchscreen => !isMobile;
 
   static bool get supportsVideoPlayer =>
-      !PlatformInfos.isWindows && !PlatformInfos.isLinux;
+      videoPlayerSupported(isWindows: isWindows, isLinux: isLinux);
 
   static bool get platformCanRecord => canRecordVoice(
     isWeb: isWeb,
