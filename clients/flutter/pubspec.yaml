@@ -4,7 +4,7 @@ publish_to: none
 # On version bump please also increase:
 # 1. The build number (for F-Droid)
 # 2. The version in /snap/snapcraft.yaml
-version: 2.4.0+3788
+version: 2.4.0+3789
 environment:
   sdk: ">=3.10.0 <4.0.0"
 
@@ -22,6 +22,8 @@ dependencies:
   crypto: ^3.0.6
   cupertino_icons: any
   desktop_drop: ^0.7.0
+  # Окно mini App отдельным окном ОС (десктоп): у окна свой Flutter-движок.
+  desktop_multi_window: 0.3.1
   desktop_notifications: ^0.6.3
   device_info_plus: ^12.3.0
   dynamic_color: ^1.8.1

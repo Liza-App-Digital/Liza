@@ -9,6 +9,7 @@
 #include <app_links/app_links_plugin_c_api.h>
 #include <connectivity_plus/connectivity_plus_windows_plugin.h>
 #include <desktop_drop/desktop_drop_plugin.h>
+#include <desktop_multi_window/desktop_multi_window_plugin.h>
 #include <desktop_webview_window/desktop_webview_window_plugin.h>
 #include <dynamic_color/dynamic_color_plugin_c_api.h>
 #include <emoji_picker_flutter/emoji_picker_flutter_plugin_c_api.h>
@@ -40,6 +41,8 @@ void RegisterPlugins(flutter::PluginRegistry* registry) {
       registry->GetRegistrarForPlugin("ConnectivityPlusWindowsPlugin"));
   DesktopDropPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("DesktopDropPlugin"));
+  DesktopMultiWindowPluginRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("DesktopMultiWindowPlugin"));
   DesktopWebviewWindowPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("DesktopWebviewWindowPlugin"));
   DynamicColorPluginCApiRegisterWithRegistrar(

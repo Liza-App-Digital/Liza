@@ -3,6 +3,11 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "mini_app_window_channel.h"
+
+#include <desktop_multi_window/desktop_multi_window_plugin.h>
+#include <flutter_inappwebview_windows/flutter_inappwebview_windows_plugin_c_api.h>
+#include <url_launcher_windows/url_launcher_windows.h>
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -25,6 +30,19 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  // Движок окна mini App (desktop_multi_window) получает ТОЛЬКО то, что нужно
+  // WebView: полный RegisterPlugins там завёл бы второй app_links, sentry,
+  // firebase, уведомления и т.д. в одном процессе с главным движком.
+  DesktopMultiWindowSetWindowCreatedCallback([](void* controller) {
+    auto* view_controller =
+        reinterpret_cast<flutter::FlutterViewController*>(controller);
+    auto* engine = view_controller->engine();
+    FlutterInappwebviewWindowsPluginCApiRegisterWithRegistrar(
+        engine->GetRegistrarForPlugin("FlutterInappwebviewWindowsPluginCApi"));
+    UrlLauncherWindowsRegisterWithRegistrar(
+        engine->GetRegistrarForPlugin("UrlLauncherWindows"));
+    RegisterMiniAppWindowChannel(view_controller);
+  });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
   return true;
 }

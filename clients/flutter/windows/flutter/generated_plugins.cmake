@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   app_links
   connectivity_plus
   desktop_drop
+  desktop_multi_window
   desktop_webview_window
   dynamic_color
   emoji_picker_flutter

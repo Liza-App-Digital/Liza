@@ -7,6 +7,8 @@
 // AC:RL-empty-panel-new-request/11 AC:RL-empty-panel-new-request/12
 // AC:RL-empty-panel-new-request/13 AC:RL-empty-panel-new-request/14
 // AC:RL-empty-panel-new-request/15 AC:RL-empty-panel-new-request/16
+// AC:RL-empty-panel-new-request/19 AC:RL-empty-panel-new-request/20
+// AC:RL-empty-panel-new-request/21
 // guard.render:real-widget
 //
 // Пустая правая панель на компьютере (задача 14): РЕАЛЬНЫЙ NewRequestEmptyPage
@@ -28,12 +30,15 @@
 //     бесконечно, красный.
 //   RP-8 (AC-14): плашка без проверки `_sending` → плашка + Enter = 2 запроса.
 //   RP-9 (AC-12): `active` без учёта текста → подсказка меняется под набором.
+//   RP-10 (AC-19): подпись плашки `Text(preset)` без softWrap/maxLines → на
+//     узкой панели обрезана, красный.
 //
 // С 23.10 (видео Надежды): бегущие примеры в поле, три плашки, морф перед
 // переходом. Сам кроссфейд маршрута — new_request_transition_test.dart.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -71,6 +76,7 @@ void main() {
     WidgetTester tester, {
     String? displayName,
     bool disableAnimations = false,
+    double textScale = 1.0,
   }) async {
     final client = _PanelClient(database, displayName);
     final router = GoRouter(
@@ -78,9 +84,10 @@ void main() {
         GoRoute(
           path: '/',
           builder: (context, _) => MediaQuery(
-            data: MediaQuery.of(
-              context,
-            ).copyWith(disableAnimations: disableAnimations),
+            data: MediaQuery.of(context).copyWith(
+              disableAnimations: disableAnimations,
+              textScaler: TextScaler.linear(textScale),
+            ),
             child: Provider<MatrixState>.value(
               value: _TestMatrix(client, store),
               child: const NewRequestEmptyPage(),
@@ -139,16 +146,17 @@ void main() {
       .height;
 
   const ruExamples = [
-    'Сгенерируй 5 идей постов для блога психолога',
-    'Напиши поздравление коллеге с днём рождения',
-    'Составь план поездки в Казань на выходные',
-    'Объясни простыми словами, что такое нейросеть',
-    'Напиши вежливый ответ на жалобу клиента',
+    'Закажи стиральный порошок для всех типов белья',
+    'Закупи продукты на неделю для семьи из 3 человек',
+    'Организуй доставку воды на дом, предупреди консьержа',
+    'У кота закончился сухой корм, закажи доставку',
+    'Отправь цветы жене на работу',
+    'Закажи пиццу на большую компанию',
   ];
   const ruPresets = [
-    'Найди 3 рецепта лёгкого ужина',
-    'Подбери топ-3 ноутбука для работы',
-    'Придумай шутку про понедельник',
+    'Закажи суши на двоих',
+    'Хочу горячий кофе! Привези поскорее',
+    'Купи молоко, яйца и хлеб',
   ];
 
   /// Середина паузы `i`-го примера, отсчёт от старта первого.
@@ -386,6 +394,76 @@ void main() {
     });
   });
 
+  // 27.10, Надежда: у Романа подписи плашек «не влезают, обрезаются». RawChip
+  // держит подпись в одну строку; панель бывает уже порога колонок (mini App
+  // сбоку). Тестовый шрифт — глиф 1em, самая длинная подпись ~490 px: узкие
+  // ширины гарантированно требуют переноса, AC-21 сторожит широкую сторону.
+  // 340/381/570 попадают в окно среза RawChip (текст влез в ширину плашки,
+  // но не в ширину − поля) для плашек 0/2/1.
+  group('AC-19/20/21: плашки на любой ширине и масштабе', () {
+    RenderParagraph label(WidgetTester tester, int i) =>
+        tester.renderObject<RenderParagraph>(
+          find.descendant(
+            of: find.byKey(Key('new_request_preset_$i')),
+            matching: find.text(ruPresets[i]),
+          ),
+        );
+
+    Future<void> pumpAt(WidgetTester tester, double width, double scale) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = Size(width, 1000);
+      addTearDown(tester.view.reset);
+      await pumpPanel(tester, displayName: 'Иван', textScale: scale);
+    }
+
+    for (final width in [300.0, 340.0, 381.0, 500.0, 570.0, 900.0]) {
+      for (final scale in [1.0, 1.3, 2.0]) {
+        testWidgets('ширина $width × масштаб $scale — подписи целиком', (
+          tester,
+        ) async {
+          await pumpAt(tester, width, scale);
+          expect(tester.takeException(), isNull);
+          for (var i = 0; i < 3; i++) {
+            final p = label(tester, i);
+            expect(p.didExceedMaxLines, isFalse, reason: 'плашка $i');
+            expect(p.debugHasOverflowShader, isFalse, reason: 'плашка $i');
+            // Перенесённые строки не срезаны снизу высотой плашки.
+            expect(
+              p.getMinIntrinsicHeight(p.size.width),
+              lessThanOrEqualTo(p.size.height + 0.5),
+              reason: 'плашка $i',
+            );
+            final chip = tester.getRect(
+              find.byKey(Key('new_request_preset_$i')),
+            );
+            expect(chip.left, greaterThanOrEqualTo(0), reason: 'плашка $i');
+            expect(chip.right, lessThanOrEqualTo(width), reason: 'плашка $i');
+          }
+        });
+      }
+    }
+
+    testWidgets('широкая панель — каждая подпись в одну строку, плашки равны', (
+      tester,
+    ) async {
+      await pumpAt(tester, 900, 1.0);
+      final heights = <double>{};
+      for (var i = 0; i < 3; i++) {
+        // Одна строка = подпись выложена на всю свою ширину без переноса.
+        final p = label(tester, i);
+        expect(
+          p.size.width,
+          greaterThanOrEqualTo(p.getMaxIntrinsicWidth(double.infinity) - 0.5),
+          reason: 'плашка $i',
+        );
+        heights.add(
+          tester.getSize(find.byKey(Key('new_request_preset_$i'))).height,
+        );
+      }
+      expect(heights, hasLength(1));
+    });
+  });
+
   group('AC-14: плашки-пресеты', () {
     for (var i = 0; i < 3; i++) {
       testWidgets('тап по плашке $i — запрос с её текстом, чат открыт', (
@@ -393,10 +471,11 @@ void main() {
       ) async {
         final client = await pumpPanel(tester, displayName: 'Иван');
         expect(
-          tester
-              .widget<ActionChip>(find.byKey(Key('new_request_preset_$i')))
-              .label,
-          isA<Text>().having((t) => t.data, 'data', ruPresets[i]),
+          find.descendant(
+            of: find.byKey(Key('new_request_preset_$i')),
+            matching: find.text(ruPresets[i]),
+          ),
+          findsOneWidget,
         );
         await tester.tap(find.byKey(Key('new_request_preset_$i')));
         for (var k = 0; k < 5; k++) {

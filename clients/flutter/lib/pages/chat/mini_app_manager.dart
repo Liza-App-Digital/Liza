@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 
@@ -35,6 +37,9 @@ class MiniAppInstance {
   /// deep-link. Входит в ключ контента — WebView пересоздаётся на новом пути.
   final int generation;
 
+  /// Открыт отдельным окном ОС (десктоп), а не панелью в окне Лизы.
+  final bool detached;
+
   MiniAppInstance({
     required this.appUrl,
     required this.appId,
@@ -43,9 +48,24 @@ class MiniAppInstance {
     this.appType = 'first_party',
     this.appStartPath = '',
     this.generation = 0,
+    this.detached = false,
   });
 
   String get contentKey => '$appId#$generation';
+
+  /// Тот же app на новом месте или пути — с новым поколением: контент
+  /// пересоздаётся (другой движок или новый deep-link).
+  MiniAppInstance moved({String? appStartPath, bool? detached}) =>
+      MiniAppInstance(
+        appUrl: appUrl,
+        appId: appId,
+        appName: appName,
+        room: room,
+        appType: appType,
+        appStartPath: appStartPath ?? this.appStartPath,
+        generation: generation + 1,
+        detached: detached ?? this.detached,
+      );
 }
 
 /// Глобальный менеджер открытых MiniApp.
@@ -53,6 +73,10 @@ class MiniAppInstance {
 /// Хранит список открытых приложений, активное приложение,
 /// состояние развёрнутости. Уведомляет подписчиков (MiniAppOverlay)
 /// о любых изменениях.
+///
+/// [apps], [hasApps], [activeApp], [isExpanded] — про то, что показано В ОКНЕ
+/// Лизы (панель, плашка). Открепленные в окна ОС — в [detachedApps], их окнами
+/// управляет `MiniAppWindows`.
 class MiniAppManager extends ChangeNotifier {
   MiniAppManager._();
   static final MiniAppManager instance = MiniAppManager._();
@@ -103,9 +127,22 @@ class MiniAppManager extends ChangeNotifier {
     panelWidth.value = _windowWidth - kMiniAppMinChildWidth - 1;
   }
 
-  List<MiniAppInstance> get apps => List.unmodifiable(_apps);
-  bool get hasApps => _apps.isNotEmpty;
-  int get appCount => _apps.length;
+  /// Отдельные окна ОС поддержаны (macOS/Windows, выставляет `main`): mini App
+  /// по умолчанию открывается окном, в шапке панели есть «Открепить».
+  bool windowsSupported = false;
+
+  final _focusRequests = StreamController<String>.broadcast();
+
+  /// appId уже открепленного app, который открыли снова: его окно надо поднять.
+  Stream<String> get windowFocusRequests => _focusRequests.stream;
+
+  Iterable<MiniAppInstance> get _docked => _apps.where((a) => !a.detached);
+
+  List<MiniAppInstance> get apps => List.unmodifiable(_docked);
+  List<MiniAppInstance> get detachedApps =>
+      List.unmodifiable(_apps.where((a) => a.detached));
+  bool get hasApps => _docked.isNotEmpty;
+  int get appCount => _docked.length;
   bool get isExpanded => _isExpanded;
 
   /// Явный выбор пользователя «на весь экран» / «закреплённый» (боковая панель
@@ -113,8 +150,9 @@ class MiniAppManager extends ChangeNotifier {
   bool? get fullscreenPreference => _fullscreen;
 
   /// Развёрнут ли miniApp на весь экран при данной ширине окна.
-  bool isFullscreenFor(double windowWidth) =>
-      _fullscreen ?? windowWidth < kMiniAppDockedByDefaultMinWidth;
+  /// Планшет по умолчанию — на весь экран при любой ширине.
+  bool isFullscreenFor(double windowWidth, {bool tablet = false}) =>
+      _fullscreen ?? (tablet || windowWidth < kMiniAppDockedByDefaultMinWidth);
 
   void setFullscreen(bool value) {
     if (_fullscreen == value) return;
@@ -126,14 +164,14 @@ class MiniAppManager extends ChangeNotifier {
 
   MiniAppInstance? get activeApp {
     if (_activeAppId == null) return null;
-    try {
-      return _apps.firstWhere((a) => a.appId == _activeAppId);
-    } catch (_) {
-      return null;
-    }
+    return _docked.where((a) => a.appId == _activeAppId).firstOrNull;
   }
 
-  /// Открывает miniApp. Если уже открыт — переключает на него и разворачивает.
+  /// Открывает miniApp. Если уже открыт — переключает на него и разворачивает
+  /// (открепленный — поднимает его окно).
+  ///
+  /// [allowDetach] = false — только панелью (включён пин-код: окно ОС вне
+  /// экрана блокировки).
   void open({
     required String appUrl,
     required String appId,
@@ -141,6 +179,7 @@ class MiniAppManager extends ChangeNotifier {
     required Room room,
     String appType = 'first_party',
     String appStartPath = '',
+    bool allowDetach = true,
   }) {
     final index = _apps.indexWhere((a) => a.appId == appId);
     if (index >= 0) {
@@ -154,15 +193,21 @@ class MiniAppManager extends ChangeNotifier {
           appType: appType,
           appStartPath: appStartPath,
           generation: existing.generation + 1,
+          detached: existing.detached,
         );
       }
-      _activeAppId = appId;
-      _isExpanded = true;
+      if (existing.detached) {
+        _focusRequests.add(appId);
+      } else {
+        _activeAppId = appId;
+        _isExpanded = true;
+      }
       notifyListeners();
       return;
     }
 
-    if (_apps.isEmpty) _fullscreen = null;
+    final detached = windowsSupported && allowDetach;
+    if (!detached && !hasApps) _fullscreen = null;
     _apps.add(
       MiniAppInstance(
         appUrl: appUrl,
@@ -171,11 +216,43 @@ class MiniAppManager extends ChangeNotifier {
         room: room,
         appType: appType,
         appStartPath: appStartPath,
+        detached: detached,
       ),
     );
+    if (!detached) {
+      _activeAppId = appId;
+      _isExpanded = true;
+    }
+    notifyListeners();
+  }
+
+  /// Открепить app из панели в отдельное окно ОС. [startPath] — страница, на
+  /// которой он сейчас (окно откроется на ней же).
+  void detach(String appId, {String? startPath}) {
+    final index = _apps.indexWhere((a) => a.appId == appId && !a.detached);
+    if (index < 0) return;
+    _apps[index] = _apps[index].moved(appStartPath: startPath, detached: true);
+    _pickDockedActive();
+    notifyListeners();
+  }
+
+  /// Вернуть app из окна ОС панелью в окно Лизы.
+  void attach(String appId, {String? startPath}) {
+    final index = _apps.indexWhere((a) => a.appId == appId && a.detached);
+    if (index < 0) return;
+    if (!hasApps) _fullscreen = null;
+    _apps[index] = _apps[index].moved(appStartPath: startPath, detached: false);
     _activeAppId = appId;
     _isExpanded = true;
     notifyListeners();
+  }
+
+  /// Активный в панели ушёл (закрыт/откреплён) — активным становится последний
+  /// оставшийся в панели.
+  void _pickDockedActive() {
+    if (activeApp != null) return;
+    _activeAppId = _docked.lastOrNull?.appId;
+    if (_activeAppId == null) _isExpanded = false;
   }
 
   /// Сворачивает текущий miniApp в плашку.
@@ -186,7 +263,7 @@ class MiniAppManager extends ChangeNotifier {
 
   /// Разворачивает miniApp. Если указан appId — переключает на него.
   void expand([String? appId]) {
-    if (appId != null && _apps.any((a) => a.appId == appId)) {
+    if (appId != null && _docked.any((a) => a.appId == appId)) {
       _activeAppId = appId;
     }
     _isExpanded = true;
@@ -196,12 +273,7 @@ class MiniAppManager extends ChangeNotifier {
   /// Закрывает конкретный miniApp.
   void close(String appId) {
     _apps.removeWhere((a) => a.appId == appId);
-    if (_activeAppId == appId) {
-      _activeAppId = _apps.isNotEmpty ? _apps.last.appId : null;
-    }
-    if (_apps.isEmpty) {
-      _isExpanded = false;
-    }
+    _pickDockedActive();
     notifyListeners();
   }
 
@@ -211,6 +283,14 @@ class MiniAppManager extends ChangeNotifier {
     for (final app in _apps.where((a) => a.room.client == client).toList()) {
       close(app.appId);
     }
+  }
+
+  /// Закрывает всё, что в окне Лизы (крестик плашки); окна ОС не трогает.
+  void closeDocked() {
+    _apps.removeWhere((a) => !a.detached);
+    _activeAppId = null;
+    _isExpanded = false;
+    notifyListeners();
   }
 
   /// Закрывает все miniApp.
@@ -223,9 +303,10 @@ class MiniAppManager extends ChangeNotifier {
 
   /// Переключается на следующий miniApp (для свайпа между ними).
   void switchToNext() {
-    if (_apps.length <= 1) return;
-    final idx = _apps.indexWhere((a) => a.appId == _activeAppId);
-    _activeAppId = _apps[(idx + 1) % _apps.length].appId;
+    final docked = _docked.toList();
+    if (docked.length <= 1) return;
+    final idx = docked.indexWhere((a) => a.appId == _activeAppId);
+    _activeAppId = docked[(idx + 1) % docked.length].appId;
     notifyListeners();
   }
 }

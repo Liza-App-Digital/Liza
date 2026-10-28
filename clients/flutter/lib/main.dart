@@ -14,6 +14,8 @@ import 'package:media_kit/media_kit.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:liza/config/app_config.dart';
+import 'package:liza/pages/chat/mini_app_manager.dart';
+import 'package:liza/pages/chat/mini_app_window.dart';
 import 'package:liza/utils/adaptive_orientation.dart';
 import 'package:liza/utils/client_manager.dart';
 import 'package:liza/utils/file_logger.dart';
@@ -31,7 +33,13 @@ import 'widgets/liza_app.dart';
 ReceivePort? mainIsolateReceivePort;
 bool _guiStarted = false;
 
-void main() async {
+void main([List<String> args = const []]) async {
+  // Движок отдельного окна mini App (desktop_multi_window): свой лёгкий
+  // MaterialApp, а не вторая Лиза — до любой инициализации ниже.
+  if (args.firstOrNull == kMiniAppWindowEntryArg) {
+    await miniAppWindowMain(args);
+    return;
+  }
   runZonedGuarded(() async {
     if (PlatformInfos.isAndroid) {
       final port = mainIsolateReceivePort = ReceivePort();
@@ -253,6 +261,12 @@ Future<void> startGui(List<Client> clients, SharedPreferences store) async {
   final firstClient = clients.firstOrNull;
   await firstClient?.roomsLoading;
   await firstClient?.accountDataLoading;
+
+  // mini App отдельным окном ОС — на десктопах, где есть WebView (на Linux
+  // flutter_inappwebview не работает).
+  final miniApps = MiniAppManager.instance;
+  miniApps.windowsSupported = PlatformInfos.isMacOS || PlatformInfos.isWindows;
+  if (miniApps.windowsSupported) MiniAppWindows.instance.start();
 
   runApp(LizaApp(clients: clients, pincode: pin, store: store));
 }

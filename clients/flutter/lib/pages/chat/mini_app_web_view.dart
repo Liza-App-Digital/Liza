@@ -10,10 +10,10 @@ import 'package:url_launcher/url_launcher.dart' as url_launcher;
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat/mini_app_host_api.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
-import 'package:liza/utils/auth_proxy_service.dart';
+import 'package:liza/pages/chat/mini_app_window.dart';
 import 'package:liza/utils/bot_miniapp_registry.dart';
-import 'package:liza/utils/miniapp_room.dart';
 import 'package:liza/utils/miniapp_start_path.dart';
 
 /// Точка входа для открытия MiniApp — через глобальный MiniAppManager
@@ -88,9 +88,9 @@ class MiniAppWebView {
     // Fire-and-forget, не блокирует и не роняет открытие.
     BotMiniAppRegistry.instance.recordOpen(room.client, appId);
 
-    // Немодально на всех платформах: глобальный MiniAppManager → хост
-    // MiniAppOverlay сам выбирает раскладку по ширине окна (боковая панель /
-    // двойной экран / на весь экран).
+    // Немодально на всех платформах: глобальный MiniAppManager. На десктопе —
+    // отдельное окно ОС (MiniAppWindows), иначе хост MiniAppOverlay сам выбирает
+    // раскладку по ширине окна (боковая панель / двойной экран / на весь экран).
     MiniAppManager.instance.open(
       appUrl: appUrl,
       appId: appId,
@@ -98,6 +98,7 @@ class MiniAppWebView {
       room: room,
       appType: appType,
       appStartPath: appStartPath,
+      allowDetach: miniAppDetachAllowed(context),
     );
   }
 }
@@ -110,7 +111,11 @@ class MiniAppWebViewContent extends StatefulWidget {
   final String appUrl;
   final String appId;
   final String appName;
-  final Room room;
+
+  /// Связь с Matrix-аккаунтом (initData, sendData, invite-ссылка). Комнаты
+  /// напрямую нет: в отдельном окне ОС контент живёт в другом движке.
+  final MiniAppHostApi host;
+  final String roomId;
   final String appType;
 
   /// Deep-link на конкретную страницу mini App (`#!/tproduct/123`) — открываем
@@ -123,7 +128,8 @@ class MiniAppWebViewContent extends StatefulWidget {
     required this.appUrl,
     required this.appId,
     required this.appName,
-    required this.room,
+    required this.host,
+    required this.roomId,
     this.appType = 'first_party',
     this.appStartPath = '',
     required this.onClose,
@@ -319,30 +325,29 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   /// (`#!/tproduct/...`) не всегда триггерит onUpdateVisitedHistory, поэтому
   /// `_currentUrl` — лишь фоновый кэш-fallback.
   Future<String> copyInviteLink() async {
-    final client = widget.room.client;
-    final token = client.accessToken;
     final l10n = L10n.of(context);
-    if (token == null) return l10n.miniAppLinkFailed;
-
-    // Ссылку создаём на комнату-ЛАУНЧЕР (с com.liza.miniapp.config): redeem и
-    // лендинг детектят mini App именно по этому state-event. widget.room может
-    // быть DM с launch-карточкой (например чат с «Лизой»), где конфига нет — по
-    // такой ссылке mini App не распознаётся. Если у widget.room конфига нет —
-    // ищем комнату-лаунчер этого приложения среди комнат пользователя.
-    var linkRoom = widget.room;
-    if (miniAppLaunchForRoom(widget.room) == null) {
-      for (final r in client.rooms) {
-        final launch = miniAppLaunchForRoom(r);
-        if (launch != null &&
-            (launch.appId == widget.appId || launch.appUrl == widget.appUrl)) {
-          linkRoom = r;
-          break;
-        }
-      }
+    final startPath = await currentStartPath();
+    try {
+      final url = await widget.host.createInviteLink(startPath);
+      await Clipboard.setData(ClipboardData(text: url));
+      return l10n.miniAppLinkCopied;
+    } catch (e) {
+      Logs().e('[MiniAppWebView] copyInviteLink: $e');
+      return l10n.miniAppLinkFailed;
     }
-    // server_name — домен из room.id (как в cross-HS фиксе инвайт-ссылок).
-    final serverName = linkRoom.id.split(':').last;
+  }
 
+  /// Оплата идёт: перенос между окном ОС и панелью пересоздал бы WebView
+  /// посреди платёжной страницы.
+  bool get paymentInProgress => _isPaymentInProgress;
+
+  /// Адрес последней загруженной страницы (null — ещё не загрузилась).
+  String? get loadedUrl => _loadedUrl;
+  String? _loadedUrl;
+
+  /// Deep-link текущей страницы (`#!/tproduct/123`) или null — главная.
+  /// Им же переносим страницу при откреплении/прикреплении окна.
+  Future<String?> currentStartPath() async {
     var current = _currentUrl;
     try {
       final raw =
@@ -360,28 +365,9 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
     final startPath = current == null
         ? ''
         : extractStartPath(appUrl: widget.appUrl, currentUrl: current);
-    final safeStartPath =
-        startPath.isNotEmpty && isSafeStartPath(startPath) ? startPath : null;
-
-    // Диагностика захвата deep-link (видно в консоли flutter run): что вернул
-    // webview и какой хвост извлекли. Помогает понять, почему start_path пуст.
-    // Закомментировано — захват работает; раскомментировать при отладке захвата.
-    // Logs().i('[MiniAppWebView] copyInviteLink: appUrl=${widget.appUrl} '
-    //     'current=$current startPath="$startPath"');
-
-    try {
-      final info = await AuthProxyService().createInvite(
-        serverName: serverName,
-        roomId: linkRoom.id,
-        accessToken: token,
-        appStartPath: safeStartPath,
-      );
-      await Clipboard.setData(ClipboardData(text: info.url));
-      return l10n.miniAppLinkCopied;
-    } catch (e) {
-      Logs().e('[MiniAppWebView] copyInviteLink: $e');
-      return l10n.miniAppLinkFailed;
-    }
+    return startPath.isNotEmpty && isSafeStartPath(startPath)
+        ? startPath
+        : null;
   }
 
   /// Снимает обрамляющие кавычки, если evaluateJavascript вернул JSON-строку.
@@ -418,31 +404,10 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   }
 
   Future<String> _buildInitDataUrl() async {
-    final client = widget.room.client;
     String initData;
 
     try {
-      final url = client.homeserver!.resolve(
-        '/_synapse/client/miniapp/v1/init_data',
-      );
-      final response = await http.post(
-        url,
-        headers: {
-          'Authorization': 'Bearer ${client.accessToken}',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'app_id': widget.appId,
-          'room_id': widget.room.id,
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        initData = data['init_data'] as String;
-      } else {
-        throw Exception('Synapse miniapp module returned ${response.statusCode}');
-      }
+      initData = await widget.host.fetchInitData();
     } catch (e) {
       // B3: НЕ фабрикуем неподписанную initData с реальным userID при сбое
       // Synapse — это позволяло app выдавать пользователя за себя на своём
@@ -678,7 +643,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
     }
 
     try {
-      await widget.room.sendEvent({
+      await widget.host.sendData({
         'msgtype': 'com.liza.miniapp.data',
         'body': dataBody,
         'app_id': widget.appId,
@@ -710,8 +675,6 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
     });
 
     try {
-      final client = widget.room.client;
-
       // Валидация данных от miniApp
       final title = eventData['title'] as String? ?? '';
       final description = eventData['description'] as String?;
@@ -729,25 +692,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
       // Получаем initData для авторизации на backend
       String initData;
       try {
-        final url = client.homeserver!.resolve(
-          '/_synapse/client/miniapp/v1/init_data',
-        );
-        final response = await http.post(
-          url,
-          headers: {
-            'Authorization': 'Bearer ${client.accessToken}',
-            'Content-Type': 'application/json',
-          },
-          body: jsonEncode({
-            'app_id': widget.appId,
-            'room_id': widget.room.id,
-          }),
-        );
-        if (response.statusCode != 200) {
-          throw Exception('init_data: ${response.statusCode}');
-        }
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        initData = data['init_data'] as String;
+        initData = await widget.host.fetchInitData();
       } catch (e) {
         Logs().e('[MiniAppWebView] openInvoice: не удалось получить initData: $e');
         _sendInvoiceResult('failed', l10n.miniAppAuthError);
@@ -770,7 +715,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
           'currency': currency,
           'prices': pricesRaw,
           'payload': payload,
-          'room_id': widget.room.id,
+          'room_id': widget.roomId,
           if (customerPhone != null) 'customer_phone': customerPhone,
           if (customerEmail != null) 'customer_email': customerEmail,
         }),
@@ -889,21 +834,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   /// Получает подписанную initData у Synapse-модуля (для авторизации на backend).
   Future<String?> _fetchSignedInitData() async {
     try {
-      final client = widget.room.client;
-      final url = client.homeserver!.resolve(
-        '/_synapse/client/miniapp/v1/init_data',
-      );
-      final response = await http.post(
-        url,
-        headers: {
-          'Authorization': 'Bearer ${client.accessToken}',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({'app_id': widget.appId, 'room_id': widget.room.id}),
-      );
-      if (response.statusCode != 200) return null;
-      final data = jsonDecode(response.body) as Map<String, dynamic>;
-      return data['init_data'] as String?;
+      return await widget.host.fetchInitData();
     } catch (e) {
       Logs().w('[MiniAppWebView] init_data fetch: $e');
       return null;
@@ -1456,6 +1387,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
         if (url != null) _currentUrl = url.toString();
       },
       onLoadStop: (controller, url) {
+        _loadedUrl = url?.toString();
         controller.evaluateJavascript(
           source: 'if(window.__lizaBridge) window.__lizaBridge._activate();',
         );

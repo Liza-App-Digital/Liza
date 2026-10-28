@@ -39,6 +39,7 @@ List<String> newRequestExamples(L10n l10n) => [
   l10n.newRequestExample3,
   l10n.newRequestExample4,
   l10n.newRequestExample5,
+  l10n.newRequestExample6,
 ];
 
 @visibleForTesting
@@ -180,78 +181,87 @@ class _NewRequestEmptyPageState extends State<NewRequestEmptyPage> {
         duration: _morph,
         curve: Curves.easeInOut,
         alignment: morphed ? Alignment.bottomCenter : Alignment.center,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(32),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: _maxWidth),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _collapsing(
-                  hidden: morphed,
-                  child: Column(
-                    key: const Key('new_request_header'),
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(20),
-                        child: Container(
-                          color: Colors.black,
-                          padding: const EdgeInsets.all(8),
-                          child: Image.asset(
-                            'assets/logo.png',
-                            width: 64,
-                            height: 64,
-                            filterQuality: FilterQuality.medium,
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            padding: EdgeInsets.symmetric(
+              // Панель бывает уже порога колонок: mini App сбоку форсирует их.
+              horizontal: constraints.maxWidth < 400 ? 16 : 32,
+              vertical: 32,
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: _maxWidth),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _collapsing(
+                    hidden: morphed,
+                    child: Column(
+                      key: const Key('new_request_header'),
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(20),
+                          child: Container(
+                            color: Colors.black,
+                            padding: const EdgeInsets.all(8),
+                            child: Image.asset(
+                              'assets/logo.png',
+                              width: 64,
+                              height: 64,
+                              filterQuality: FilterQuality.medium,
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 24),
-                      FutureBuilder<Profile>(
-                        future: _ownProfile(client),
-                        builder: (context, snapshot) {
-                          final name = greetingFirstName(
-                            snapshot.data?.displayName,
-                          );
-                          return Text(
-                            name == null
-                                ? l10n.newRequestGreetingNoName
-                                : l10n.newRequestGreeting(name),
-                            key: const Key('new_request_greeting'),
-                            textAlign: TextAlign.center,
-                            style: theme.textTheme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        l10n.newRequestSubtitle,
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
+                        const SizedBox(height: 24),
+                        FutureBuilder<Profile>(
+                          future: _ownProfile(client),
+                          builder: (context, snapshot) {
+                            final name = greetingFirstName(
+                              snapshot.data?.displayName,
+                            );
+                            return Text(
+                              name == null
+                                  ? l10n.newRequestGreetingNoName
+                                  : l10n.newRequestGreeting(name),
+                              key: const Key('new_request_greeting'),
+                              textAlign: TextAlign.center,
+                              style: theme.textTheme.headlineSmall?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            );
+                          },
                         ),
-                      ),
-                      const SizedBox(height: 24),
-                    ],
+                        const SizedBox(height: 8),
+                        Text(
+                          l10n.newRequestSubtitle,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                      ],
+                    ),
                   ),
-                ),
-                _collapsing(
-                  hidden: !morphed,
-                  child: _questionBubble(theme, morphText ?? ''),
-                ),
-                ValueListenableBuilder<UpdatePolicy>(
-                  valueListenable: UpdatePolicyController.current,
-                  builder: (context, policy, _) => policy.readOnly
-                      ? const UpdateReadOnlyBar()
-                      : Column(
-                          children: [
-                            _composer(theme, l10n, morphed),
-                            _collapsing(hidden: morphed, child: _presets(l10n)),
-                          ],
-                        ),
-                ),
-              ],
+                  _collapsing(
+                    hidden: !morphed,
+                    child: _questionBubble(theme, morphText ?? ''),
+                  ),
+                  ValueListenableBuilder<UpdatePolicy>(
+                    valueListenable: UpdatePolicyController.current,
+                    builder: (context, policy, _) => policy.readOnly
+                        ? const UpdateReadOnlyBar()
+                        : Column(
+                            children: [
+                              _composer(theme, l10n, morphed),
+                              _collapsing(
+                                hidden: morphed,
+                                child: _presets(l10n),
+                              ),
+                            ],
+                          ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -287,13 +297,31 @@ class _NewRequestEmptyPageState extends State<NewRequestEmptyPage> {
     padding: const EdgeInsets.only(top: 16),
     child: Wrap(
       alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
       spacing: 8,
       runSpacing: 8,
       children: [
         for (final (i, preset) in newRequestPresets(l10n).indexed)
           ActionChip(
             key: Key('new_request_preset_$i'),
-            label: Text(preset),
+            // RawChip задаёт подписи maxLines 1 без переноса: на узкой панели
+            // (mini App сбоку, крупный системный шрифт) текст гас на краю.
+            // maxLines: null не снимает лимит — Text берёт его из DefaultTextStyle.
+            // Поля — внутри подписи, не у чипа: высоту RawChip меряет по
+            // подписи во всю свою ширину, а кладёт её уже за вычетом полей и
+            // срезает лишнюю строку (текст влез в ширину, но не в ширину − поля).
+            padding: EdgeInsets.zero,
+            labelPadding: EdgeInsets.zero,
+            label: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                preset,
+                softWrap: true,
+                maxLines: 6,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+              ),
+            ),
             onPressed: _busy ? null : () => _send(preset),
           ),
       ],

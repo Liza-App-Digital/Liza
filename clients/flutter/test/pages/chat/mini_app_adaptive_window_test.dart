@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
@@ -6,6 +8,7 @@ import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_overlay.dart';
+import 'package:liza/pages/chat/mini_app_window.dart';
 import 'package:liza/pages/chat_list/compact_chat_list_column.dart';
 import 'package:liza/widgets/layouts/mini_app_host_scope.dart';
 import 'package:liza/widgets/layouts/two_column_layout.dart';
@@ -17,10 +20,12 @@ import '../../utils/test_client.dart';
 /// [MiniAppOverlay.debugContentBuilder] — WebView в widget-тесте не поднимается,
 /// а хост (шапка, раскладка, разделитель, Navigator) — настоящий.
 /// ledger:RL-miniapp-adaptive-window
+/// ledger:RL-miniapp-detached-window
 void main() {
   late Client client;
   late Room room;
   final manager = MiniAppManager.instance;
+  final defaultIsTablet = MiniAppOverlay.isTablet;
 
   // Счётчики жизни подменного контента и корня приложения: смена раскладки
   // НЕ должна пересоздавать ни WebView, ни Router.
@@ -40,6 +45,8 @@ void main() {
 
   setUp(() {
     manager.closeAll();
+    manager.windowsSupported = false;
+    MiniAppOverlay.isTablet = (_) => false;
     manager.panelWidth.value = kMiniAppDefaultPanelWidth;
     manager.splitFraction.value = 0.5;
     manager.chatListCompactable.value = false;
@@ -61,6 +68,8 @@ void main() {
 
   tearDown(() {
     manager.closeAll();
+    manager.windowsSupported = false;
+    MiniAppOverlay.isTablet = defaultIsTablet;
     MiniAppOverlay.debugContentBuilder = null;
   });
 
@@ -93,12 +102,21 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  void openShop({String path = ''}) => manager.open(
+  void openShop({String path = '', bool allowDetach = true}) => manager.open(
     appUrl: 'https://shop.example.invalid/',
     appId: 'shop',
     appName: 'Магазин',
     room: room,
     appStartPath: path,
+    allowDetach: allowDetach,
+  );
+
+  void openCafe({bool allowDetach = true}) => manager.open(
+    appUrl: 'https://cafe.example.invalid/',
+    appId: 'cafe',
+    appName: 'Кафе',
+    room: room,
+    allowDetach: allowDetach,
   );
 
   Rect panelRect(WidgetTester tester) =>
@@ -383,25 +401,24 @@ void main() {
       expect(contentInits['shop'], 2);
     });
 
-    testWidgets('меню «⋮» и диалог из контента открываются внутри хоста', (
-      tester,
-    ) async {
+    testWidgets('«Скопировать ссылку» — кнопкой в шапке, меню «⋮» нет; '
+        'диалог из контента открывается внутри хоста', (tester) async {
       // AC:RL-miniapp-adaptive-window/8 — хост смонтирован над Router; без
       // своего Navigator тут было «context does not include a Navigator».
+      // Надежда 27.10: «пункт "еще" не имеет смысла, нужно только скопировать
+      // ссылку» — меню заменено кнопкой.
       for (final size in const [Size(390, 844), Size(1440, 900)]) {
         await pumpHost(tester, size);
         openShop();
         await tester.pumpAndSettle();
 
-        await tester.tap(find.byKey(const ValueKey('miniapp-more')));
-        await tester.pumpAndSettle();
-        expect(tester.takeException(), isNull);
-        expect(find.text('Скопировать ссылку'), findsOneWidget);
-        // Барьер меню живёт в Overlay панели — закрываем кликом внутри неё.
-        await tester.tapAt(
-          panelRect(tester).bottomCenter - const Offset(0, 10),
+        expect(find.byType(PopupMenuButton<String>), findsNothing);
+        expect(find.byKey(const ValueKey('miniapp-copy-link')), findsOneWidget);
+        expect(
+          find.byTooltip('Скопировать ссылку'),
+          findsOneWidget,
+          reason: 'на ${size.width.toInt()}',
         );
-        await tester.pumpAndSettle();
 
         await tester.tap(find.byKey(const ValueKey('fake-content-dialog')));
         await tester.pumpAndSettle();
@@ -413,6 +430,242 @@ void main() {
         manager.closeAll();
         await tester.pumpAndSettle();
       }
+    });
+  });
+
+  group('Отдельное окно ОС (десктоп)', () {
+    test('по умолчанию окно, если окна поддержаны; с пин-кодом — панель', () {
+      // AC:RL-miniapp-detached-window/1
+      manager.windowsSupported = true;
+      openShop();
+      expect(manager.detachedApps.map((a) => a.appId), ['shop']);
+      expect(manager.hasApps, isFalse, reason: 'в окне Лизы ничего нет');
+      expect(manager.activeApp, isNull);
+      expect(manager.isExpanded, isFalse);
+
+      openCafe(allowDetach: false);
+      expect(manager.detachedApps.map((a) => a.appId), ['shop']);
+      expect(manager.apps.map((a) => a.appId), ['cafe']);
+
+      manager.closeAll();
+      manager.windowsSupported = false;
+      openShop();
+      expect(manager.detachedApps, isEmpty);
+      expect(manager.activeApp?.appId, 'shop');
+    });
+
+    test(
+      'повторное открытие открепленного — поднять окно, не панель',
+      () async {
+        // AC:RL-miniapp-detached-window/1
+        manager.windowsSupported = true;
+        final focus = <String>[];
+        final sub = manager.windowFocusRequests.listen(focus.add);
+        openShop();
+        openShop();
+        await Future<void>.delayed(Duration.zero);
+        expect(focus, ['shop']);
+        expect(manager.hasApps, isFalse);
+        openShop(path: '#!/tproduct/7');
+        expect(manager.detachedApps.single.appStartPath, '#!/tproduct/7');
+        expect(manager.detachedApps.single.generation, 1);
+        await sub.cancel();
+      },
+    );
+
+    test('закрытие окна ОС закрывает только его app', () {
+      // AC:RL-miniapp-detached-window/3
+      manager.windowsSupported = true;
+      openShop();
+      openCafe(allowDetach: false);
+      manager.close('nope');
+      expect(manager.detachedApps.length, 1);
+      expect(manager.appCount, 1);
+      manager.close('shop');
+      expect(manager.detachedApps, isEmpty);
+      expect(manager.activeApp?.appId, 'cafe');
+      expect(manager.isExpanded, isTrue);
+    });
+
+    test('открепить → прикрепить: та же страница, новое поколение', () {
+      // AC:RL-miniapp-detached-window/8
+      openShop();
+      manager.detach('shop', startPath: '#!/tproduct/5');
+      final detached = manager.detachedApps.single;
+      expect(detached.appStartPath, '#!/tproduct/5');
+      expect(detached.generation, 1);
+      expect(manager.hasApps, isFalse);
+      expect(manager.isExpanded, isFalse);
+
+      manager.attach('shop', startPath: '#!/tproduct/6');
+      expect(manager.detachedApps, isEmpty);
+      expect(manager.activeApp!.appStartPath, '#!/tproduct/6');
+      expect(manager.activeApp!.generation, 2);
+      expect(manager.isExpanded, isTrue);
+    });
+
+    test('выход из аккаунта закрывает и окна ОС', () {
+      // AC:RL-miniapp-detached-window/9
+      manager.windowsSupported = true;
+      openShop();
+      openCafe(allowDetach: false);
+      manager.closeForClient(client);
+      expect(manager.detachedApps, isEmpty);
+      expect(manager.hasApps, isFalse);
+    });
+
+    test('крестик плашки закрывает панель, окна ОС не трогает', () {
+      // AC:RL-miniapp-detached-window/3
+      manager.windowsSupported = true;
+      openShop();
+      openCafe(allowDetach: false);
+      manager.closeDocked();
+      expect(manager.detachedApps.map((a) => a.appId), ['shop']);
+      expect(manager.hasApps, isFalse);
+    });
+
+    test('конфиг окна переживает JSON без потерь', () {
+      // AC:RL-miniapp-detached-window/7
+      openShop(path: '#!/tproduct/9');
+      final config = MiniAppWindowConfig.of(
+        manager.activeApp!,
+        ThemeData(brightness: Brightness.dark, colorSchemeSeed: Colors.teal),
+      );
+      final back = MiniAppWindowConfig.fromJson(
+        Map<String, Object?>.from(
+          jsonDecode(jsonEncode(config.toJson())) as Map,
+        ),
+      );
+      expect(back.toJson(), config.toJson());
+      expect(back.appStartPath, '#!/tproduct/9');
+      expect(back.roomId, room.id);
+      expect(back.contentKey, 'shop#0');
+      expect(back.dark, isTrue);
+    });
+
+    testWidgets('открепленный не рисуется в окне Лизы; «Открепить» уводит '
+        'панель в окно', (tester) async {
+      // AC:RL-miniapp-detached-window/2 AC:RL-miniapp-detached-window/4
+      manager.windowsSupported = true;
+      await pumpHost(tester, const Size(1440, 900));
+      openShop();
+      openCafe(allowDetach: false);
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('miniapp-content-shop')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('miniapp-content-cafe')),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Магазин'),
+        findsNothing,
+        reason: 'ни панели, ни плашки',
+      );
+
+      expect(find.byType(PopupMenuButton<String>), findsNothing);
+      expect(find.byKey(const ValueKey('miniapp-copy-link')), findsOneWidget);
+      expect(find.byKey(const ValueKey('miniapp-fullscreen')), findsOneWidget);
+      expect(find.byKey(const ValueKey('miniapp-minimize')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('miniapp-detach')));
+      await tester.pumpAndSettle();
+
+      expect(manager.detachedApps.map((a) => a.appId), ['shop', 'cafe']);
+      expect(find.byKey(const ValueKey('miniapp-content-cafe')), findsNothing);
+      expect(homeSize!.width, 1440);
+      expect(find.text('Кафе'), findsNothing, reason: 'свёрнутой плашки нет');
+      expect(homeInits, 1);
+    });
+
+    testWidgets('без поддержки окон ОС кнопки «Открепить» нет', (tester) async {
+      // AC:RL-miniapp-detached-window/4
+      for (final size in const [Size(390, 844), Size(1440, 900)]) {
+        await pumpHost(tester, size);
+        openShop();
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('miniapp-detach')), findsNothing);
+        manager.closeAll();
+        await tester.pumpAndSettle();
+      }
+    });
+
+    testWidgets('сворачивание боковой панели — вниз, к плашке, а не вбок', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-detached-window/6
+      await pumpHost(tester, const Size(1440, 900));
+      openShop();
+      await tester.pumpAndSettle();
+      final open = panelRect(tester);
+
+      await tester.tap(find.byKey(const ValueKey('miniapp-minimize')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      final early = panelRect(tester);
+      await tester.pump(const Duration(milliseconds: 100));
+      final late = panelRect(tester);
+
+      for (final rect in [early, late]) {
+        expect(rect.left, open.left, reason: 'панель не уезжает вбок');
+        expect(rect.width, open.width);
+      }
+      expect(early.top, greaterThan(open.top));
+      expect(late.top, greaterThan(early.top));
+      await tester.pumpAndSettle();
+      expect(find.text('Магазин'), findsOneWidget, reason: 'плашка внизу');
+    });
+  });
+
+  group('Планшет — как на ПК, без двойного экрана', () {
+    testWidgets('альбом: по умолчанию на весь экран, закрепить — сбоку', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-detached-window/5
+      MiniAppOverlay.isTablet = (_) => true;
+      await pumpHost(tester, const Size(1366, 1024));
+      openShop();
+      await tester.pumpAndSettle();
+      expect(panelRect(tester).width, 1366);
+
+      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
+      await tester.pumpAndSettle();
+      expect(panelRect(tester).right, 1366);
+      expect(panelRect(tester).width, kMiniAppDefaultPanelWidth);
+    });
+
+    for (final size in const [Size(1024, 1366), Size(768, 1024)]) {
+      testWidgets('${size.width.toInt()}×${size.height.toInt()}: весь экран, '
+          'закрепить некуда — ни кнопки, ни бегунка', (tester) async {
+        // AC:RL-miniapp-detached-window/5
+        MiniAppOverlay.isTablet = (_) => true;
+        await pumpHost(tester, size);
+        openShop();
+        await tester.pumpAndSettle();
+        expect(panelRect(tester).width, size.width);
+        expect(find.byKey(const ValueKey('miniapp-dock')), findsNothing);
+        expect(
+          find.byKey(const ValueKey('miniapp-host-split-handle')),
+          findsNothing,
+        );
+        expect(find.byKey(const ValueKey('miniapp-fullscreen')), findsNothing);
+      });
+    }
+
+    test('телефон и узкое окно — по-прежнему по ширине', () {
+      // AC:RL-miniapp-detached-window/5
+      expect(manager.isFullscreenFor(1440), isFalse);
+      expect(manager.isFullscreenFor(1440, tablet: true), isTrue);
+      expect(miniAppLayoutModeFor(manager, 1100), MiniAppLayoutMode.sheet);
+      manager.setFullscreen(false);
+      expect(miniAppLayoutModeFor(manager, 1100), MiniAppLayoutMode.split);
+      expect(
+        miniAppLayoutModeFor(manager, 1100, tablet: true),
+        MiniAppLayoutMode.sheet,
+      );
+      expect(
+        miniAppLayoutModeFor(manager, 1366, tablet: true),
+        MiniAppLayoutMode.side,
+      );
     });
   });
 

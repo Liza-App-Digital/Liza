@@ -139,13 +139,23 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   }
 
   override func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-    if !flag {
+    // Клик по Dock: видимым может быть только окно mini App — главное окно
+    // всё равно показываем.
+    if !flag || mainFlutterWindow?.isVisible != true {
       bringWindowToFront()
     }
     return true
   }
 
   override func applicationDidBecomeActive(_ notification: Notification) {
+    // Приложение активировали кликом по окну mini App — закрытое (скрытое)
+    // окно Лизы не поднимаем: окна живут независимо, как на Mac принято.
+    if NSApp.windows.contains(where: {
+      $0.isVisible && $0 !== mainFlutterWindow
+        && $0.contentViewController is FlutterViewController
+    }) {
+      return
+    }
     if let window = mainFlutterWindow, !window.isVisible {
       if window.isMiniaturized {
         window.deminiaturize(self)

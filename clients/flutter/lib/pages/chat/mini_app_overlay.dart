@@ -5,9 +5,13 @@ import 'package:flutter/material.dart';
 
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat/mini_app_host_api.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_web_view.dart';
+import 'package:liza/pages/chat/mini_app_window.dart';
 import 'package:liza/pages/chat_list/compact_chat_list_column.dart';
+import 'package:liza/utils/adaptive_orientation.dart';
+import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/layouts/mini_app_host_scope.dart';
 import 'package:liza/widgets/liza_app.dart';
 
@@ -68,14 +72,19 @@ enum MiniAppLayoutMode {
 }
 
 /// Режим раскладки для окна шириной [windowWidth].
+///
+/// [tablet]: планшет по умолчанию на весь экран, закрепляется только сбоку —
+/// половинчатого экрана по вертикали, как на телефоне, у него нет.
 MiniAppLayoutMode miniAppLayoutModeFor(
   MiniAppManager manager,
-  double windowWidth,
-) {
-  if (manager.isFullscreenFor(windowWidth)) return MiniAppLayoutMode.sheet;
-  return windowWidth >= kMiniAppSideMinWindowWidth
-      ? MiniAppLayoutMode.side
-      : MiniAppLayoutMode.split;
+  double windowWidth, {
+  bool tablet = false,
+}) {
+  if (manager.isFullscreenFor(windowWidth, tablet: tablet)) {
+    return MiniAppLayoutMode.sheet;
+  }
+  if (windowWidth >= kMiniAppSideMinWindowWidth) return MiniAppLayoutMode.side;
+  return tablet ? MiniAppLayoutMode.sheet : MiniAppLayoutMode.split;
 }
 
 /// Ширина боковой панели, ужатая под текущее окно. [compactable] — список
@@ -111,6 +120,11 @@ class MiniAppOverlay extends StatefulWidget {
   @visibleForTesting
   static Widget Function(BuildContext context, MiniAppInstance app)?
   debugContentBuilder;
+
+  /// Планшет ли это (раскладка «как на ПК»). Порог тот же, что у политики
+  /// ориентаций. Подменяется в тестах: там платформа — хост разработчика.
+  static bool Function(Size size) isTablet = (size) =>
+      PlatformInfos.isMobile && size.shortestSide >= kTabletShortestSide;
 
   @override
   State<MiniAppOverlay> createState() => _MiniAppOverlayState();
@@ -178,8 +192,13 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     final navigator = _panelNavigatorKey.currentState;
     if (navigator != null && await navigator.maybePop()) return true;
     if (!mounted) return false;
-    final width = MediaQuery.sizeOf(context).width;
-    if (miniAppLayoutModeFor(_manager, width) != MiniAppLayoutMode.sheet) {
+    final size = MediaQuery.sizeOf(context);
+    final mode = miniAppLayoutModeFor(
+      _manager,
+      size.width,
+      tablet: MiniAppOverlay.isTablet(size),
+    );
+    if (mode != MiniAppLayoutMode.sheet) {
       return false;
     }
     _manager.minimize();
@@ -354,7 +373,10 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     final hasApps = _manager.hasApps;
     final wide = LizaThemes.isColumnModeByWidth(size.width);
     final sideAvailable = size.width >= kMiniAppSideMinWindowWidth;
-    final mode = miniAppLayoutModeFor(_manager, size.width);
+    final tablet = MiniAppOverlay.isTablet(size);
+    final mode = miniAppLayoutModeFor(_manager, size.width, tablet: tablet);
+    // Свежий снимок темы — для отдельных окон ОС, которые откроются потом.
+    MiniAppWindows.instance.theme = Theme.of(context);
     _manager.reportWindowWidth(size.width);
     // Режим сменился посреди перетаскивания (поворот, ширина окна, «на весь
     // экран» из панели) — ручка размонтирована и onEnd не придёт: не оставляем
@@ -369,6 +391,7 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
               mode: mode,
               wide: wide,
               sideAvailable: sideAvailable,
+              tablet: tablet,
               onDragUpdate: _onDragUpdate,
               onDragEnd: _onDragEnd,
               child: Material(
@@ -428,14 +451,21 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
               size.width,
               compactable: compactable,
             );
-            final shown = pw * t;
+            // Панель выезжает снизу и уезжает вниз — туда, где появляется
+            // свёрнутая плашка (а не вбок, где её потом не найти). Приложение
+            // при этом плавно занимает освободившуюся ширину под панелью.
             // Свёртку считаем от ЦЕЛЕВОЙ ширины, а не анимированной: иначе при
             // открытии с запомненной широкой панелью список схлопывался бы
             // рывком в конце анимации.
             targetChildWidth = size.width - pw;
-            childRect = Rect.fromLTWH(0, 0, size.width - shown, size.height);
+            childRect = Rect.fromLTWH(0, 0, size.width - pw * t, size.height);
             childMq = mq.copyWith(size: childRect.size);
-            panelRect = Rect.fromLTWH(size.width - shown, 0, pw, size.height);
+            panelRect = Rect.fromLTWH(
+              size.width - pw,
+              size.height * (1 - t),
+              pw,
+              size.height,
+            );
             panelMq = mq.copyWith(size: panelRect.size);
             if (t == 1) {
               dividerRect = Rect.fromLTWH(
@@ -629,6 +659,7 @@ class _MiniAppLayoutScope extends InheritedWidget {
   final MiniAppLayoutMode mode;
   final bool wide;
   final bool sideAvailable;
+  final bool tablet;
   final GestureDragUpdateCallback onDragUpdate;
   final GestureDragEndCallback onDragEnd;
 
@@ -636,6 +667,7 @@ class _MiniAppLayoutScope extends InheritedWidget {
     required this.mode,
     required this.wide,
     required this.sideAvailable,
+    required this.tablet,
     required this.onDragUpdate,
     required this.onDragEnd,
     required super.child,
@@ -648,7 +680,8 @@ class _MiniAppLayoutScope extends InheritedWidget {
   bool updateShouldNotify(_MiniAppLayoutScope oldWidget) =>
       mode != oldWidget.mode ||
       wide != oldWidget.wide ||
-      sideAvailable != oldWidget.sideAvailable;
+      sideAvailable != oldWidget.sideAvailable ||
+      tablet != oldWidget.tablet;
 }
 
 /// Содержимое панели: шапка + WebView всех открытых miniApp + локальный тост.
@@ -695,6 +728,21 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
     }
   }
 
+  /// Открепить активный app в отдельное окно ОС — на той же странице.
+  Future<void> _detachActiveApp() async {
+    final app = _manager.activeApp;
+    if (app == null) return;
+    final state = _contentKeys[app.contentKey]?.currentState;
+    if (state is MiniAppWebViewContentState && state.paymentInProgress) {
+      _showToast(L10n.of(context).miniAppMoveDuringPayment);
+      return;
+    }
+    final startPath = state is MiniAppWebViewContentState
+        ? await state.currentStartPath()
+        : null;
+    _manager.detach(app.appId, startPath: startPath);
+  }
+
   Future<void> _shareActiveAppLink() async {
     final app = _manager.activeApp;
     if (app == null) return;
@@ -731,9 +779,13 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
               mode: scope.mode,
               wide: scope.wide,
               sideAvailable: scope.sideAvailable,
+              tablet: scope.tablet,
               onDragUpdate: scope.onDragUpdate,
               onDragEnd: scope.onDragEnd,
               onShareLink: _shareActiveAppLink,
+              onDetach: miniAppDetachAllowed(context)
+                  ? _detachActiveApp
+                  : null,
             ),
             Expanded(child: _buildContentStack()),
           ],
@@ -743,7 +795,7 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
             left: 24,
             right: 24,
             bottom: 32,
-            child: _MiniAppToast(text: _toast!),
+            child: MiniAppToast(text: _toast!),
           ),
       ],
     );
@@ -771,7 +823,12 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
                   appUrl: app.appUrl,
                   appId: app.appId,
                   appName: app.appName,
-                  room: app.room,
+                  host: RoomMiniAppHostApi(
+                    room: app.room,
+                    appId: app.appId,
+                    appUrl: app.appUrl,
+                  ),
+                  roomId: app.room.id,
                   appType: app.appType,
                   appStartPath: app.appStartPath,
                   onClose: () => _manager.close(app.appId),
@@ -964,7 +1021,7 @@ class _MiniAppCollapsedBar extends StatelessWidget {
                 // X — закрыть все
                 IconButton(
                   icon: const Icon(Icons.close, size: 20),
-                  onPressed: () => manager.closeAll(),
+                  onPressed: () => manager.closeDocked(),
                   visualDensity: VisualDensity.compact,
                 ),
                 const SizedBox(width: 4),
@@ -987,12 +1044,17 @@ class _MiniAppHeader extends StatelessWidget {
   /// Хватает ли ширины окна на боковую панель (иначе «закрепить» = двойной
   /// экран).
   final bool sideAvailable;
+
+  /// Планшет: двойного экрана нет — без боковой панели закрепить некуда.
+  final bool tablet;
   final GestureDragUpdateCallback onDragUpdate;
   final GestureDragEndCallback onDragEnd;
 
-  /// Колбэк пункта меню «Скопировать ссылку» (создаёт invite на текущую
-  /// страницу). null — меню не показываем.
+  /// «Скопировать ссылку» (invite на текущую страницу). null — кнопки нет.
   final VoidCallback? onShareLink;
+
+  /// «Открепить в отдельное окно». null — окна ОС не поддержаны.
+  final VoidCallback? onDetach;
 
   const _MiniAppHeader({
     required this.app,
@@ -1000,12 +1062,14 @@ class _MiniAppHeader extends StatelessWidget {
     required this.mode,
     required this.wide,
     required this.sideAvailable,
+    required this.tablet,
     required this.onDragUpdate,
     required this.onDragEnd,
     this.onShareLink,
+    this.onDetach,
   });
 
-  Widget _layoutButton(BuildContext context) {
+  Widget? _layoutButton(BuildContext context) {
     final l10n = L10n.of(context);
     if (mode != MiniAppLayoutMode.sheet) {
       return IconButton(
@@ -1015,6 +1079,7 @@ class _MiniAppHeader extends StatelessWidget {
         onPressed: () => manager.setFullscreen(true),
       );
     }
+    if (!sideAvailable && tablet) return null;
     return IconButton(
       key: const ValueKey('miniapp-dock'),
       tooltip: sideAvailable
@@ -1082,30 +1147,20 @@ class _MiniAppHeader extends StatelessWidget {
                     ),
                   ),
                   if (onShareLink != null)
-                    PopupMenuButton<String>(
-                      key: const ValueKey('miniapp-more'),
-                      tooltip: L10n.of(context).miniAppMore,
-                      icon: const Icon(Icons.more_vert, size: 22),
-                      onSelected: (v) {
-                        if (v == 'copy_link') onShareLink!();
-                      },
-                      itemBuilder: (_) => [
-                        PopupMenuItem<String>(
-                          value: 'copy_link',
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.link, size: 20),
-                              const SizedBox(width: 12),
-                              Flexible(
-                                child: Text(L10n.of(context).miniAppCopyLink),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+                    IconButton(
+                      key: const ValueKey('miniapp-copy-link'),
+                      tooltip: L10n.of(context).miniAppCopyLink,
+                      icon: const Icon(Icons.link, size: 22),
+                      onPressed: onShareLink,
                     ),
-                  _layoutButton(context),
+                  if (onDetach != null)
+                    IconButton(
+                      key: const ValueKey('miniapp-detach'),
+                      tooltip: L10n.of(context).miniAppDetach,
+                      icon: const Icon(Icons.open_in_new, size: 20),
+                      onPressed: onDetach,
+                    ),
+                  ?_layoutButton(context),
                   IconButton(
                     key: const ValueKey('miniapp-minimize'),
                     tooltip: L10n.of(context).miniAppMinimize,
@@ -1126,10 +1181,10 @@ class _MiniAppHeader extends StatelessWidget {
 
 /// Локальный тост поверх панели mini App (вместо ScaffoldMessenger, который тут
 /// уходит под панель). Авто-скрытие — на стороне панели.
-class _MiniAppToast extends StatelessWidget {
+class MiniAppToast extends StatelessWidget {
   final String text;
 
-  const _MiniAppToast({required this.text});
+  const MiniAppToast({required this.text, super.key});
 
   @override
   Widget build(BuildContext context) {
