@@ -300,14 +300,36 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "requestPermission":
-            UNUserNotificationCenter.current().requestAuthorization(
-                options: [.alert, .badge, .sound]
-            ) { granted, _ in
-                DispatchQueue.main.async {
+            // Ответ системы отдаём целиком, а не только `granted`: без статуса
+            // «до», ошибки и активности приложения нельзя отличить «запрет уже
+            // был» от «система отказала сама на запросе» (8 Мак-установок с
+            // `denied` при включённом допуске, reliability-plan.md §1a).
+            let center = UNUserNotificationCenter.current()
+            let active = NSApp.isActive
+            let hasWindow = NSApp.windows.contains { $0.isVisible }
+            center.getNotificationSettings { before in
+                center.requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+                    // Регистрация — как раньше, сразу по ответу; повторное
+                    // чтение статуса её не задерживает.
                     if granted {
-                        NSApplication.shared.registerForRemoteNotifications()
+                        DispatchQueue.main.async { NSApplication.shared.registerForRemoteNotifications() }
                     }
-                    result(granted)
+                    center.getNotificationSettings { after in
+                        DispatchQueue.main.async {
+                            var out: [String: Any] = [
+                                "granted": granted,
+                                "before": before.authorizationStatus.rawValue,
+                                "after": after.authorizationStatus.rawValue,
+                                "active": active,
+                                "hasWindow": hasWindow,
+                            ]
+                            if let ns = error as NSError? {
+                                out["errorDomain"] = ns.domain
+                                out["errorCode"] = ns.code
+                            }
+                            result(out)
+                        }
+                    }
                 }
             }
         case "getToken":

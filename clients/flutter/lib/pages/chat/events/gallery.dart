@@ -203,6 +203,35 @@ extension GalleryEvent on Event {
   String? get galleryCaption => galleryCaptionFromContent(content);
 }
 
+/// Скрытый член альбома → eventId его anchor (единственной строки альбома в
+/// ленте, минимальный `galleryIndex`) — media-v-format.md §8.5. Строится по
+/// видимому списку ленты. Один источник для ленты (какие строки скрыть, куда
+/// перенести аватарки прочтения и отсечку) и для `scrollToEventId`: у скрытого
+/// члена нет `AutoScrollTag`, прокрутка к нему промахивается.
+Map<String, String> galleryAnchorMap(List<Event> events) {
+  final groups = <String, List<Event>>{};
+  for (final event in events) {
+    if ((event.messageType != MessageTypes.Image &&
+            event.messageType != MessageTypes.Video) ||
+        event.redacted) {
+      continue;
+    }
+    final gid = event.galleryId;
+    if (gid == null) continue;
+    (groups[gid] ??= []).add(event);
+  }
+  final skipToAnchor = <String, String>{};
+  for (final group in groups.values) {
+    if (group.length < 2) continue;
+    group.sort((a, b) => a.galleryIndex.compareTo(b.galleryIndex));
+    final anchorId = group.first.eventId;
+    for (final event in group.skip(1)) {
+      skipToAnchor[event.eventId] = anchorId;
+    }
+  }
+  return skipToAnchor;
+}
+
 /// Сводное состояние отправки СВОЕГО альбома.
 enum GallerySendState { sent, sending, error }
 

@@ -71,14 +71,32 @@ public class ApnsPushPlugin: NSObject, FlutterPlugin {
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         switch call.method {
         case "requestPermission":
-            UNUserNotificationCenter.current().requestAuthorization(
-                options: [.alert, .badge, .sound]
-            ) { granted, _ in
-                DispatchQueue.main.async {
+            // Парная реализация к macOS: статус до/после, ошибка и активность
+            // приложения — чтобы разбирать `denied` без журналов с устройства.
+            let center = UNUserNotificationCenter.current()
+            let active = UIApplication.shared.applicationState == .active
+            center.getNotificationSettings { before in
+                center.requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+                    // Регистрация — как раньше, сразу по ответу; повторное
+                    // чтение статуса её не задерживает.
                     if granted {
-                        UIApplication.shared.registerForRemoteNotifications()
+                        DispatchQueue.main.async { UIApplication.shared.registerForRemoteNotifications() }
                     }
-                    result(granted)
+                    center.getNotificationSettings { after in
+                        DispatchQueue.main.async {
+                            var out: [String: Any] = [
+                                "granted": granted,
+                                "before": before.authorizationStatus.rawValue,
+                                "after": after.authorizationStatus.rawValue,
+                                "active": active,
+                            ]
+                            if let ns = error as NSError? {
+                                out["errorDomain"] = ns.domain
+                                out["errorCode"] = ns.code
+                            }
+                            result(out)
+                        }
+                    }
                 }
             }
         case "getToken":
@@ -191,6 +209,9 @@ public class ApnsPushPlugin: NSObject, FlutterPlugin {
                         "alert": s.alertSetting.rawValue,
                         "badge": s.badgeSetting.rawValue,
                         "sound": s.soundSetting.rawValue,
+                        "alertStyle": s.alertStyle.rawValue,
+                        "notificationCenter": s.notificationCenterSetting.rawValue,
+                        "lockScreen": s.lockScreenSetting.rawValue,
                     ])
                 }
             }

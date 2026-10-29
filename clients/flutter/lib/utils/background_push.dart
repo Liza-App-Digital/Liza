@@ -139,7 +139,23 @@ class BackgroundPush {
           }
         });
       }
-      await _flutterLocalNotificationsPlugin.initialize(
+      // Снимок статуса разрешения ДО и ПОСЛЕ запроса flutter_local_notifications
+      // (на свежей установке это первый и единственный запрос — до входа в
+      // аккаунт `setupPusher`/`setupFirebase` не зовутся). «До» читается строго
+      // раньше `initialize`, иначе «запрет уже был» и «система отказала на
+      // запросе» неотличимы (reliability-plan.md §1a, H-A/H-G). Только
+      // наблюдение: таймаут 500 мс, в local/E2E не трогаем.
+      final flnAuthProbe = (Platform.isIOS || Platform.isMacOS) &&
+          !AppConfig.isLocal &&
+          apns != null;
+      final flnStarted = DateTime.now();
+      final flnBefore = flnAuthProbe
+          ? await apns!.authorizationStatus(
+              timeout: const Duration(milliseconds: 500),
+              hasSession: clients.any((c) => c.isLogged()),
+            )
+          : null;
+      final flnGranted = await _flutterLocalNotificationsPlugin.initialize(
         InitializationSettings(
           android: const AndroidInitializationSettings('notifications_icon'),
           iOS: DarwinInitializationSettings(
@@ -186,6 +202,24 @@ class BackgroundPush {
         ),
         onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
       );
+      if (flnAuthProbe) {
+        final elapsedMs = DateTime.now().difference(flnStarted).inMilliseconds;
+        final after = await apns!.authorizationStatus(
+          timeout: const Duration(milliseconds: 500),
+        );
+        unawaited(
+          NotificationAuthTracker.noteRequest(
+            AuthRequestResult(
+              granted: flnGranted == true,
+              before: flnBefore,
+              after: after,
+              elapsedMs: elapsedMs,
+            ),
+            source: AuthRequestSource.fln,
+            state: WidgetsBinding.instance.lifecycleState,
+          ),
+        );
+      }
       Logs().v('Flutter Local Notifications initialized');
       if (Platform.isIOS || Platform.isMacOS) {
         apns!.setListeners(
@@ -873,7 +907,7 @@ class BackgroundPush {
       // В E2E/local не дёргаем APNs-диалог (см. DarwinInitializationSettings) —
       // иначе device-flow виснет на нативном окне разрешения. Прод — isLocal
       // compile-time false → путь неизменен.
-      await apns!.requestPermission();
+      await apns!.requestPermission(source: AuthRequestSource.setupPusher);
       AppBadge.markPermissionRequested();
     }
     if (PlatformInfos.isAndroid) {
@@ -1365,7 +1399,7 @@ class BackgroundPush {
       // В E2E/local не дёргаем APNs-диалог (см. DarwinInitializationSettings) —
       // иначе device-flow виснет на нативном окне разрешения. Прод — isLocal
       // compile-time false → путь неизменен.
-      await apns!.requestPermission();
+      await apns!.requestPermission(source: AuthRequestSource.setupFirebase);
       AppBadge.markPermissionRequested();
     }
     // Гейт здесь, в пути получения APNs/FCM-токена, а не в общем `setupPusher`:

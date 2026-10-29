@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:collection/collection.dart';
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/utils/read_marker_logic.dart';
+
 /// Нажатие кнопки бота (Liza Bot API → `callback_query`).
 ///
 /// Отдельный ТИП события, а не `m.room.message`: старые сборки скрывают
@@ -55,6 +57,7 @@ Future<bool> sendBotCallbackTap(
   required String tapId,
   Duration timeout = const Duration(seconds: 10),
 }) async {
+  HumanInputTracker.mark(room.id);
   try {
     final id = await room.client
         .sendMessage(

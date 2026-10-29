@@ -1,7 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
-import 'package:matrix/matrix.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 
 import 'package:liza/config/themes.dart';
@@ -16,6 +15,7 @@ import 'package:liza/utils/gallery_read_receipts.dart';
 import 'package:liza/utils/matrix_sdk_extensions/filtered_timeline_extension.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/room_status_extension.dart';
+import 'package:liza/widgets/matrix.dart';
 
 /// На desktop/web оборачивает сообщение в [SelectionArea] (выделение текста
 /// мышью), но с пустым `contextMenuBuilder` — нативное меню выделения не
@@ -61,42 +61,27 @@ class ChatEventList extends StatelessWidget {
       thisEventsKeyMap[events[i].eventId] = i;
     }
 
-    // Альбомы (media-v-format.md §8.5): группируем медиа-события (m.image
-    // и m.video) по `com.liza.gallery.id`. В ленте рисуется только anchor
-    // (минимальный индекс отправки) — он рендерит сетку всех элементов
-    // через `GalleryBubble`. Остальные события альбома скрываем.
-    final galleryGroups = <String, List<Event>>{};
-    for (final event in events) {
-      if ((event.messageType != MessageTypes.Image &&
-              event.messageType != MessageTypes.Video) ||
-          event.redacted) {
-        continue;
-      }
-      final gid = event.galleryId;
-      if (gid == null) continue;
-      (galleryGroups[gid] ??= []).add(event);
-    }
-    final gallerySkipEventIds = <String>{};
-    // eventId скрытого члена галереи → eventId anchor (видимой строки альбома).
-    // Аватарка прочтения могла сесть на скрытый член — переносим её на anchor
-    // (см. mergeGalleryReadReceipts).
-    final gallerySkipToAnchor = <String, String>{};
-    for (final group in galleryGroups.values) {
-      if (group.length < 2) continue;
-      group.sort((a, b) => a.galleryIndex.compareTo(b.galleryIndex));
-      final anchorId = group.first.eventId;
-      for (final event in group.skip(1)) {
-        gallerySkipEventIds.add(event.eventId);
-        gallerySkipToAnchor[event.eventId] = anchorId;
-      }
-    }
+    // Альбомы (media-v-format.md §8.5): в ленте рисуется только anchor — он
+    // рендерит сетку всех элементов через `GalleryBubble`, остальные члены
+    // скрыты. Аватарка прочтения и отсечка «Непрочитанное», севшие на скрытый
+    // член, переносятся на anchor (см. mergeGalleryReadReceipts).
+    final gallerySkipToAnchor = galleryAnchorMap(events);
+    final readMarkerRowId =
+        gallerySkipToAnchor[controller.readMarkerEventId] ??
+        controller.readMarkerEventId;
 
     final hasWallpaper =
         controller.room.client.applicationAccountConfig.wallpaperUrl != null;
 
     // Один раз на rebuild, не на сообщение: до какого originServerTs дочитал
     // хотя бы один собеседник — управляет галочками done/done_all.
-    final readUpToTs = controller.room.readUpToTs(timeline);
+    // Боты/ИИ ставят ✓✓ только квитанцией: их сообщения-статусы и реакции
+    // прочтением не считаются (заявка №60, чат обращения поддержки).
+    final isAutomated = Matrix.of(context).isBotOrAiUser;
+    final readUpToTs = controller.room.readUpToTs(
+      timeline,
+      isAutomated: isAutomated,
+    );
 
     // Аватарки «прочитал до сюда»: eventId сообщения → участники, чья граница
     // прочтения стоит на нём (под собственным сообщением участника аватарка не
@@ -107,7 +92,10 @@ class ChatEventList extends StatelessWidget {
     // аватарке негде отрисоваться (баг «отправил скрины — своя аватарка
     // моргнула и скрылась»).
     final seenByPerMessage = mergeGalleryReadReceipts(
-      controller.room.getReadReceiptsPerMessage(timeline),
+      controller.room.getReadReceiptsPerMessage(
+        timeline,
+        isAutomated: isAutomated,
+      ),
       gallerySkipToAnchor,
     );
 
@@ -183,7 +171,7 @@ class ChatEventList extends StatelessWidget {
 
           // Не-anchor событие альбома — строка скрыта, сетку рисует
           // anchor (media-v-format.md §8.5).
-          if (gallerySkipEventIds.contains(event.eventId)) {
+          if (gallerySkipToAnchor.containsKey(event.eventId)) {
             return SizedBox.shrink(key: ValueKey(event.eventId));
           }
 
@@ -249,8 +237,7 @@ class ChatEventList extends StatelessWidget {
                 timeline: timeline,
                 readUpToTs: readUpToTs,
                 seenByUsers: seenByPerMessage[event.eventId] ?? const [],
-                displayReadMarker:
-                    i > 0 && controller.readMarkerEventId == event.eventId,
+                displayReadMarker: i > 0 && readMarkerRowId == event.eventId,
                 nextEvent: nextEvent,
                 previousEvent: previousEvent,
                 wallpaperMode: hasWallpaper,

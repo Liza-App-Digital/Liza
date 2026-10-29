@@ -969,10 +969,12 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     // атрибуцию ставим здесь явно.
     _syncMonitoringIdentity();
     _pushReportTimer?.cancel();
-    _pushReportTimer = Timer.periodic(
-      const Duration(hours: 1),
-      (_) => unawaited(_maybeReportPushHealth()),
-    );
+    _pushReportTimer = Timer.periodic(const Duration(hours: 1), (_) {
+      unawaited(_maybeReportPushHealth());
+      // Смена статуса разрешения, пока окно не выходит на передний план
+      // (resume её не увидит) — сужает окно смены до часа.
+      unawaited(backgroundPush?.apns?.authorizationStatus());
+    });
     unawaited(_maybeReportPushHealth());
 
     // Фоновая предзагрузка малых видео (< 5 МБ) из активной комнаты.
@@ -1072,8 +1074,18 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     setState(() => voipPlugin = plugin);
   }
 
+  AppLifecycleState? _loggedLifecycle;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Смена состояния окна — в liza.log: гейт квитанции прочтения читает
+    // lifecycle (readableForeground), и без этой строки нельзя проверить
+    // гипотезу заявки №60 «окно на Windows, где печатают, осталось inactive».
+    Logs().i(
+      '[lifecycle] ${_loggedLifecycle?.name}→${state.name} '
+      'views=${WidgetsBinding.instance.platformDispatcher.views.length}',
+    );
+    _loggedLifecycle = state;
     final refreshHttpClients = _resumeHttpRefreshGate.onStateChange(state);
     // На iOS/Android `inactive` означает «приложение скоро уйдёт в фон»
     // (входящий звонок, шторка уведомлений) — sync безопасно ставить.

@@ -1,6 +1,8 @@
 #include "flutter_window.h"
 
+#include <cwchar>
 #include <optional>
+#include <vector>
 
 #include "flutter/generated_plugin_registrant.h"
 #include "mini_app_window_channel.h"
@@ -47,7 +49,41 @@ bool FlutterWindow::OnCreate() {
   return true;
 }
 
+namespace {
+
+// Окна mini App (desktop_multi_window) создаются без владельца и с окном Лизы
+// не умирают; их движок с WebView2 гасится только на WM_DESTROY своего окна.
+// Не закрыть их здесь — после PostQuitMessage окно остаётся на экране без
+// цикла сообщений, а движок разрушается при выгрузке DLL плагина: процесс
+// висит, окно не закрывается и переживает перезапуск Лизы (заявка №61).
+void CloseMiniAppWindows() {
+  std::vector<HWND> windows;
+  ::EnumThreadWindows(
+      ::GetCurrentThreadId(),
+      [](HWND window, LPARAM param) -> BOOL {
+        wchar_t name[64];
+        if (::GetClassName(window, name, 64) &&
+            wcscmp(name, L"FLUTTER_MULTI_WINDOW_WIN32_WINDOW") == 0) {
+          reinterpret_cast<std::vector<HWND>*>(param)->push_back(window);
+        }
+        return TRUE;
+      },
+      reinterpret_cast<LPARAM>(&windows));
+  for (HWND window : windows) {
+    // Тот же путь, что крестик ОС. Если движок окна оставил WM_CLOSE себе
+    // (запрос выхода в Dart), закрываем без него.
+    ::SendMessage(window, WM_CLOSE, 0, 0);
+    if (::IsWindow(window)) {
+      ::DestroyWindow(window);
+    }
+  }
+}
+
+}  // namespace
+
 void FlutterWindow::OnDestroy() {
+  // Главный движок ещё жив: окна mini App гасим, пока работает цикл сообщений.
+  CloseMiniAppWindows();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

@@ -31,6 +31,9 @@ ArchitecturesAllowed=x64compatible
 MinVersion=10.0
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+; Закрыть запущенную Лизу, даже зависшую (заявка №61: процесс 3789 висел после
+; закрытия окна вместе с окном mini App и держал liza.exe).
+CloseApplications=force
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

@@ -164,10 +164,13 @@ void main() {
       // канала (ledger:RL-channel-redacted-post-hidden) — гейт УЖЕСТОЧЁН,
       // а не ослаблен: у надгробия не может быть ни реакций, ни плашки
       // комментариев.
+      // dart format при глубоком отступе рвёт вызов в `isChannelPost( event, )`.
       expect(
-        messageSource.contains(
-          'if (isChannelPost(event) && !event.redacted) ChannelPostFooter(',
-        ),
+        messageSource
+            .replaceAll('isChannelPost( event, )', 'isChannelPost(event)')
+            .contains(
+              'if (isChannelPost(event) && !event.redacted) ChannelPostFooter(',
+            ),
         isTrue,
         reason: 'низ поста канала обязан стоять под гейтом isChannelPost',
       );

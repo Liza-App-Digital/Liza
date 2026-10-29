@@ -167,7 +167,9 @@ void main() {
         'readableForeground; голого `lifecycleState == resumed` у '
         'pushInActiveRoomFor нет', () {
       expect(
-        chat.contains('readMarkerGate(readable: readable, isFull: isFull)'),
+        chat.replaceAll(RegExp(r'\s+'), ' ').contains(
+          'readMarkerGate( readable: readable, isFull: isFull,',
+        ),
         isTrue,
         reason:
             '_sendReadMarkerNow обязан спрашивать гейт — иначе AC-1..3 '

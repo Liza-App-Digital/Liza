@@ -51,6 +51,28 @@ bool SendAppLinkToInstance(const std::wstring& title) {
   return true;
 }
 
+// Сторож выхода: цикл сообщений кончился, а процесс за 4 с не завершился —
+// значит, завис в разборе плагинов. Убиваем сами, иначе остаётся «зомби» с
+// окнами, которые не закрыть (заявка №61). ExitProcess не годится: он снова
+// запускает выгрузку DLL, где и висим.
+DWORD WINAPI ExitWatchdog(LPVOID) {
+  ::Sleep(4000);
+  ::OutputDebugString(L"liza: exit-watchdog fired\n");
+  wchar_t path[MAX_PATH];
+  if (::GetEnvironmentVariable(L"LIZA_PILOT_RESULT", path, MAX_PATH)) {
+    HANDLE file = ::CreateFile(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
+                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE) {
+      const char line[] = "exit-watchdog fired\n";
+      DWORD written = 0;
+      ::WriteFile(file, line, sizeof(line) - 1, &written, nullptr);
+      ::CloseHandle(file);
+    }
+  }
+  ::TerminateProcess(::GetCurrentProcess(), 0);
+  return 0;
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
   if (SendAppLinkToInstance(L"Liza")) {
@@ -90,6 +112,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   while (::GetMessage(&msg, nullptr, 0, 0)) {
     ::TranslateMessage(&msg);
     ::DispatchMessage(&msg);
+  }
+
+  // Поток создаём здесь, а не из деструкторов: под блокировкой загрузчика
+  // новый поток не стартует.
+  ::CreateThread(nullptr, 0, ExitWatchdog, nullptr, 0, nullptr);
+  // Страж RL-miniapp-detached-window AC-18: имитация зависшего выхода в VM.
+  if (::GetEnvironmentVariable(L"LIZA_TEST_HANG_AFTER_LOOP", nullptr, 0)) {
+    ::Sleep(INFINITE);
   }
 
   ::CoUninitialize();

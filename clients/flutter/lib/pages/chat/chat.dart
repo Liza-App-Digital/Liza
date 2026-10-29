@@ -58,6 +58,7 @@ import 'package:liza/utils/post_join_backfill.dart';
 import 'package:liza/utils/message_link.dart';
 import 'package:liza/utils/other_party_can_receive.dart';
 import 'package:liza/utils/platform_infos.dart';
+import 'package:liza/utils/chat_scroll_geometry.dart';
 import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/utils/read_marker_sender.dart';
 import 'package:liza/utils/reply_draft_store.dart';
@@ -350,31 +351,9 @@ class ChatController extends State<ChatPageWithRoom>
     if (!scrollController.hasClients || scrollController.isAutoScrolling) {
       return null;
     }
-    RenderBox? viewport;
-    final tags = <VisibleTag>[];
-    for (final entry in scrollController.tagMap.entries) {
-      final key = entry.value.widget.key;
-      if (key is! ValueKey<String>) continue;
-      final ctx = entry.value.context;
-      if (!ctx.mounted) continue;
-      final box = ctx.findRenderObject();
-      if (box is! RenderBox || !box.attached || !box.hasSize) continue;
-      if (viewport == null) {
-        // На раннем кадре viewport'а может ещё не быть — пропускаем тик,
-        // следующий триггер досчитает.
-        try {
-          final RenderObject vp = RenderAbstractViewport.of(box);
-          if (vp is! RenderBox) return null;
-          viewport = vp;
-        } catch (_) {
-          return null;
-        }
-      }
-      final origin = box.localToGlobal(Offset.zero, ancestor: viewport);
-      tags.add((index: entry.key, eventId: key.value, rect: origin & box.size));
-    }
-    if (viewport == null) return null;
-    final candidate = newestVisibleEventId(tags, viewport.size);
+    final geometry = collectTagGeometry(scrollController);
+    if (geometry == null) return null;
+    final candidate = newestVisibleEventId(geometry.tags, geometry.viewport);
     if (candidate == null) return null;
     // Квитанция — только на событие из видимой ленты этого контекста.
     final visible = timeline.events.filterByVisibleInGui(
@@ -794,6 +773,15 @@ class ChatController extends State<ChatPageWithRoom>
           ),
         )
         .listen(_onOwnEcho);
+    // Действие человека в этом чате (отправка, реакция, кнопка бота) —
+    // доказательство внимания: квитанция уходит сразу, и из окна без фокуса
+    // (заявка №60). Реакция сама ни прокрутки, ни квитанции не вызывает.
+    _humanInputSubscription?.cancel();
+    _humanInputSubscription = HumanInputTracker.onInput
+        .where((id) => id == roomId)
+        .listen((_) {
+          if (mounted) setReadMarker();
+        });
     // Бот XL держит ключ только в памяти процесса — после его рестарта
     // мерчант увидел бы просьбу подключить интеграцию заново без этого.
     maybeResendXlKey(sendingClient, room);
@@ -954,6 +942,15 @@ class ChatController extends State<ChatPageWithRoom>
         Logs().v('Scroll up to visible event', readMarkerEventId);
         await scrollToEventId(readMarkerEventId, highlightEvent: false);
         if (!mounted) return;
+        // Доводка — ДО снятия гейта: jumpTo не поднимает isAutoScrolling, и
+        // дебаунс ScrollEnd иначе послал бы квитанцию по промежуточной
+        // геометрии.
+        await alignRowBottomToDivider(
+          scrollController,
+          _rowIdOf(readMarkerEventId),
+          isAlive: () => mounted,
+        );
+        if (!mounted) return;
         if (plan.markVisibleAfterPosition) {
           // scrollToIndex завершился, но геометрия последнего кадра могла ещё
           // не устояться — ждём кадр; гейт в _sendReadMarkerNow при
@@ -1072,6 +1069,29 @@ class ChatController extends State<ChatPageWithRoom>
   bool _pendingScrollDownAfterEcho = false;
 
   StreamSubscription<Event>? _ownEchoSubscription;
+
+  StreamSubscription<String>? _humanInputSubscription;
+
+  final SuppressedReadMarkerLogThrottle _suppressedLogThrottle =
+      SuppressedReadMarkerLogThrottle();
+
+  /// Квитанция не ушла сразу после действия человека — пишем причину в
+  /// liza.log (заявка №60): так подтверждается или опровергается гипотеза, что
+  /// на Windows окно, в котором печатают, остаётся в `inactive`.
+  void _logSuppressedAfterInput(String reason) {
+    if (!HumanInputTracker.isRecent(
+      roomId,
+      within: const Duration(seconds: 10),
+    )) {
+      return;
+    }
+    if (!_suppressedLogThrottle.shouldLog(reason)) return;
+    Logs().i(
+      '[read-marker] suppressed after input reason=$reason '
+      'lifecycle=${WidgetsBinding.instance.lifecycleState?.name} '
+      'locked=${ScreenLockState.isLocked}',
+    );
+  }
 
   void _onOwnEcho(Event _) {
     if (!mounted) return;
@@ -1233,7 +1253,10 @@ class ChatController extends State<ChatPageWithRoom>
     if (!mounted) return null;
     // Первым, до force/readableForeground/recordOwnReadMarkerTs: до конца
     // позиционирования при открытии «видимое» ещё не определено (LABA-2632).
-    if (_openPositioningPending) return null;
+    if (_openPositioningPending) {
+      _logSuppressedAfterInput('positioning');
+      return null;
+    }
     // `_scrolledUp` залипает в true на переходных layout-фреймах и в маленьком
     // чате не сбрасывается → сверяемся с живыми scroll-метриками: если новейшее
     // сообщение реально на экране, квитанцию НЕ глушим (иначе аватарка
@@ -1248,9 +1271,15 @@ class ChatController extends State<ChatPageWithRoom>
     if (!force && _scrolledUp && !_newestMessagesVisible) {
       // Явный eventId (requestFuture) — уже частичная квитанция, пропускаем.
       eventId ??= _newestVisibleEventId();
-      if (eventId == null) return null;
+      if (eventId == null) {
+        _logSuppressedAfterInput('geometry-null');
+        return null;
+      }
     }
-    if (scrollUpBannerEventId != null) return null;
+    if (scrollUpBannerEventId != null) {
+      _logSuppressedAfterInput('banner');
+      return null;
+    }
 
     // Полная квитанция — только из окна в фокусе (`resumed`); из десктопного
     // окна без фокуса (`inactive`) — лишь частичная по явной прокрутке. Модель
@@ -1262,7 +1291,10 @@ class ChatController extends State<ChatPageWithRoom>
       isDesktop: PlatformInfos.isDesktop,
       screenLocked: ScreenLockState.isLocked,
     );
-    if (readable == ReadableForeground.none) return null;
+    if (readable == ReadableForeground.none) {
+      _logSuppressedAfterInput('lifecycle-none');
+      return null;
+    }
 
     final timeline = this.timeline;
     if (timeline == null || timeline.events.isEmpty) return null;
@@ -1281,8 +1313,13 @@ class ChatController extends State<ChatPageWithRoom>
         eventId == null || eventId == timeline.room.lastEvent?.eventId;
     // Отложенную полную квитанцию не фиксируем и оптимистично: сепаратор и
     // счётчик должны честно держаться, пока окно не в фокусе.
-    if (readMarkerGate(readable: readable, isFull: isFull) !=
+    if (readMarkerGate(
+          readable: readable,
+          isFull: isFull,
+          humanInput: HumanInputTracker.isRecent(roomId),
+        ) !=
         ReadMarkerGate.send) {
+      _logSuppressedAfterInput('lifecycle-defer');
       return null;
     }
     if (!isFull) {
@@ -1376,6 +1413,7 @@ class ChatController extends State<ChatPageWithRoom>
     timeline = null;
     discussionTimeline?.cancelSubscriptions();
     discussionTimeline = null;
+    _humanInputSubscription?.cancel();
     // Парно к addObserver в initState: без этого каждый закрытый чат оставался
     // lifecycle-слушателем и на каждом `resumed` звал setReadMarker (спасал
     // только mounted-гард).
@@ -1525,6 +1563,7 @@ class ChatController extends State<ChatPageWithRoom>
   Future<void> send() async {
     if (_blockedByUpdate()) return;
     if (sendController.text.trim().isEmpty) return;
+    HumanInputTracker.mark(roomId);
     _storeInputTimeoutTimer?.cancel();
     final prefs = Matrix.of(context).store;
     prefs.remove('draft_$roomId');
@@ -1686,6 +1725,7 @@ class ChatController extends State<ChatPageWithRoom>
     if (_blockedByUpdate()) return;
     final files = await selectFiles(context, allowMultiple: true, type: type);
     if (files.isEmpty) return;
+    HumanInputTracker.mark(roomId);
     await showAdaptiveDialog(
       context: context,
       builder: (c) => SendFileDialog(
@@ -1899,6 +1939,7 @@ class ChatController extends State<ChatPageWithRoom>
     String? fileName,
   ) async {
     if (_blockedByUpdate()) return;
+    HumanInputTracker.mark(roomId);
     final scaffoldMessenger = ScaffoldMessenger.of(context);
     final audioFile = XFile(path);
 
@@ -2298,6 +2339,18 @@ class ChatController extends State<ChatPageWithRoom>
 
   static const int _maxScrollToEventRetries = 2;
 
+  /// eventId строки ленты, в которой показано событие: скрытый член альбома
+  /// своей строки не имеет — его рисует anchor. Ленты нет (перезагрузка
+  /// упала) — сам [eventId].
+  String _rowIdOf(String eventId) {
+    final events = timeline?.events;
+    if (events == null) return eventId;
+    return galleryAnchorMap(
+          events.filterByVisibleInGui(threadId: activeThreadId),
+        )[eventId] ??
+        eventId;
+  }
+
   Future<void> scrollToEventId(
     String eventId, {
     bool highlightEvent = true,
@@ -2323,12 +2376,11 @@ class ChatController extends State<ChatPageWithRoom>
 
     final eventIndex = foundEvent == null
         ? -1
-        : timeline!.events
-              .filterByVisibleInGui(
-                exceptionEventId: eventId,
-                threadId: activeThreadId,
-              )
-              .indexOf(foundEvent);
+        : scrollTargetIndex(
+            timeline!.events,
+            eventId,
+            threadId: activeThreadId,
+          );
 
     if (eventIndex == -1) {
       if (retryDepth >= _maxScrollToEventRetries) {
@@ -2365,11 +2417,11 @@ class ChatController extends State<ChatPageWithRoom>
     }
     if (highlightEvent) {
       setState(() {
-        scrollToEventIdMarker = eventId;
+        scrollToEventIdMarker = _rowIdOf(eventId);
       });
     }
     await scrollController.scrollToIndex(
-      eventIndex + 1,
+      eventIndex,
       duration: LizaThemes.animationDuration,
       preferPosition: AutoScrollPosition.middle,
     );
@@ -2810,6 +2862,7 @@ class ChatController extends State<ChatPageWithRoom>
     if (_blockedByUpdate()) return;
     final timeline = this.timeline;
     if (timeline == null) return;
+    HumanInputTracker.mark(roomId);
     final existing = event
         .aggregatedEvents(timeline, RelationshipTypes.reaction)
         .firstWhereOrNull(

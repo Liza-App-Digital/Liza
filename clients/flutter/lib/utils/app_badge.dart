@@ -174,7 +174,9 @@ abstract final class AppBadge {
       if (raw is Map) {
         Logs().i('[Badge] os settings: ${describeNotificationSettings(raw)}');
         final authorization = raw['authorization'];
-        return authorization is int ? authorization : null;
+        final status = authorization is int ? authorization : null;
+        await NotificationAuthTracker.observe(status);
+        return status;
       }
     } on PlatformException catch (e) {
       Logs().i('[Badge] os settings недоступны: ${e.code}');

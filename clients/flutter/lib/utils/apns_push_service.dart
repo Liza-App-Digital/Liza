@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/utils/push_journal.dart';
@@ -117,8 +118,13 @@ class ApnsPushService {
       final raw = await _channel
           .invokeMethod('getNotificationSettings')
           .timeout(const Duration(seconds: 3));
-      if (raw is Map) tags.addAll(notificationSettingsTags(raw));
+      if (raw is Map) {
+        tags.addAll(notificationSettingsTags(raw));
+        final auth = raw['authorization'];
+        await NotificationAuthTracker.observe(auth is int ? auth : null);
+      }
     } catch (_) {}
+    tags.addAll(await NotificationAuthTracker.reportTags());
     try {
       final raw = await _channel
           .invokeMethod('getAppCopies')
@@ -147,6 +153,7 @@ class ApnsPushService {
     put('liza.badge_setting', 'badge', setting);
     put('liza.sound_setting', 'sound', setting);
     put('liza.nc_setting', 'notificationCenter', setting);
+    put('liza.lock_screen', 'lockScreen', setting);
     return out;
   }
 
@@ -166,14 +173,55 @@ class ApnsPushService {
     return out;
   }
 
-  /// Request notification permission from the user.
-  Future<bool> requestPermission() async {
+  /// Запрос разрешения на уведомления. Ответ системы (статус до/после,
+  /// ошибка, активность приложения, длительность) уходит в журнал и теги
+  /// push-report — поведение вызывающих не меняется, они получают `granted`.
+  Future<bool> requestPermission({
+    AuthRequestSource source = AuthRequestSource.setupPusher,
+  }) async {
+    final started = DateTime.now();
     try {
-      final result = await _channel.invokeMethod<bool>('requestPermission');
-      return result ?? false;
+      final raw = await _channel.invokeMethod<Object?>('requestPermission');
+      final result = AuthRequestResult.parse(
+        raw,
+        elapsedMs: DateTime.now().difference(started).inMilliseconds,
+      );
+      Logs().i(
+        '[APNs] requestPermission source=${source.name} '
+        'outcome=${result.outcome.name} before=${result.before} '
+        'after=${result.after} err=${result.errorTag} active=${result.active} '
+        'ms=${result.elapsedMs}',
+      );
+      unawaited(
+        NotificationAuthTracker.noteRequest(
+          result,
+          source: source,
+          state: WidgetsBinding.instance.lifecycleState,
+        ),
+      );
+      return result.granted;
     } catch (e) {
       Logs().w('[APNs] requestPermission failed', e);
       return false;
+    }
+  }
+
+  /// Текущий статус разрешения (`UNAuthorizationStatus`) — с записью смены в
+  /// журнал. `null`, если узнать не удалось (нет плагина, таймаут).
+  Future<int?> authorizationStatus({
+    Duration timeout = const Duration(seconds: 3),
+    bool? hasSession,
+  }) async {
+    try {
+      final raw = await _channel
+          .invokeMethod('getNotificationSettings')
+          .timeout(timeout);
+      final auth = raw is Map ? raw['authorization'] : null;
+      if (auth is! int) return null;
+      await NotificationAuthTracker.observe(auth, hasSession: hasSession);
+      return auth;
+    } catch (_) {
+      return null;
     }
   }
 

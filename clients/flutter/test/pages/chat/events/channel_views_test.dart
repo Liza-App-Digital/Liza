@@ -72,8 +72,11 @@ void main() {
     });
 
     test('счётчик стоит под гейтом канала, аватарки — ветка обычного чата', () {
-      // Пробелы схлопываем: перенос строк ставит dart format, а не автор.
-      final compact = source.replaceAll(RegExp(r'\s+'), ' ');
+      // Пробелы схлопываем: перенос строк ставит dart format, а не автор
+      // (при глубоком отступе он рвёт и `seenByUsers .length`).
+      final compact = source
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .replaceAll(' .', '.');
       // Раньше это была одна тернарная развилка снаружи пузыря. Низ поста
       // канала переехал ВНУТРЬ пузыря (ChannelPostStatsRow), поэтому ветки
       // разъехались по разным поддеревьям — инвариант тот же, форма другая:
@@ -84,16 +87,25 @@ void main() {
         isTrue,
         reason: 'счётчик просмотров по-прежнему считает границы прочтения',
       );
+      // С заявки №60 кластер стоит СБОКУ от пузыря (BubbleReceiptsSide), а
+      // гейт канала / Liza News вынесен в showSeenSlot — слота там нет вовсе.
       expect(
         compact.contains(
-          'if (seenByUsers.isNotEmpty && !isChannelPost(event) && '
-          '!event.room.hideReadReceipts)',
+          'final showSeenSlot = !isChannelPost(event) && '
+          '!event.room.hideReadReceipts;',
         ),
         isTrue,
         reason: 'в обычных чатах обязан остаться кластер SeenByAvatars',
       );
       expect(
-        compact.contains('SeenByAvatars(receipts: seenByUsers)'),
+        compact.contains('reserve: showSeenSlot,'),
+        isTrue,
+        reason: 'боковой слот аватарок подчиняется гейту канала',
+      );
+      expect(
+        compact.contains(
+          'SeenByAvatars( receipts: seenByUsers, maxWidth: maxWidth, )',
+        ),
         isTrue,
         reason: 'кластер аватарок никуда не делся из обычных чатов',
       );
@@ -211,7 +223,11 @@ void main() {
       // Счётчик теперь инстанцируется внутри ChannelPostStatsRow, та — внутри
       // ChannelPostFooter, а он строится только под гейтом канала. Проверяем
       // всю цепочку: иначе счётчик протёк бы в обычные чаты через любое звено.
-      final compact = source.replaceAll(RegExp(r'\s+'), ' ');
+      // dart format при глубоком отступе рвёт вызов в `isChannelPost( event, )`
+      // — схлопываем и это, чтобы проверять смысл, а не перенос строк.
+      final compact = source
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .replaceAll('isChannelPost( event, )', 'isChannelPost(event)');
       // `&& !event.redacted` добавлен вместе с сокрытием удалённых постов
       // канала (ledger:RL-channel-redacted-post-hidden) — гейт УЖЕСТОЧЁН,
       // а не ослаблен: у надгробия не может быть ни счётчика, ни реакций.

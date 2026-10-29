@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart' show AppLifecycleState;
 
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Стадия пути уведомления, которую журнал фиксирует.
 ///
@@ -43,6 +44,15 @@ enum PushStage {
   /// Между двумя /sync прошло больше [PushJournal.syncGapThreshold] —
   /// процесс стоял (сон, заморозка). `value` — секунды.
   syncGap,
+
+  /// Запрос разрешения на уведомления: причина — исход (`authGranted` /
+  /// `authRefused` / `authError`), `value` — статус ДО запроса
+  /// (`UNAuthorizationStatus`), `state` — lifecycle в момент запроса.
+  authRequest,
+
+  /// Смена статуса разрешения: причина — новый статус, `value` — прежний
+  /// (`-1` — прежний неизвестен, первое наблюдение на установке).
+  authStatus,
 }
 
 /// Закрытый перечень причин. Свободного текста журнал не принимает
@@ -82,6 +92,16 @@ enum PushReason {
   // Сон.
   system,
   screens,
+  // Исход запроса разрешения.
+  authGranted,
+  authRefused,
+  authError,
+  // Статус разрешения (`UNAuthorizationStatus` 0…4).
+  authNotDetermined,
+  authDenied,
+  authAuthorized,
+  authProvisional,
+  authEphemeral,
 }
 
 /// Одна запись журнала. Поля — только числа, enum и hash8.
@@ -402,13 +422,17 @@ abstract final class PushJournalStats {
         case PushStage.localSkip:
         case PushStage.config:
         case PushStage.native:
+        case PushStage.authRequest:
+        case PushStage.authStatus:
           break;
       }
       if (e.reason != null &&
           (e.stage == PushStage.gate ||
               e.stage == PushStage.localSkip ||
               e.stage == PushStage.native ||
-              e.stage == PushStage.apns)) {
+              e.stage == PushStage.apns ||
+              e.stage == PushStage.authRequest ||
+              e.stage == PushStage.authStatus)) {
         final key = '${_snake(e.stage.name)}.${_snake(e.reason!.name)}';
         out[key] = (out[key] ?? 0) + 1;
       }
@@ -447,4 +471,259 @@ String pushReportPlatform() {
   if (Platform.isAndroid) return 'android';
   if (Platform.isWindows) return 'windows';
   return 'linux';
+}
+
+/// Наблюдатель статуса разрешения на уведомления (iOS/macOS) — единственный
+/// писатель стадий [PushStage.authStatus] и [PushStage.authRequest].
+///
+/// Зачем (спека `2026-10-28-push-auth-request-telemetry-design.md`): на 8
+/// Мак-установках система отвечала Лизе `denied`, а причину установить было
+/// нечем — ответ системы на запрос выбрасывался, момент смены статуса не
+/// писался. Теперь по журналу и тегам push-report различимо: запрет был ДО
+/// запроса, система отказала НА запросе (мгновенно, без человека) или статус
+/// сменился ПОЗЖЕ (и в каком окне).
+///
+/// Все вызовы идут через одну цепочку: resume, отчёт, часовой таймер и запрос
+/// читают статус параллельно, и без неё одна смена записалась бы дважды.
+abstract final class NotificationAuthTracker {
+  static const String lastKey = 'push.auth_last';
+  static const String lastSeenKey = 'push.auth_last_seen_ms';
+  static const String firstKey = 'push.auth_first';
+  static const String firstSessionKey = 'push.auth_first_session';
+  static const String changeKey = 'push.auth_change';
+  static const String requestKey = 'push.auth_last_request';
+  static const String promptKey = 'push.auth_prompt';
+
+  static Future<void> _chain = Future.value();
+  static String? _lastRequestSignature;
+
+  /// Имя статуса для тегов — тот же словарь, что `liza.auth`.
+  static String statusName(int status) => switch (status) {
+    0 => 'not_determined',
+    1 => 'denied',
+    2 => 'authorized',
+    3 => 'provisional',
+    4 => 'ephemeral',
+    _ => 'unknown_$status',
+  };
+
+  static PushReason? statusReason(int status) => switch (status) {
+    0 => PushReason.authNotDetermined,
+    1 => PushReason.authDenied,
+    2 => PushReason.authAuthorized,
+    3 => PushReason.authProvisional,
+    4 => PushReason.authEphemeral,
+    _ => null,
+  };
+
+  /// Наблюдённый статус. Смена относительно прошлого (в том числе через
+  /// перезапуск — прошлый хранится в `SharedPreferences`) → одна запись
+  /// [PushStage.authStatus] и тег окна смены: время смены = время обнаружения,
+  /// а `gap` говорит, сколько статус не проверялся до неё.
+  ///
+  /// [hasSession] передаёт только самое раннее чтение на старте: первый статус
+  /// без входа в аккаунт — это свежая установка, с входом — обновление сборки
+  /// (там «первый увиденный» статус ничего не говорит о моменте запрета).
+  static Future<void> observe(
+    int? status, {
+    bool? hasSession,
+    PushJournal? journal,
+    DateTime? now,
+  }) {
+    if (status == null) return _chain;
+    return _chain = _chain.then((_) async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final nowMs = (now ?? DateTime.now()).millisecondsSinceEpoch;
+        final last = prefs.getInt(lastKey);
+        final lastSeen = prefs.getInt(lastSeenKey);
+        if (last != status) {
+          (journal ?? PushJournal.instance).record(
+            PushStage.authStatus,
+            reason: statusReason(status),
+            value: last ?? -1,
+            now: DateTime.fromMillisecondsSinceEpoch(nowMs),
+          );
+          await prefs.setInt(lastKey, status);
+          if (last != null) {
+            final gapS = lastSeen == null ? -1 : (nowMs - lastSeen) ~/ 1000;
+            await prefs.setString(
+              changeKey,
+              jsonEncode({
+                'liza.auth_change': '${statusName(last)}>${statusName(status)}',
+                'liza.auth_change_gap_s': '$gapS',
+              }),
+            );
+          }
+        }
+        await prefs.setInt(lastSeenKey, nowMs);
+        if (!prefs.containsKey(firstKey)) {
+          await prefs.setInt(firstKey, status);
+          await prefs.setString(
+            firstSessionKey,
+            hasSession == null
+                ? 'unknown'
+                : (hasSession ? 'logged_in' : 'logged_out'),
+          );
+        }
+      } catch (_) {
+        // Наблюдатель: сбой не трогает путь уведомления.
+      }
+    });
+  }
+
+  /// Ответ системы на запрос разрешения. Запись в журнал — только когда
+  /// ответ отличается от прошлого в этом процессе: запрос повторяется на
+  /// каждом resume и для каждого аккаунта, одинаковые записи вытеснили бы
+  /// кольцо. Отдельно и навсегда запоминается первый НАСТОЯЩИЙ запрос (статус
+  /// до него — «не спрашивали»): только в нём система показывала диалог.
+  static Future<void> noteRequest(
+    AuthRequestResult r, {
+    required AuthRequestSource source,
+    AppLifecycleState? state,
+    PushJournal? journal,
+  }) {
+    final signature = '${r.outcome.name}|${r.before}|${r.errorTag}';
+    if (signature != _lastRequestSignature) {
+      _lastRequestSignature = signature;
+      (journal ?? PushJournal.instance).record(
+        PushStage.authRequest,
+        reason: r.outcome,
+        state: state,
+        value: r.before ?? -1,
+      );
+    }
+    final tags = <String, String>{
+      'liza.auth_req': r.outcome.name,
+      'liza.auth_req_source': source.name,
+      'liza.auth_req_before': r.before == null
+          ? 'unknown'
+          : statusName(r.before!),
+      if (r.after != null) 'liza.auth_req_after': statusName(r.after!),
+      if (r.errorTag != null) 'liza.auth_req_err': r.errorTag!,
+      if (r.active != null) 'liza.auth_req_active': '${r.active}',
+      if (r.hasWindow != null) 'liza.auth_req_window': '${r.hasWindow}',
+      if (r.elapsedMs != null) 'liza.auth_req_ms': '${r.elapsedMs}',
+    };
+    unawaited(_saveRequest(tags, prompt: r.before == 0));
+    return observe(r.after, journal: journal);
+  }
+
+  static Future<void> _saveRequest(
+    Map<String, String> tags, {
+    required bool prompt,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(requestKey, jsonEncode(tags));
+      if (prompt && !prefs.containsKey(promptKey)) {
+        await prefs.setString(
+          promptKey,
+          jsonEncode({
+            'liza.auth_prompt': tags['liza.auth_req']!,
+            'liza.auth_prompt_source': tags['liza.auth_req_source']!,
+            if (tags['liza.auth_req_ms'] != null)
+              'liza.auth_prompt_ms': tags['liza.auth_req_ms']!,
+          }),
+        );
+      }
+    } catch (_) {}
+  }
+
+  /// Теги push-report: первый статус установки, первый настоящий запрос,
+  /// последний запрос и последняя смена статуса.
+  static Future<Map<String, String>> reportTags() async {
+    final out = <String, String>{};
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final first = prefs.getInt(firstKey);
+      if (first != null) {
+        out['liza.auth_first'] = statusName(first);
+        out['liza.auth_first_session'] =
+            prefs.getString(firstSessionKey) ?? 'unknown';
+      }
+      for (final key in const [promptKey, requestKey, changeKey]) {
+        final raw = prefs.getString(key);
+        if (raw == null) continue;
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          decoded.forEach((k, v) {
+            if (k is String && v is String) out[k] = v;
+          });
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  @visibleForTesting
+  static void resetForTest() {
+    _chain = Future.value();
+    _lastRequestSignature = null;
+  }
+}
+
+/// Кто запросил разрешение — закрытый перечень (уходит в тег).
+enum AuthRequestSource { fln, setupPusher, setupFirebase }
+
+/// Ответ натива `requestPermission`. Старый натив возвращал `bool`, новый —
+/// словарь (статус до/после, ошибка, активность приложения).
+@immutable
+class AuthRequestResult {
+  const AuthRequestResult({
+    required this.granted,
+    this.before,
+    this.after,
+    this.errorDomain,
+    this.errorCode,
+    this.active,
+    this.hasWindow,
+    this.elapsedMs,
+  });
+
+  final bool granted;
+  final int? before;
+  final int? after;
+  final String? errorDomain;
+  final int? errorCode;
+  final bool? active;
+  final bool? hasWindow;
+
+  /// Сколько шёл запрос — мгновенный отказ (система) против ответа человека.
+  final int? elapsedMs;
+
+  static final _domainRe = RegExp(r'^[A-Za-z.]{1,24}$');
+
+  static AuthRequestResult parse(Object? raw, {int? elapsedMs}) {
+    if (raw is Map) {
+      int? i(Object? v) => v is int ? v : null;
+      bool? b(Object? v) => v is bool ? v : null;
+      final domain = raw['errorDomain'];
+      return AuthRequestResult(
+        granted: raw['granted'] == true,
+        before: i(raw['before']),
+        after: i(raw['after']),
+        // Домен ошибки — системная константа; всё, что на неё не похоже, —
+        // `other` (в тег не должен попасть произвольный текст).
+        errorDomain: domain is String && domain.isNotEmpty
+            ? (_domainRe.hasMatch(domain) ? domain : 'other')
+            : null,
+        errorCode: i(raw['errorCode']),
+        active: b(raw['active']),
+        hasWindow: b(raw['hasWindow']),
+        elapsedMs: elapsedMs,
+      );
+    }
+    return AuthRequestResult(granted: raw == true, elapsedMs: elapsedMs);
+  }
+
+  PushReason get outcome => errorDomain != null
+      ? PushReason.authError
+      : granted
+      ? PushReason.authGranted
+      : PushReason.authRefused;
+
+  /// `домен:код` ошибки — без текста (в нём может быть путь пользователя).
+  String? get errorTag =>
+      errorDomain == null ? null : '$errorDomain:${errorCode ?? 0}';
 }

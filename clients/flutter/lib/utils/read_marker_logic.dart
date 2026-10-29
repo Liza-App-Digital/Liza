@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'dart:ui';
+
+import 'package:flutter/foundation.dart';
 
 import 'package:matrix/matrix.dart';
 
@@ -122,21 +125,55 @@ OpenChatReadMarkerPlan openChatReadMarkerPlan({
 /// [rect] — прямоугольник строки В СИСТЕМЕ КООРДИНАТ viewport'а.
 typedef VisibleTag = ({int index, String eventId, Rect rect});
 
-/// Новейшее событие, реально попавшее на экран (Telegram-модель «прочитано =
-/// увидено»). Смонтированность строки ничего не значит: `ListView` держит
-/// `cacheExtent` за краем экрана — считаем только пересечение прямоугольника
-/// строки с viewport'ом строго положительной площади. Порядок — по индексу
-/// тега (не по позиции в `tagMap`: индексы там сдвигаются между вставкой
-/// события и rebuild'ом, поэтому eventId берётся из ключа тега, а не из
-/// `events[index]`).
+/// Новейшее событие, реально увиденное (Telegram-модель «прочитано =
+/// увидено»): строка считается увиденной, когда её НИЖНИЙ край внутри
+/// viewport'а — сообщение дочитано до конца. Прежнее «пересечение > 0»
+/// засчитывало 1 px верхушки: после открытия на сепараторе первое непрочитанное
+/// выглядывало снизу и сразу уходило в квитанцию, и при следующем входе отсечка
+/// вставала ПОСЛЕ него (Саша Н., 2026-10-28). Строка выше viewport'а
+/// засчитывается, только когда до её низа докрутили. Смонтированность ничего не
+/// значит: `ListView` держит `cacheExtent` за краем экрана. Порядок — по
+/// индексу тега (не по позиции в `tagMap`: индексы там сдвигаются между
+/// вставкой события и rebuild'ом, поэтому eventId берётся из ключа тега, а не
+/// из `events[index]`).
 String? newestVisibleEventId(Iterable<VisibleTag> tags, Size viewport) {
   final sorted = tags.toList()..sort((a, b) => a.index.compareTo(b.index));
-  final viewportRect = Offset.zero & viewport;
   for (final tag in sorted) {
-    final overlap = tag.rect.intersect(viewportRect);
-    if (overlap.width > 0 && overlap.height > 0) return tag.eventId;
+    if (tag.rect.height <= 0) continue;
+    final bottom = tag.rect.bottom;
+    if (bottom > 0 && bottom <= viewport.height + _subpixelTolerance) {
+      return tag.eventId;
+    }
   }
   return null;
+}
+
+const double _subpixelTolerance = 0.5;
+
+/// Доля высоты viewport'а от верха, на которую при открытии чата встаёт
+/// отсечка «Непрочитанное» (низ строки `m.fully_read`): как в Telegram — у
+/// верха, сверху виден хвост прочитанного, ниже — начало непрочитанного.
+const double unreadDividerViewportFraction = 0.22;
+
+/// Новое значение `pixels`, при котором низ строки с отсечкой окажется на
+/// [fraction] высоты viewport'а. [dividerBottom] — низ строки в координатах
+/// viewport'а при текущих [pixels]. Лента `reverse`: рост `pixels` сдвигает
+/// контент на экране ВНИЗ, поэтому сдвиг = цель − текущее положение. Clamp по
+/// границам прокрутки: у края загруженной истории отсечка встанет ниже/выше
+/// цели, но останется на экране.
+double dividerScrollPixels({
+  required double pixels,
+  required double dividerBottom,
+  required double viewportHeight,
+  required double minScrollExtent,
+  required double maxScrollExtent,
+  double fraction = unreadDividerViewportFraction,
+}) {
+  final target = viewportHeight * fraction;
+  return (pixels + target - dividerBottom).clamp(
+    minScrollExtent,
+    maxScrollExtent,
+  );
 }
 
 /// Своё действие в чате (сообщение из композера, кнопка карточки бота,
@@ -299,16 +336,91 @@ enum ReadMarkerGate {
   blocked,
 }
 
+///
+/// [humanInput] — человек только что сам действовал в этом чате (отправил,
+/// поставил реакцию, нажал кнопку бота — [HumanInputTracker]). Это
+/// доказательство внимания сильнее lifecycle: из десктопного окна `inactive`
+/// полная квитанция уходит сразу, а не ждёт `resumed` (заявка №60: на Windows
+/// окно, в котором человек печатал и отвечал, 6 минут не слало ни одной
+/// квитанции). `none` (свёрнуто, скрыто, экран заблокирован) не повышается
+/// никогда — иначе квитанция без человека заглушила бы пуш на телефоне
+/// (read-grace).
 ReadMarkerGate readMarkerGate({
   required ReadableForeground readable,
   required bool isFull,
+  bool humanInput = false,
 }) {
   switch (readable) {
     case ReadableForeground.none:
       return ReadMarkerGate.blocked;
     case ReadableForeground.partialOnly:
+      if (humanInput) return ReadMarkerGate.send;
       return isFull ? ReadMarkerGate.deferFull : ReadMarkerGate.send;
     case ReadableForeground.full:
       return ReadMarkerGate.send;
+  }
+}
+
+/// Последнее ДЕЙСТВИЕ ЧЕЛОВЕКА в чате: отправка из композера, реакция, кнопка
+/// бота. Взводят только UI-точки — НЕ local-echo: эхо порождают и автоповтор
+/// неотправленного (FailedSendRetryService), и XL-ключ при открытии чата, и
+/// синк с другого устройства, а квитанция «прочитано» без человека перед
+/// экраном глушит пуш на телефоне (read-grace). Глобально по roomId, а не в
+/// ChatController: реакцию ставит и чип под сообщением, у которого нет
+/// доступа к контроллеру.
+abstract final class HumanInputTracker {
+  /// Сколько действие считается свежим для гейта квитанции.
+  static const Duration window = Duration(seconds: 5);
+
+  static final Map<String, DateTime> _last = {};
+  static final StreamController<String> _inputs =
+      StreamController<String>.broadcast();
+
+  /// roomId каждого нового действия — ChatController шлёт по нему квитанцию
+  /// (реакция сама прокрутки и квитанции не вызывает).
+  static Stream<String> get onInput => _inputs.stream;
+
+  static void mark(String roomId, {DateTime? now}) {
+    _last[roomId] = now ?? DateTime.now();
+    _inputs.add(roomId);
+  }
+
+  static bool isRecent(
+    String roomId, {
+    Duration within = window,
+    DateTime? now,
+  }) {
+    final last = _last[roomId];
+    if (last == null) return false;
+    return (now ?? DateTime.now()).difference(last) <= within;
+  }
+
+  @visibleForTesting
+  static void reset() => _last.clear();
+}
+
+/// Решает, писать ли в лог очередное подавление квитанции после действия
+/// человека (заявка №60, фальсификатор гипотезы про lifecycle Windows): не
+/// чаще раза на чат за [interval], но каждую СМЕНУ причины — сразу.
+class SuppressedReadMarkerLogThrottle {
+  SuppressedReadMarkerLogThrottle({
+    this.interval = const Duration(seconds: 60),
+  });
+
+  final Duration interval;
+  String? _lastReason;
+  DateTime? _lastAt;
+
+  bool shouldLog(String reason, {DateTime? now}) {
+    final t = now ?? DateTime.now();
+    final lastAt = _lastAt;
+    if (reason == _lastReason &&
+        lastAt != null &&
+        t.difference(lastAt) < interval) {
+      return false;
+    }
+    _lastReason = reason;
+    _lastAt = t;
+    return true;
   }
 }

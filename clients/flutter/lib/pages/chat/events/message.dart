@@ -31,6 +31,7 @@ import 'message_reactions.dart';
 import 'message_time.dart';
 import 'forwarded_content.dart';
 import 'reply_content.dart';
+import 'bubble_receipts_side.dart';
 import 'seen_by_receipts_sheet.dart';
 import 'state_message.dart';
 
@@ -581,6 +582,10 @@ class Message extends StatelessWidget {
     final resetAnimateIn = this.resetAnimateIn;
     var animateIn = this.animateIn;
 
+    // Каналы (счётчик просмотров внутри пузыря) и Liza News
+    // (hide_read_receipts) — без аватарок прочтения и без бокового слота.
+    final showSeenSlot = !isChannelPost(event) && !event.room.hideReadReceipts;
+
     final showReceiptsRow = event.hasAggregatedEvents(
       timeline,
       RelationshipTypes.reaction,
@@ -894,210 +899,234 @@ class Message extends StatelessWidget {
                                       // RepaintBoundary вокруг ВИДИМОГО пузыря
                                       // (за паддингом) — снимок и якорь меню
                                       // совпадают с левой границей сообщения.
-                                      child: RepaintBoundary(
-                                        key: bubbleKey,
-                                        child: AnimatedOpacity(
-                                          opacity: animateIn
-                                              ? 0
-                                              : event.messageType ==
-                                                        MessageTypes
-                                                            .BadEncrypted ||
-                                                    event.status.isSending
-                                              ? 0.5
-                                              : 1,
-                                          duration:
-                                              LizaThemes.animationDuration,
-                                          curve: LizaThemes.animationCurve,
-                                          child: Container(
-                                            decoration: BoxDecoration(
-                                              color: noBubble
-                                                  ? Colors.transparent
-                                                  : color,
-                                              borderRadius: borderRadius,
-                                            ),
-                                            clipBehavior: Clip.antiAlias,
-                                            child: BubbleBackground(
-                                              colors: colors,
-                                              ignore:
-                                                  noBubble ||
-                                                  !ownMessage ||
-                                                  MediaQuery.highContrastOf(
-                                                    context,
-                                                  ),
-                                              scrollController:
-                                                  scrollController,
-                                              child: Container(
-                                                decoration: BoxDecoration(
-                                                  borderRadius:
-                                                      BorderRadius.circular(
-                                                        AppConfig.borderRadius,
-                                                      ),
-                                                ),
-                                                constraints:
-                                                    const BoxConstraints(
-                                                      maxWidth:
-                                                          LizaThemes
-                                                              .columnWidth *
-                                                          1.5,
+                                      // Аватарки прочтения — сбоку от пузыря,
+                                      // вне bubbleKey (снимок/якорь меню —
+                                      // только сам пузырь), см.
+                                      // BubbleReceiptsSide.
+                                      child: BubbleReceiptsSide(
+                                        ownMessage: ownMessage,
+                                        reserve: showSeenSlot,
+                                        cluster:
+                                            seenByUsers.isNotEmpty &&
+                                                mediaCaption == null
+                                            ? (maxWidth) => SeenByAvatars(
+                                                receipts: seenByUsers,
+                                                maxWidth: maxWidth,
+                                              )
+                                            : null,
+                                        child: RepaintBoundary(
+                                          key: bubbleKey,
+                                          child: AnimatedOpacity(
+                                            opacity: animateIn
+                                                ? 0
+                                                : event.messageType ==
+                                                          MessageTypes
+                                                              .BadEncrypted ||
+                                                      event.status.isSending
+                                                ? 0.5
+                                                : 1,
+                                            duration:
+                                                LizaThemes.animationDuration,
+                                            curve: LizaThemes.animationCurve,
+                                            child: Container(
+                                              decoration: BoxDecoration(
+                                                color: noBubble
+                                                    ? Colors.transparent
+                                                    : color,
+                                                borderRadius: borderRadius,
+                                              ),
+                                              clipBehavior: Clip.antiAlias,
+                                              child: BubbleBackground(
+                                                colors: colors,
+                                                ignore:
+                                                    noBubble ||
+                                                    !ownMessage ||
+                                                    MediaQuery.highContrastOf(
+                                                      context,
                                                     ),
-                                                child: Column(
-                                                  mainAxisSize: .min,
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  children: <Widget>[
-                                                    // Плашка «Переслано [от X]»
-                                                    // (LABA-1991) — ПЕРВЫМ ребёнком
-                                                    // общего Column, над ЛЮБОЙ
-                                                    // веткой контента (текст/медиа/
-                                                    // аудио/файл/канал), поэтому одна
-                                                    // точка вставки покрывает все
-                                                    // msgtype. Подавляем в relay-
-                                                    // комнате «Входящие»: там автора
-                                                    // уже подменяет com.liza.relay,
-                                                    // две атрибуции путали бы.
-                                                    if (_isForwarded(event) &&
-                                                        _relayName(event) ==
-                                                            null)
-                                                      Padding(
-                                                        padding:
-                                                            const EdgeInsets.only(
-                                                              left: 16,
-                                                              right: 16,
-                                                              top: 8,
-                                                            ),
-                                                        child: ForwardedContent(
-                                                          name: _forwardedName(
-                                                            event,
+                                                scrollController:
+                                                    scrollController,
+                                                child: Container(
+                                                  decoration: BoxDecoration(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          AppConfig
+                                                              .borderRadius,
+                                                        ),
+                                                  ),
+                                                  constraints:
+                                                      const BoxConstraints(
+                                                        maxWidth:
+                                                            LizaThemes
+                                                                .columnWidth *
+                                                            1.5,
+                                                      ),
+                                                  child: Column(
+                                                    mainAxisSize: .min,
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: <Widget>[
+                                                      // Плашка «Переслано [от X]»
+                                                      // (LABA-1991) — ПЕРВЫМ ребёнком
+                                                      // общего Column, над ЛЮБОЙ
+                                                      // веткой контента (текст/медиа/
+                                                      // аудио/файл/канал), поэтому одна
+                                                      // точка вставки покрывает все
+                                                      // msgtype. Подавляем в relay-
+                                                      // комнате «Входящие»: там автора
+                                                      // уже подменяет com.liza.relay,
+                                                      // две атрибуции путали бы.
+                                                      if (_isForwarded(event) &&
+                                                          _relayName(event) ==
+                                                              null)
+                                                        Padding(
+                                                          padding:
+                                                              const EdgeInsets.only(
+                                                                left: 16,
+                                                                right: 16,
+                                                                top: 8,
+                                                              ),
+                                                          child: ForwardedContent(
+                                                            name:
+                                                                _forwardedName(
+                                                                  event,
+                                                                ),
+                                                            ownMessage:
+                                                                ownMessage,
                                                           ),
-                                                          ownMessage:
-                                                              ownMessage,
                                                         ),
-                                                      ),
-                                                    // ТЕКСТ: reply + контент +
-                                                    // единый футер (время+статус+
-                                                    // «изменено») под ОДНИМ
-                                                    // IntrinsicWidth — пузырь
-                                                    // держит ширину по максимуму
-                                                    // {reply, текст, футер}, а
-                                                    // футер (Align.centerRight)
-                                                    // прижат к правому краю ВСЕГО
-                                                    // пузыря, а не узкого текста.
-                                                    if (textCornerFooter)
-                                                      IntrinsicWidth(
-                                                        child: Column(
-                                                          mainAxisSize: .min,
-                                                          crossAxisAlignment:
-                                                              CrossAxisAlignment
-                                                                  .start,
-                                                          children: [
-                                                            if (replyWidget !=
-                                                                null)
-                                                              replyWidget,
-                                                            content,
-                                                            textCornerFooterWidget(),
-                                                          ],
+                                                      // ТЕКСТ: reply + контент +
+                                                      // единый футер (время+статус+
+                                                      // «изменено») под ОДНИМ
+                                                      // IntrinsicWidth — пузырь
+                                                      // держит ширину по максимуму
+                                                      // {reply, текст, футер}, а
+                                                      // футер (Align.centerRight)
+                                                      // прижат к правому краю ВСЕГО
+                                                      // пузыря, а не узкого текста.
+                                                      if (textCornerFooter)
+                                                        IntrinsicWidth(
+                                                          child: Column(
+                                                            mainAxisSize: .min,
+                                                            crossAxisAlignment:
+                                                                CrossAxisAlignment
+                                                                    .start,
+                                                            children: [
+                                                              if (replyWidget !=
+                                                                  null)
+                                                                replyWidget,
+                                                              content,
+                                                              textCornerFooterWidget(),
+                                                            ],
+                                                          ),
                                                         ),
-                                                      ),
-                                                    if (!textCornerFooter &&
-                                                        replyWidget != null)
-                                                      replyWidget,
-                                                    if (!textCornerFooter)
-                                                      content,
-                                                    // ТЕКСТ несёт «изменено» в
-                                                    // едином футере пузыря
-                                                    // (textCornerFooterWidget) —
-                                                    // на одной строке со временем
-                                                    // и справа. Отдельный edit-Row
-                                                    // остаётся только НЕ-тексту
-                                                    // (медиа/аудио/файл/канал).
-                                                    if (!textCornerFooter &&
-                                                        isEdited)
-                                                      Padding(
-                                                        padding:
-                                                            const EdgeInsets.only(
-                                                              bottom: 8.0,
-                                                              left: 16.0,
-                                                              right: 16.0,
-                                                            ),
-                                                        child: Row(
-                                                          mainAxisSize:
-                                                              MainAxisSize.min,
-                                                          spacing: 4.0,
-                                                          children: [
-                                                            Icon(
-                                                              Icons
-                                                                  .edit_outlined,
-                                                              color: textColor
-                                                                  .withAlpha(
-                                                                    164,
-                                                                  ),
-                                                              size: 14,
-                                                            ),
-                                                            Text(
-                                                              displayEvent
-                                                                  .originServerTs
-                                                                  .localizedTimeShort(
-                                                                    context,
-                                                                  ),
-                                                              style: TextStyle(
+                                                      if (!textCornerFooter &&
+                                                          replyWidget != null)
+                                                        replyWidget,
+                                                      if (!textCornerFooter)
+                                                        content,
+                                                      // ТЕКСТ несёт «изменено» в
+                                                      // едином футере пузыря
+                                                      // (textCornerFooterWidget) —
+                                                      // на одной строке со временем
+                                                      // и справа. Отдельный edit-Row
+                                                      // остаётся только НЕ-тексту
+                                                      // (медиа/аудио/файл/канал).
+                                                      if (!textCornerFooter &&
+                                                          isEdited)
+                                                        Padding(
+                                                          padding:
+                                                              const EdgeInsets.only(
+                                                                bottom: 8.0,
+                                                                left: 16.0,
+                                                                right: 16.0,
+                                                              ),
+                                                          child: Row(
+                                                            mainAxisSize:
+                                                                MainAxisSize
+                                                                    .min,
+                                                            spacing: 4.0,
+                                                            children: [
+                                                              Icon(
+                                                                Icons
+                                                                    .edit_outlined,
                                                                 color: textColor
                                                                     .withAlpha(
                                                                       164,
                                                                     ),
-                                                                fontSize: 11,
+                                                                size: 14,
                                                               ),
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      ),
-                                                    if (belowFooter)
-                                                      Padding(
-                                                        padding:
-                                                            const EdgeInsets.only(
-                                                              left: 16.0,
-                                                              right: 12.0,
-                                                              top: 2.0,
-                                                              bottom: 6.0,
-                                                            ),
-                                                        child: Align(
-                                                          alignment: Alignment
-                                                              .centerRight,
-                                                          child: messageFooter(
-                                                            overlay: false,
+                                                              Text(
+                                                                displayEvent
+                                                                    .originServerTs
+                                                                    .localizedTimeShort(
+                                                                      context,
+                                                                    ),
+                                                                style: TextStyle(
+                                                                  color: textColor
+                                                                      .withAlpha(
+                                                                        164,
+                                                                      ),
+                                                                  fontSize: 11,
+                                                                ),
+                                                              ),
+                                                            ],
                                                           ),
                                                         ),
-                                                      ),
-                                                    // Низ поста канала — ВНУТРИ
-                                                    // пузыря (Liza-стиль).
-                                                    // Отдельным виджетом: тут
-                                                    // уже 25 уровней вложенности,
-                                                    // и форматтер рвёт гейт по
-                                                    // словам.
-                                                    // `!event.redacted` —
-                                                    // защита в глубину: лента
-                                                    // канала уже вырезает
-                                                    // удалённые посты
-                                                    // (isRedactedChannelPost),
-                                                    // но у надгробия не должно
-                                                    // быть реакций и кнопки
-                                                    // «Прокомментировать» ни
-                                                    // при каком пути рендера.
-                                                    if (isChannelPost(event) &&
-                                                        !event.redacted)
-                                                      ChannelPostFooter(
-                                                        event: event,
-                                                        timeline: timeline,
-                                                        showReactions:
-                                                            showReceiptsRow,
-                                                        viewCount:
-                                                            seenByUsers.length,
-                                                        time: messageTime,
-                                                        discussionEvents:
-                                                            discussionEvents,
-                                                        onMembershipGained:
-                                                            onMembershipGained,
-                                                      ),
-                                                  ],
+                                                      if (belowFooter)
+                                                        Padding(
+                                                          padding:
+                                                              const EdgeInsets.only(
+                                                                left: 16.0,
+                                                                right: 12.0,
+                                                                top: 2.0,
+                                                                bottom: 6.0,
+                                                              ),
+                                                          child: Align(
+                                                            alignment: Alignment
+                                                                .centerRight,
+                                                            child:
+                                                                messageFooter(
+                                                                  overlay:
+                                                                      false,
+                                                                ),
+                                                          ),
+                                                        ),
+                                                      // Низ поста канала — ВНУТРИ
+                                                      // пузыря (Liza-стиль).
+                                                      // Отдельным виджетом: тут
+                                                      // уже 25 уровней вложенности,
+                                                      // и форматтер рвёт гейт по
+                                                      // словам.
+                                                      // `!event.redacted` —
+                                                      // защита в глубину: лента
+                                                      // канала уже вырезает
+                                                      // удалённые посты
+                                                      // (isRedactedChannelPost),
+                                                      // но у надгробия не должно
+                                                      // быть реакций и кнопки
+                                                      // «Прокомментировать» ни
+                                                      // при каком пути рендера.
+                                                      if (isChannelPost(
+                                                            event,
+                                                          ) &&
+                                                          !event.redacted)
+                                                        ChannelPostFooter(
+                                                          event: event,
+                                                          timeline: timeline,
+                                                          showReactions:
+                                                              showReceiptsRow,
+                                                          viewCount: seenByUsers
+                                                              .length,
+                                                          time: messageTime,
+                                                          discussionEvents:
+                                                              discussionEvents,
+                                                          onMembershipGained:
+                                                              onMembershipGained,
+                                                        ),
+                                                    ],
+                                                  ),
                                                 ),
                                               ),
                                             ),
@@ -1123,54 +1152,64 @@ class Message extends StatelessWidget {
                                           left: 8,
                                           top: 4,
                                         ),
-                                        child: Container(
-                                          constraints: const BoxConstraints(
-                                            maxWidth:
-                                                LizaThemes.columnWidth * 1.5,
-                                          ),
+                                        child: BubbleReceiptsSide(
+                                          ownMessage: ownMessage,
+                                          reserve: showSeenSlot,
+                                          cluster: seenByUsers.isNotEmpty
+                                              ? (maxWidth) => SeenByAvatars(
+                                                  receipts: seenByUsers,
+                                                  maxWidth: maxWidth,
+                                                )
+                                              : null,
                                           child: Container(
-                                            decoration: BoxDecoration(
-                                              color: color,
-                                              borderRadius:
-                                                  BorderRadius.circular(
-                                                    AppConfig.borderRadius,
-                                                  ),
+                                            constraints: const BoxConstraints(
+                                              maxWidth:
+                                                  LizaThemes.columnWidth * 1.5,
                                             ),
-                                            clipBehavior: Clip.antiAlias,
-                                            child: BubbleBackground(
-                                              colors: colors,
-                                              ignore:
-                                                  !ownMessage ||
-                                                  MediaQuery.highContrastOf(
-                                                    context,
-                                                  ),
-                                              scrollController:
-                                                  scrollController,
-                                              child: Padding(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 16,
-                                                      vertical: 8,
+                                            child: Container(
+                                              decoration: BoxDecoration(
+                                                color: color,
+                                                borderRadius:
+                                                    BorderRadius.circular(
+                                                      AppConfig.borderRadius,
                                                     ),
-                                                // Подпись с разметкой (XL шлёт
-                                                // <strong>/<em> в formatted_body)
-                                                // → HTML, иначе теги сырые
-                                                // (LABA-2207). Время — inline в
-                                                // конце подписи (Liza-стиль),
-                                                // а не отдельной строкой снизу
-                                                // (иначе Align раздувал пузырь —
-                                                // баг «Перемудрили. Плохо это»).
-                                                // В канале время уже стоит в
-                                                // строке статистики — в хвост
-                                                // подписи его не добавляем.
-                                                child: MediaCaption(
-                                                  event: displayEvent,
-                                                  textColor: textColor,
-                                                  linkColor: linkColor,
-                                                  trailingSpan:
-                                                      timeInChannelStatsRow
-                                                      ? null
-                                                      : inlineTimeSpan,
+                                              ),
+                                              clipBehavior: Clip.antiAlias,
+                                              child: BubbleBackground(
+                                                colors: colors,
+                                                ignore:
+                                                    !ownMessage ||
+                                                    MediaQuery.highContrastOf(
+                                                      context,
+                                                    ),
+                                                scrollController:
+                                                    scrollController,
+                                                child: Padding(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 16,
+                                                        vertical: 8,
+                                                      ),
+                                                  // Подпись с разметкой (XL шлёт
+                                                  // <strong>/<em> в formatted_body)
+                                                  // → HTML, иначе теги сырые
+                                                  // (LABA-2207). Время — inline в
+                                                  // конце подписи (Liza-стиль),
+                                                  // а не отдельной строкой снизу
+                                                  // (иначе Align раздувал пузырь —
+                                                  // баг «Перемудрили. Плохо это»).
+                                                  // В канале время уже стоит в
+                                                  // строке статистики — в хвост
+                                                  // подписи его не добавляем.
+                                                  child: MediaCaption(
+                                                    event: displayEvent,
+                                                    textColor: textColor,
+                                                    linkColor: linkColor,
+                                                    trailingSpan:
+                                                        timeInChannelStatsRow
+                                                        ? null
+                                                        : inlineTimeSpan,
+                                                  ),
                                                 ),
                                               ),
                                             ),
@@ -1202,27 +1241,6 @@ class Message extends StatelessWidget {
                           ),
                           child: MessageReactions(event, timeline),
                         ),
-                ),
-              // Аватарки «прочитал до сюда» — под КОНКРЕТНЫМ событием, на
-              // котором стоит граница чтения участника (по одной аватарке на
-              // человека, см. getReadReceiptsPerMessage). Внешний Column
-              // выравнивает кластер по краю пузыря (end для своих, start для
-              // чужих); для чужих добавляем левый отступ под avatar-gutter, как
-              // у строки реакций. Галочки done/done_all остаются на своих.
-              // В канале аватарки «прочитал» заменяются счётчиком просмотров
-              // (подписчиков могут быть тысячи) — он уехал в строку статистики
-              // внутри пузыря, поэтому здесь остаются только обычные чаты.
-              // В комнате с флагом hide_read_receipts (Liza News) аватарок нет.
-              if (seenByUsers.isNotEmpty &&
-                  !isChannelPost(event) &&
-                  !event.room.hideReadReceipts)
-                Padding(
-                  padding: EdgeInsets.only(
-                    top: 2.0,
-                    left: ownMessage ? 0 : Avatar.defaultSize + 12.0,
-                    right: ownMessage ? 4.0 : 0,
-                  ),
-                  child: SeenByAvatars(receipts: seenByUsers),
                 ),
               if (enterThread != null)
                 AnimatedSize(
@@ -1312,10 +1330,17 @@ class Message extends StatelessWidget {
 /// окно «кто и когда прочитал» (полный список, не обрезанный до 10).
 class SeenByAvatars extends StatelessWidget {
   final List<MessageReadReceipt> receipts;
-  const SeenByAvatars({required this.receipts, super.key});
 
-  static const double _size = 16;
-  static const double _step = 11; // шаг перекрытия
+  /// Сколько места сбоку от пузыря (BubbleReceiptsSide): не влезает — шаг
+  /// перекрытия сжимается, пузырь не трогаем (заявка №60).
+  final double maxWidth;
+  const SeenByAvatars({
+    required this.receipts,
+    this.maxWidth = double.infinity,
+    super.key,
+  });
+
+  static const double _size = kSeenAvatarSize;
   // До 10 аватарок выводим по тому же принципу, что и первые (overlap-стек),
   // дальше — бейдж «+N» с числом остальных прочитавших (ТЗ заказчика).
   static const int _maxShown = 10;
@@ -1323,12 +1348,19 @@ class SeenByAvatars extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final fit = fitSeenAvatars(
+      total: receipts.length,
+      maxShown: receipts.length > _maxShown ? _maxShown : receipts.length,
+      maxWidth: maxWidth,
+    );
     final shown = receipts.length > _maxShown
         ? receipts.sublist(0, _maxShown)
         : receipts;
-    final extra = receipts.length - shown.length;
-    final slots = shown.length + (extra > 0 ? 1 : 0);
-    final width = _size + (slots - 1) * _step;
+    final visible = shown.sublist(0, fit.shown);
+    final step = fit.step;
+    final extra = receipts.length - visible.length;
+    final slots = visible.length + (extra > 0 ? 1 : 0);
+    final width = _size + (slots - 1) * step;
     return GestureDetector(
       onTap: () => showReadReceiptsSheet(context, receipts),
       behavior: HitTestBehavior.opaque,
@@ -1338,19 +1370,19 @@ class SeenByAvatars extends StatelessWidget {
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            for (var i = 0; i < shown.length; i++)
+            for (var i = 0; i < visible.length; i++)
               Positioned(
-                left: i * _step,
+                left: i * step,
                 child: Avatar(
-                  mxContent: shown[i].user.avatarUrl,
-                  name: shown[i].user.calcDisplayname(),
+                  mxContent: visible[i].user.avatarUrl,
+                  name: visible[i].user.calcDisplayname(),
                   size: _size,
-                  isHexagonal: Matrix.of(context).isAiUser(shown[i].user.id),
+                  isHexagonal: Matrix.of(context).isAiUser(visible[i].user.id),
                 ),
               ),
             if (extra > 0)
               Positioned(
-                left: shown.length * _step,
+                left: visible.length * step,
                 child: SizedBox(
                   width: _size,
                   height: _size,

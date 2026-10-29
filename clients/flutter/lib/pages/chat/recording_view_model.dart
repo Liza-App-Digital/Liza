@@ -123,6 +123,7 @@ class RecordingViewModelState extends State<RecordingViewModel> {
           : getTemporaryDirectory().then((dir) => dir.path);
 
       final results = await Future.wait([codecFuture, pathFuture]);
+      if (!mounted) return;
       final voiceCodec = results[0] as VoiceCodec;
       final codec = voiceCodec.encoder;
       final tempDirPath = results[1] as String?;
@@ -134,6 +135,10 @@ class RecordingViewModelState extends State<RecordingViewModel> {
           : '';
 
       await WakelockPlus.enable();
+      if (!mounted) {
+        WakelockPlus.disable();
+        return;
+      }
 
       HapticFeedback.mediumImpact();
 
@@ -151,6 +156,10 @@ class RecordingViewModelState extends State<RecordingViewModel> {
         ),
         path: path,
       );
+      // dispose посреди старта: рекордер освободит dispose из _reset — record
+      // выполняет вызовы по очереди, он дождётся конца start. Guard не
+      // регистрируем: протухший дескриптор держал бы canPop=false во всех чатах.
+      if (!mounted) return;
       setState(() => duration = Duration.zero);
       _subscribe();
       _guard = ActiveVoiceRecording(durationOf: () => duration, cancel: cancel);
@@ -183,7 +192,17 @@ class RecordingViewModelState extends State<RecordingViewModel> {
     _recorderSubscription = Timer.periodic(const Duration(milliseconds: 100), (
       timer,
     ) async {
-      final amplitude = await _audioRecorder!.getAmplitude();
+      final recorder = _audioRecorder;
+      if (recorder == null) {
+        timer.cancel();
+        return;
+      }
+      final amplitude = await recorder.getAmplitude();
+      // Тик, начавшийся до dispose, доходит сюда уже без State.
+      if (!mounted || _audioRecorder == null) {
+        timer.cancel();
+        return;
+      }
       var value = 100 + amplitude.current * 2;
       value = value < 1 ? 1 : value;
       amplitudeTimeline.add(value);

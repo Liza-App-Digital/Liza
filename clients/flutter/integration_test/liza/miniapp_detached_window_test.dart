@@ -17,8 +17,10 @@
 // изолят второго движка стартует на паузе отладчика и не исполняется.
 //   flutter build macos --debug -t integration_test/liza/miniapp_detached_window_test.dart
 //   build/macos/Build/Products/Debug/Liza.app/Contents/MacOS/Liza
-// Успех — строка «RL-miniapp-detached-window: native OK» (дальше процесс ждёт
-// драйвер, его можно закрыть); провал — исключение теста в выводе.
+// Успех — строка «RL-miniapp-detached-window: native OK»; затем окно mini App
+// открывается снова (строка «можно закрывать Лизу») — на Windows драйвер VM
+// закрывает окно Лизы и ждёт, что процесс завершится (AC-16..19). Провал —
+// исключение теста в выводе.
 
 import 'dart:io';
 
@@ -217,5 +219,29 @@ void main([List<String> args = const []]) {
     // Без драйвера integration_test на успехе молчит и ждёт драйвер — маркер
     // для запуска собранным приложением.
     _step('RL-miniapp-detached-window: native OK');
+
+    // AC:RL-miniapp-detached-window/16 — окно снова открыто: драйвер VM
+    // (scripts/windows-vm/pilot-miniapp-window.sh) закрывает окно Лизы и
+    // проверяет, что процесс завершился вместе с ним (заявка №61: окно mini App
+    // оставалось «зомби»); AC:RL-miniapp-detached-window/17 — сторож выхода не
+    // сработал; AC:RL-miniapp-detached-window/18 — с LIZA_TEST_HANG_AFTER_LOOP
+    // процесс убил сторож.
+    manager.open(
+      appUrl: _appUrl,
+      appId: 'shop',
+      appName: 'Магазин',
+      room: room,
+    );
+    await waitForWindowLoaded('окно открыто перед закрытием Лизы');
+    _step(
+      'detached-window: ready-to-close — окно открыто, можно закрывать Лизу',
+    );
+    if (Platform.isWindows) {
+      // Окно должно дожить до WM_CLOSE от драйвера: иначе tearDown закроет его
+      // сам (closeAll) и проверка пройдёт без окна mini App.
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(minutes: 5)),
+      );
+    }
   });
 }

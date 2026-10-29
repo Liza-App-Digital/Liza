@@ -309,7 +309,7 @@ abstract class AppRoutes {
               routes: [
                 GoRoute(
                   path: ':roomid',
-                  pageBuilder: (context, state) => defaultPageBuilder(
+                  pageBuilder: (context, state) => chatPageBuilder(
                     context,
                     state,
                     ChatPage(
@@ -768,34 +768,95 @@ abstract class AppRoutes {
           child: child,
         );
 
-  /// Страница чата `/rooms/:roomid`. В column-mode — всегда один класс
-  /// страницы: go_router зовёт pageBuilder повторно, и смена `runtimeType`
-  /// пересоздала бы ChatPage. Меняется только длительность — кроссфейд из
-  /// пустой панели «Новый запрос», для остальных чатов 0, как у NoTransitionPage.
+  /// Страница чата (`/rooms/:roomid` и архив) — в обоих режимах один класс
+  /// [ChatRoutePage]. go_router зовёт pageBuilder на каждый ресайз, и смена
+  /// `runtimeType` (раньше MaterialPage ↔ CustomTransitionPage на пороге
+  /// колонок) пересоздавала ChatPage: обрывалась запись голосового, терялись
+  /// черновик и прокрутка. В column-mode — кроссфейд из пустой панели
+  /// «Новый запрос», для остальных чатов 0.
   @visibleForTesting
   static Page chatPageBuilder(
     BuildContext context,
     GoRouterState state,
     Widget child,
   ) {
-    if (!LizaThemes.isColumnMode(context)) {
-      return defaultPageBuilder(context, state, child);
-    }
-    final duration = MediaQuery.disableAnimationsOf(context)
-        ? Duration.zero
-        : NewRequestTransition.durationFor(state.pathParameters['roomid']!);
-    return CustomTransitionPage(
+    final columnMode = LizaThemes.isColumnMode(context);
+    return ChatRoutePage(
       key: state.pageKey,
       restorationId: state.pageKey.value,
-      transitionDuration: duration,
-      reverseTransitionDuration: Duration.zero,
-      // Обёртка всегда одна и та же: голый child при нуле поменял бы
-      // структуру над ChatPage на ребилде после протухания токена.
-      transitionsBuilder: (_, animation, _, child) =>
-          FadeTransition(opacity: animation, child: child),
+      columnMode: columnMode,
+      fadeDuration: !columnMode || MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : NewRequestTransition.durationFor(state.pathParameters['roomid']!),
       child: child,
     );
   }
+}
+
+/// Страница чата, класс которой не зависит от режима колонок: [Page.canUpdate]
+/// сравнивает `runtimeType`, и маршрут переживает пересечение порога, а режим
+/// маршрут читает из текущей страницы на лету. Тело страницы держит
+/// `ModalRoute._subtreeKey`, поэтому смена обёртки перехода State не сбрасывает.
+class ChatRoutePage<T> extends Page<T> {
+  final Widget child;
+  final bool columnMode;
+
+  /// Кроссфейд в column-mode; в узком режиме не используется.
+  final Duration fadeDuration;
+
+  const ChatRoutePage({
+    required this.child,
+    required this.columnMode,
+    required this.fadeDuration,
+    super.key,
+    super.restorationId,
+  });
+
+  @override
+  Route<T> createRoute(BuildContext context) => _ChatRoute<T>(this);
+}
+
+class _ChatRoute<T> extends PageRoute<T> with MaterialRouteTransitionMixin<T> {
+  _ChatRoute(ChatRoutePage<T> page) : super(settings: page);
+
+  ChatRoutePage<T> get _page => settings as ChatRoutePage<T>;
+
+  @override
+  Widget buildContent(BuildContext context) => _page.child;
+
+  @override
+  bool get maintainState => true;
+
+  @override
+  bool get fullscreenDialog => false;
+
+  // didPush/didPop миксина перечитывают длительности из этих геттеров.
+  @override
+  Duration get transitionDuration =>
+      _page.columnMode ? _page.fadeDuration : super.transitionDuration;
+
+  @override
+  Duration get reverseTransitionDuration =>
+      _page.columnMode ? Duration.zero : super.reverseTransitionDuration;
+
+  // Cupertino-переход миксина нижний маршрут берёт себе через didChangeNext:
+  // в column-mode пустая панель под кроссфейдом съезжала бы влево.
+  @override
+  DelegatedTransitionBuilder? get delegatedTransition =>
+      _page.columnMode ? null : super.delegatedTransition;
+
+  @override
+  Widget buildTransitions(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) => _page.columnMode
+      ? FadeTransition(opacity: animation, child: child)
+      : super.buildTransitions(context, animation, secondaryAnimation, child);
+
+  @override
+  String get debugLabel => '${super.debugLabel}(${_page.name})';
 }
 
 /// Обрабатывает инвайт-код: если сессия не установлена — сохраняет ссылку и

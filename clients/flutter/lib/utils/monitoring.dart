@@ -661,6 +661,23 @@ abstract final class Monitoring {
     'liza.legacy_copies',
     'liza.running_copies',
     'liza.install_location',
+    'liza.lock_screen',
+    // Разрешение на уведомления (`NotificationAuthTracker`).
+    'liza.auth_first',
+    'liza.auth_first_session',
+    'liza.auth_prompt',
+    'liza.auth_prompt_source',
+    'liza.auth_prompt_ms',
+    'liza.auth_req',
+    'liza.auth_req_source',
+    'liza.auth_req_before',
+    'liza.auth_req_after',
+    'liza.auth_req_err',
+    'liza.auth_req_active',
+    'liza.auth_req_window',
+    'liza.auth_req_ms',
+    'liza.auth_change',
+    'liza.auth_change_gap_s',
   };
 
   static const int _tagValueMax = 32;

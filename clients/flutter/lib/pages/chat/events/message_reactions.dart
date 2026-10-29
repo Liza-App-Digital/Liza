@@ -6,6 +6,7 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/utils/chat_topology.dart';
+import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/utils/update_policy.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
@@ -117,6 +118,7 @@ List<Widget> _buildChips(
                     );
                   }
                 } else {
+                  HumanInputTracker.mark(event.room.id);
                   event.room.sendReaction(event.eventId, r.key);
                 }
               },

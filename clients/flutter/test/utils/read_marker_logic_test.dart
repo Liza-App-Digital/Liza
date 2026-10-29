@@ -229,33 +229,72 @@ void main() {
     );
   });
 
-  // newestVisibleEventId — геометрия «увидено»: только строки, реально
-  // пересекающие viewport (cacheExtent за краем не в счёт), новейшая — по
-  // индексу тега (reverse-list: меньший = новее), а не по порядку в tagMap.
+  // newestVisibleEventId — геометрия «увидено»: строка дочитана, когда её
+  // НИЖНИЙ край на экране (Саша Н., 2026-10-28: 1 px верхушки первого
+  // непрочитанного уходил в квитанцию сразу после открытия, отсечка вставала
+  // после него). Новейшая — по индексу тега (reverse-list: меньший = новее),
+  // а не по порядку в tagMap.
   // ledger:RL-read-receipt-viewport-based
   group('newestVisibleEventId', () {
     const viewport = Size(400, 600);
     VisibleTag tag(int index, String id, double top, double h) =>
         (index: index, eventId: id, rect: Rect.fromLTWH(0, top, 400, h));
 
-    test(
-      'AC:RL-read-receipt-viewport-based/1 строки в cacheExtent (за краем) не '
-      'считаются: новейшее видимое — первое по индексу с пересечением > 0',
-      () {
-        final tags = [
-          // index 0..2 — новее, но лежат НИЖЕ экрана (reverse-list, cacheExtent).
-          tag(0, 'E12', 900, 80),
-          tag(1, 'E11', 800, 80),
-          tag(2, 'E10', 600, 80), // ровно на границе: пересечение 0 → не видно
-          tag(3, 'E9', 520, 80), // частично видно (520..600) → это ответ
-          tag(4, 'E8', 400, 100),
-          tag(5, 'E7', 300, 100),
-          tag(6, 'E6', -50, 100), // частично сверху
-          tag(7, 'E5', -200, 100), // выше экрана
-        ];
-        expect(newestVisibleEventId(tags, viewport), 'E9');
-      },
-    );
+    test('AC:RL-read-receipt-viewport-based/1 строки в cacheExtent не считаются; '
+        'новейшее увиденное — первое по индексу, чей низ на экране', () {
+      final tags = [
+        // index 0..2 — новее, но лежат НИЖЕ экрана (reverse-list, cacheExtent).
+        tag(0, 'E12', 900, 80),
+        tag(1, 'E11', 800, 80),
+        tag(2, 'E10', 600, 80), // верх ровно на границе — не видно
+        tag(3, 'E9', 520, 80), // видна верхушка, низ 600 = край → увидено
+        tag(4, 'E8', 400, 100),
+        tag(5, 'E7', 300, 100),
+        tag(6, 'E6', -50, 100), // частично сверху
+        tag(7, 'E5', -200, 100), // выше экрана
+      ];
+      expect(newestVisibleEventId(tags, viewport), 'E9');
+    });
+
+    test('AC:RL-read-receipt-viewport-based/18 ∀ кейс: целиком видна → она; '
+        'видна только верхушка → нет; низ виден при верхе выше экрана → она; '
+        'длиннее экрана без видимого низа → нет', () {
+      // Только верхушка первого непрочитанного (сценарий Саши) — не увидено,
+      // ответ — прочитанное над ним.
+      expect(
+        newestVisibleEventId([
+          tag(0, 'unread', 400, 900),
+          tag(1, 'read', 100, 300),
+        ], viewport),
+        'read',
+      );
+      // Целиком на экране.
+      expect(
+        newestVisibleEventId([
+          tag(0, 'unread', 400, 150),
+          tag(1, 'read', 100, 300),
+        ], viewport),
+        'unread',
+      );
+      // Верх выше экрана, низ на экране — дочитано.
+      expect(
+        newestVisibleEventId([
+          tag(0, 'below', 650, 80),
+          tag(1, 'long', -700, 1200),
+        ], viewport),
+        'long',
+      );
+      // Длиннее экрана, низ за краем — не дочитано, более старых нет.
+      expect(
+        newestVisibleEventId([tag(0, 'long', -100, 1200)], viewport),
+        isNull,
+      );
+      // Низ на границе с субпиксельной погрешностью — засчитан.
+      expect(
+        newestVisibleEventId([tag(0, 'edge', 500, 100.4)], viewport),
+        'edge',
+      );
+    });
 
     test('порядок в tagMap не важен — решает индекс тега', () {
       final tags = [
@@ -266,7 +305,7 @@ void main() {
       expect(newestVisibleEventId(tags, viewport), 'E9');
     });
 
-    test('ничего не пересекает viewport → null', () {
+    test('ничего не дочитано на экране → null', () {
       final tags = [tag(0, 'E1', 700, 50), tag(1, 'E0', -100, 50)];
       expect(newestVisibleEventId(tags, viewport), isNull);
       expect(newestVisibleEventId(const [], viewport), isNull);
@@ -275,6 +314,41 @@ void main() {
     test('строка нулевой высоты (скрытый член альбома) не «видна»', () {
       final tags = [tag(0, 'hidden', 100, 0), tag(1, 'E1', 100, 50)];
       expect(newestVisibleEventId(tags, viewport), 'E1');
+    });
+  });
+
+  // dividerScrollPixels — куда встать при открытии, чтобы отсечка (низ
+  // строки m.fully_read) оказалась у верха экрана. reverse-list: рост pixels
+  // двигает контент вниз.
+  // ledger:RL-read-receipt-viewport-based
+  group('dividerScrollPixels', () {
+    double at({
+      required double pixels,
+      required double bottom,
+      double min = 0,
+      double max = 5000,
+    }) => dividerScrollPixels(
+      pixels: pixels,
+      dividerBottom: bottom,
+      viewportHeight: 600,
+      minScrollExtent: min,
+      maxScrollExtent: max,
+    );
+
+    test('AC:RL-read-receipt-viewport-based/17 ∀ кейс: отсечка ниже цели → '
+        'контент вверх; выше цели → вниз; длинное прочитанное (отсечка за '
+        'нижним краем) → на цель; clamp у обоих краёв', () {
+      final target = 600 * unreadDividerViewportFraction;
+      // Обычный: центрированная строка, отсечка на 400 → pixels уменьшаются.
+      expect(at(pixels: 1000, bottom: 400), 1000 + target - 400);
+      // Отсечка выше цели → pixels растут.
+      expect(at(pixels: 1000, bottom: 20), 1000 + target - 20);
+      // Длинное прочитанное: отсечка на 1500 (за нижним краем).
+      expect(at(pixels: 2000, bottom: 1500), 2000 + target - 1500);
+      // Новый край: дальше низа ленты не уехать — отсечка останется ниже.
+      expect(at(pixels: 100, bottom: 500), 0);
+      // Старый край загруженной истории.
+      expect(at(pixels: 4990, bottom: 10, max: 5000), 5000);
     });
   });
 

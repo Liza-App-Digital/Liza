@@ -40,7 +40,9 @@ void main() {
     'AC:RL-read-receipt-viewport-based/14 гейт позиционирования — первая '
     'проверка _sendReadMarkerNow, до force/lifecycle/оптимистичной аватарки',
     () {
-      final gate = send.indexOf('if (_openPositioningPending) return null;');
+      // Ветка гейта пишет причину в лог (заявка №60) — проверяем сам гейт,
+      // а не однострочную форму `return null`.
+      final gate = send.indexOf('if (_openPositioningPending) {');
       expect(gate, greaterThanOrEqualTo(0));
       for (final later in [
         '_scrolledUp',
@@ -99,5 +101,42 @@ void main() {
       isFalse,
       reason: 'голый setReadMarker() при неудавшемся позиционировании = full',
     );
+  });
+
+  test('AC:RL-read-receipt-viewport-based/19 ветка открытия на сепараторе: '
+      'scrollToEventId → доводка отсечки по строке-anchor → только потом '
+      'снятие гейта', () {
+    final branch = load.substring(
+      load.indexOf('if (plan.scrollToDivider)'),
+      load.indexOf('if (plan.markLastEvent)'),
+    );
+    final scroll = branch.indexOf('scrollToEventId(readMarkerEventId');
+    final align = branch.indexOf('alignRowBottomToDivider(');
+    final release = branch.indexOf('_openPositioningPending = false;');
+    expect(scroll, greaterThanOrEqualTo(0));
+    expect(align, greaterThan(scroll));
+    expect(
+      release,
+      greaterThan(align),
+      reason:
+          'jumpTo после снятия гейта '
+          'запустит дебаунс квитанции по промежуточной геометрии',
+    );
+    expect(branch, contains('_rowIdOf(readMarkerEventId)'));
+  });
+
+  test('AC:RL-read-receipt-viewport-based/21 scrollToEventId крутит к строке '
+      'самой цели (scrollTargetIndex), без унаследованного +1', () {
+    final body = _body(
+      chat,
+      'Future<void> scrollToEventId(\n'
+      '    String eventId, {\n'
+      '    bool highlightEvent = true,\n'
+      '    int retryDepth = 0,\n'
+      '  }) async {',
+    );
+    expect(body, contains('scrollTargetIndex('));
+    expect(body, isNot(contains('eventIndex + 1')));
+    expect(body, contains('scrollToEventIdMarker = _rowIdOf(eventId)'));
   });
 }
