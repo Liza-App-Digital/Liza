@@ -1,5 +1,6 @@
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/utils/miniapp_room.dart' show botsHomeserver;
 import 'package:liza/utils/unseen_messages.dart';
 
 const _legacyStoriesKey = 'com.liza.stories';
@@ -592,8 +593,8 @@ bool isCompanySpace({required Room space, required Iterable<Room> allRooms}) {
 /// Сервисные аккаунты (боты/поддержка), которым НЕЛЬЗЯ передавать канал при
 /// выходе единственного админа: бот получит PL100, но Liza-UI никогда не покажет
 /// ему кнопку управления каналом → канал осиротеет навсегда (KILLER-возражение
-/// комиссии). Сверка по localpart, домен бота (`bots.liza.ru`) не завязываем —
-/// боты живут и на инстансах-компаниях.
+/// комиссии). Известные сервисы определяются по localpart на любом инстансе;
+/// зарегистрированные Bot API аккаунты — по точному домену ботов.
 const Set<String> serviceAccountLocalparts = {
   'liza',
   'gpt',
@@ -603,6 +604,12 @@ const Set<String> serviceAccountLocalparts = {
 
 /// Является ли [userId] сервисным аккаунтом (бот/поддержка).
 bool isServiceAccountId(String userId) {
+  final separator = userId.indexOf(':');
+  if (userId.startsWith('@') &&
+      separator > 1 &&
+      userId.substring(separator + 1) == botsHomeserver) {
+    return true;
+  }
   final localpart = userId.split(':').first.replaceFirst('@', '');
   return serviceAccountLocalparts.contains(localpart);
 }
@@ -624,7 +631,7 @@ class OwnerSuccessorCandidate {
 /// Правило одно для канала, группы и пространства (Надежда 15.10 про группу:
 /// «Да. Я бы сделала так же»). Возвращает `null`, если кандидатов нет.
 String? pickOwnerSuccessor(Iterable<OwnerSuccessorCandidate> candidates) {
-  final list = candidates.toList();
+  final list = candidates.where((c) => !isServiceAccountId(c.id)).toList();
   if (list.isEmpty) return null;
   // При равном PL — первый по id: List.sort не стабилен, без этого выбор
   // между двумя админами-99 зависел бы от порядка загрузки участников.

@@ -45,6 +45,7 @@ Event? previewEventFrom(List<Event> events) {
   for (final event in events) {
     if (event.isHiddenChannelStateEvent) continue;
     if (event.isRedactedChannelPost) continue;
+    if (event.isRedactedBotDraft) continue;
     // Пост Liza News для других платформ: его текст не должен утечь в превью.
     if (event.isHiddenByNewsAudience) continue;
     return event;

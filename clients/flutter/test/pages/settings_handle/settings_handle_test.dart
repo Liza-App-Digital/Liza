@@ -134,7 +134,7 @@ void main() {
 
   testWidgets('занятое имя показывает текст уникальности, а не код ошибки',
       (tester) async {
-    final (_, __) = await pumpScreen(
+    await pumpScreen(
       tester,
       setResult: HandleSetResult.taken,
     );
@@ -295,7 +295,7 @@ void main() {
 
   testWidgets('ввод нового имени убирает старую причину отказа',
       (tester) async {
-    final (_, __) = await pumpScreen(
+    await pumpScreen(
       tester,
       setResult: HandleSetResult.taken,
     );

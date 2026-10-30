@@ -38,14 +38,14 @@ void main() {
     for (final id in imageIds.split(',').where((s) => s.isNotEmpty)) {
       final fr = await api.getContentAuthed(server, id);
       expect(fr.data, isNotNull, reason: 'нет байт для $id');
-      expect(fr.data!.length, greaterThan(0), reason: 'пустое тело $id');
+      expect(fr.data.length, greaterThan(0), reason: 'пустое тело $id');
       // Реальный декод движком Flutter — то, что делает mxc_image при рендере.
-      final codec = await ui.instantiateImageCodec(fr.data!);
+      final codec = await ui.instantiateImageCodec(fr.data);
       final frame = await codec.getNextFrame();
       expect(frame.image.width, greaterThan(0));
       expect(frame.image.height, greaterThan(0));
       // ignore: avoid_print
-      print('  ✅ decode $id: ${fr.data!.length}B '
+      print('  ✅ decode $id: ${fr.data.length}B '
           '${frame.image.width}x${frame.image.height} (${fr.contentType})');
     }
   });
@@ -62,11 +62,11 @@ void main() {
     final id = uri.pathSegments.last;
     final back = await api.getContentAuthed(uri.host, id);
     expect(back.data, isNotNull);
-    expect(back.data!.length, payload.length,
+    expect(back.data.length, payload.length,
         reason: 'длина после round-trip не совпала (durable?)');
     var same = true;
     for (var i = 0; i < payload.length; i++) {
-      if (back.data![i] != payload[i]) {
+      if (back.data[i] != payload[i]) {
         same = false;
         break;
       }

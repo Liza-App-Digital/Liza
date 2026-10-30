@@ -33,21 +33,12 @@ import 'dart:io';
 
 // ignore_for_file: depend_on_referenced_packages
 
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
-import 'package:provider/provider.dart';
 
 import 'package:liza/l10n/l10n.dart';
-import 'package:liza/pages/chat_permissions_settings/chat_permissions_settings.dart';
-import 'package:liza/pages/chat_permissions_settings/chat_permissions_settings_view.dart';
 import 'package:liza/pages/chat_permissions_settings/permission_list_tile.dart';
-import 'package:liza/utils/chat_topology.dart';
-import 'package:liza/widgets/matrix.dart' as liza_matrix;
-
-import '../../utils/test_client.dart';
 
 // ---------------------------------------------------------------------------
 // Хелпер: рендерим PermissionsListTile в изоляции с нужной локалью.
@@ -75,91 +66,6 @@ Set<String> _hiddenEventPermissions({required bool isChannel}) => {
   if (isChannel) 'm.reaction',      // только в канале
   if (isChannel) 'm.room.redaction', // только в канале
 };
-
-// ---------------------------------------------------------------------------
-// Фейковый контроллер для real-widget AC-2w теста.
-// Перекрывает roomId (что обычно приходит из GoRouter).
-// onChanged — пустой стрим (тест проверяет только начальный рендер).
-// ---------------------------------------------------------------------------
-class _FakePermsController extends ChatPermissionsSettingsController {
-  _FakePermsController(this._roomId);
-  final String _roomId;
-
-  @override
-  String? get roomId => _roomId;
-
-  @override
-  Stream get onChanged => const Stream.empty();
-
-  @override
-  // ignore: must_call_super
-  void initState() {}
-}
-
-// Фейковый MatrixState: подменяет только client-геттер.
-class _FakeMatrixState extends liza_matrix.MatrixState {
-  _FakeMatrixState(this._client);
-  final Client _client;
-  @override
-  Client get client => _client;
-}
-
-// Вспомогательный хелпер: построить Room с power-levels и (опц.) channel-type.
-Room _buildRoom(
-  Client client, {
-  required String roomId,
-  required bool isChannel,
-  Map<String, Object?> eventsPL = const {'m.reaction': 0, 'm.room.redaction': 0},
-}) {
-  final room = Room(id: roomId, client: client);
-  room.setState(
-    Event(
-      eventId: '\$create',
-      senderId: '@test:fakeServer.notExisting',
-      originServerTs: DateTime.fromMillisecondsSinceEpoch(100),
-      type: EventTypes.RoomCreate,
-      content: {
-        if (isChannel) 'com.liza.chat.type': channelChatType,
-      },
-      room: room,
-      stateKey: '',
-    ),
-  );
-  room.setState(
-    Event(
-      eventId: '\$pl',
-      senderId: '@test:fakeServer.notExisting',
-      originServerTs: DateTime.fromMillisecondsSinceEpoch(200),
-      type: EventTypes.RoomPowerLevels,
-      content: {
-        'events_default': 0,
-        'state_default': 50,
-        'users_default': 0,
-        'redact': 50,
-        'events': eventsPL,
-      },
-      room: room,
-      stateKey: '',
-    ),
-  );
-  return room;
-}
-
-// Обёртка для рендера ChatPermissionsSettingsView с инжектированным MatrixState.
-Widget _wrapView(
-  ChatPermissionsSettingsController controller,
-  liza_matrix.MatrixState matrixState,
-) {
-  return Provider<liza_matrix.MatrixState>.value(
-    value: matrixState,
-    child: MaterialApp(
-      localizationsDelegates: L10n.localizationsDelegates,
-      supportedLocales: L10n.supportedLocales,
-      locale: const Locale('ru'),
-      home: Scaffold(body: ChatPermissionsSettingsView(controller)),
-    ),
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Тесты

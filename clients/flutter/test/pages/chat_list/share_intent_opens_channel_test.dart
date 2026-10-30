@@ -29,7 +29,7 @@ import 'package:liza/utils/invite_link_parser.dart';
 // ---------------------------------------------------------------------------
 // Имитация SharedMediaType (без плагина receive_sharing_intent в unit-тестах)
 // ---------------------------------------------------------------------------
-enum _SharedMediaType { url, text, image, video, file }
+enum _SharedMediaType { url, text, image }
 
 // Реализует ЛОГИКУ _processIncomingSharedMedia:
 // возвращает 'route:<маршрут>' если Liza-URL, 'picker' иначе.

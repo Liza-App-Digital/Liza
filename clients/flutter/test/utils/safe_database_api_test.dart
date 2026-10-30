@@ -17,13 +17,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:matrix/encryption/utils/olm_session.dart';
-import 'package:matrix/encryption/utils/outbound_group_session.dart';
-import 'package:matrix/encryption/utils/ssss_cache.dart';
-import 'package:matrix/encryption/utils/stored_inbound_group_session.dart';
 import 'package:matrix/matrix.dart';
-// ignore: implementation_imports
-import 'package:matrix/src/utils/queued_to_device_event.dart';
 
 import 'package:liza/utils/matrix_sdk_extensions/flutter_matrix_dart_sdk_database/safe_database_api.dart';
 

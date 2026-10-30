@@ -27,6 +27,7 @@ extension VisibleInGuiExtension on List<Event> {
     // exceptionEventId`, иначе подсвечиваемое по ссылке событие воскресило бы
     // надгробие.
     if (event.isRedactedChannelPost) return false;
+    if (event.isRedactedBotDraft) return false;
     // Пост Liza News для других платформ — тоже вне `|| exceptionEventId`:
     // переход по ссылке не должен показывать адресованное не этому устройству.
     if (event.isHiddenByNewsAudience) return false;
@@ -51,6 +52,19 @@ const _hiddenChannelStateTypes = {
 };
 
 extension IsStateExtension on Event {
+  /// После redaction контент черновика уже стёрт. Его служебное удаление
+  /// распознаётся по причине; чужое удаление остаётся обычным надгробием.
+  bool get isRedactedBotDraft {
+    if (!{EventTypes.Message, EventTypes.Encrypted}.contains(type) ||
+        !redacted) {
+      return false;
+    }
+    final deletion = redactedBecause;
+    return deletion?.type == EventTypes.Redaction &&
+        deletion?.senderId == senderId &&
+        deletion?.content.tryGet<String>('reason') == 'com.liza.draft';
+  }
+
   /// Удалённый (redacted) пост в комнате-канале. В ленте канала такой пост
   /// обязан исчезать ЦЕЛИКОМ, независимо от настройки `hideRedactedEvents`:
   /// она — личный выбор пользователя для обычных чатов (дефолт FluffyChat —
@@ -80,6 +94,7 @@ extension IsStateExtension on Event {
       !isBotCallbackEvent &&
       // удалённый пост канала не показываем никогда (см. isRedactedChannelPost)
       !isRedactedChannelPost &&
+      !isRedactedBotDraft &&
       // служебный шум канала (вступления, смена аватара/имени) — не показываем
       !isHiddenChannelStateEvent &&
       // пост Liza News для других платформ (read_marker_logic ставит квитанцию
