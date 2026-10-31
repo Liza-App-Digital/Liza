@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from _registry import AppRegistry
+from _registry import AppRegistry, map_portal_apps
 from _stores import NonceStore, RateLimiter
 
 
@@ -127,3 +127,19 @@ def test_rate_limiter_window_slides():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_portal_type_first_party_only_when_explicit():
+    apps = map_portal_apps([
+        {"app_id": "capsules", "base_url": "https://c/", "state": "listed", "type": "first_party"},
+        {"app_id": "ext", "base_url": "https://e/", "state": "listed"},
+        {"app_id": "junk", "base_url": "https://j/", "state": "listed", "type": "FIRST_PARTY"},
+        {"slug": "noid", "state": "suspended"},
+        "garbage",
+    ])
+    assert apps["capsules"]["type"] == "first_party"
+    assert apps["ext"]["type"] == "third_party"
+    assert apps["junk"]["type"] == "third_party"
+    assert apps["noid"]["status"] == "suspended"
+    assert set(apps) == {"capsules", "ext", "junk", "noid"}
+    assert map_portal_apps({"apps": [{"app_id": "w"}]})["w"]["type"] == "third_party"

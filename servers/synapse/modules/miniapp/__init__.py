@@ -47,7 +47,7 @@ from synapse.logging.context import run_in_background
 from synapse.module_api import ModuleApi
 
 from . import _crypto
-from ._registry import AppRegistry
+from ._registry import AppRegistry, map_portal_apps
 from ._stores import NonceStore as _NonceStore
 from ._stores import RateLimiter as _RateLimiter
 
@@ -589,34 +589,17 @@ class MiniAppModule:
         Использует http-клиент Synapse (treq) — не блокирует reactor. Контракт
         developer-portal (`GET /internal/v1/apps?state=listed`,
         `servers/developer-portal/.../routes/registry.py`): JSON-СПИСОК объектов
-        `{app_id, slug, name, icon_url, base_url, state, manifest_version, scopes}`.
-        Маппим в формат реестра модуля. Реестровые app — внешние, поэтому
-        `type=third_party` (статические из конфига остаются first_party).
+        `{app_id, slug, name, icon_url, base_url, state, manifest_version, scopes, type}`.
+        Маппим в формат реестра модуля. Реестровые app по умолчанию внешние
+        (`type=third_party`); `first_party` портал ставит только своим системным
+        записям (капсулы). Статические из конфига остаются first_party.
         """
 
         async def _fetch() -> dict[str, dict]:
             headers = {b"X-DevPortal-Token": [registry_token.encode("utf-8")]} if registry_token else {}
             client = self._api.http_client
             body = await client.get_json(url, headers=headers)
-            # Портал отдаёт список; на случай обёртки {"apps": [...]} — разворачиваем.
-            items = body if isinstance(body, list) else (body.get("apps", []) if isinstance(body, dict) else [])
-            result: dict[str, dict] = {}
-            for it in items:
-                if not isinstance(it, dict):
-                    continue
-                app_id = it.get("app_id") or it.get("slug")
-                if not app_id:
-                    continue
-                result[app_id] = {
-                    "name": it.get("name"),
-                    "url": it.get("base_url"),
-                    "icon": it.get("icon_url"),
-                    "short_description": it.get("short_description"),
-                    "scopes": it.get("scopes", []),
-                    "status": "listed" if it.get("state") == "listed" else it.get("state", "listed"),
-                    "type": "third_party",
-                }
-            return result
+            return map_portal_apps(body)
 
         return _fetch
 

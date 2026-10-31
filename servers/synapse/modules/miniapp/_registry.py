@@ -23,6 +23,32 @@ from typing import Any, Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 
+def map_portal_apps(body: Any) -> dict[str, dict]:
+    """Ответ developer-portal `/internal/v1/apps` -> записи реестра модуля.
+
+    `first_party` принимаем только явный: всё остальное (нет поля, мусор) — third_party.
+    """
+    # Портал отдаёт список; на случай обёртки {"apps": [...]} — разворачиваем.
+    items = body if isinstance(body, list) else (body.get("apps", []) if isinstance(body, dict) else [])
+    result: dict[str, dict] = {}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        app_id = it.get("app_id") or it.get("slug")
+        if not app_id:
+            continue
+        result[app_id] = {
+            "name": it.get("name"),
+            "url": it.get("base_url"),
+            "icon": it.get("icon_url"),
+            "short_description": it.get("short_description"),
+            "scopes": it.get("scopes", []),
+            "status": "listed" if it.get("state") == "listed" else it.get("state", "listed"),
+            "type": "first_party" if it.get("type") == "first_party" else "third_party",
+        }
+    return result
+
+
 class AppRegistry:
     """Кэш реестра app: объединяет статический конфиг и динамический снимок."""
 
