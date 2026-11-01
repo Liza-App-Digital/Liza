@@ -38,6 +38,7 @@ from sygnal._clean_body import (
     media_caption,
     media_type_label,
 )
+from sygnal._push_outcomes import PushOutcome
 from sygnal.exceptions import (
     NotificationDispatchException,
     NotificationQuotaDispatchException,
@@ -286,41 +287,111 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
         headers: Dict[AnyStr, List[AnyStr]],
         pushkeys: List[str],
         span: Span,
+        attempt: int = 0,
     ) -> Tuple[List[str], List[str]]:
+        outcomes = [
+            PushOutcome(
+                log,
+                "fcm",
+                self.name,
+                key,
+                n.event_id,
+                attempt,
+                not n.event_id and not n.type,
+            )
+            for key in pushkeys
+        ]
+        for outcome in outcomes:
+            outcome.emit("attempt", "dispatch")
+        code = None
         poke_start_time = time.time()
+        try:
+            response, response_text = await self._perform_http_request(body, headers)
+            code = response.code
+            RESPONSE_STATUS_CODES_COUNTER.labels(pushkin=self.name, code=code).inc()
+            log.debug("GCM request took %f seconds", time.time() - poke_start_time)
+            span.set_tag(tags.HTTP_STATUS_CODE, code)
 
-        response, response_text = await self._perform_http_request(body, headers)
-
-        RESPONSE_STATUS_CODES_COUNTER.labels(
-            pushkin=self.name, code=response.code
-        ).inc()
-
-        log.debug("GCM request took %f seconds", time.time() - poke_start_time)
-
-        span.set_tag(tags.HTTP_STATUS_CODE, response.code)
-
-        if self.api_version is APIVersion.Legacy:
-            return self._handle_legacy_response(
-                n,
-                log,
-                response,
-                response_text,
-                pushkeys,
-                span,
+            if self.api_version is APIVersion.Legacy:
+                result = self._handle_legacy_response(
+                    n,
+                    log,
+                    response,
+                    response_text,
+                    pushkeys,
+                    span,
+                )
+            elif self.api_version is APIVersion.V1:
+                result = self._handle_v1_response(
+                    log,
+                    response,
+                    response_text,
+                    pushkeys,
+                    span,
+                )
+            else:
+                for outcome in outcomes:
+                    outcome.emit("error", "invalid_request", code)
+                return [], []
+        except TemporaryNotificationDispatchException as exc:
+            for outcome in outcomes:
+                outcome.emit(
+                    "retryable",
+                    "connection_failure" if code is None else "provider_unavailable",
+                    code,
+                )
+            raise TemporaryNotificationDispatchException(
+                "FCM temporary failure",
+                custom_retry_delay=exc.custom_retry_delay,
+            ) from None
+        except NotificationQuotaDispatchException as exc:
+            for outcome in outcomes:
+                outcome.emit("retryable", "quota_exceeded", code)
+            raise NotificationQuotaDispatchException(
+                "FCM quota exceeded",
+                custom_retry_delay=exc.custom_retry_delay,
+            ) from None
+        except Exception:
+            reason = {
+                400: "invalid_request",
+                401: "unauthorized",
+                403: "sender_mismatch",
+            }.get(
+                code,
+                "invalid_response" if code and 200 <= code < 300 else "provider_error",
             )
-        elif self.api_version is APIVersion.V1:
-            return self._handle_v1_response(
-                log,
-                response,
-                response_text,
-                pushkeys,
-                span,
-            )
-        else:
-            log.warn(
-                "Processing response for unknown API version: %s", self.api_version
-            )
-            return [], []
+            for outcome in outcomes:
+                outcome.emit("error", reason, code)
+            # Тело ответа и исходное исключение не уходят в traceback HTTP-handler.
+            raise NotificationDispatchException("FCM request failed") from None
+
+        failed, retry = result
+        # Legacy HTTP 200 содержит отдельный результат каждого адресата.
+        # Успех HTTP или отсутствие ключа в retry ещё не означает принятия.
+        results = (
+            json_decoder.decode(response_text).get("results", [])
+            if self.api_version is APIVersion.Legacy and 200 <= code < 300
+            else None
+        )
+        for index, (key, outcome) in enumerate(zip(pushkeys, outcomes)):
+            if key in failed:
+                outcome.emit(
+                    "rejected", "unregistered" if code == 404 else "bad_token", code
+                )
+            elif key in retry:
+                outcome.emit("retryable", "provider_retry", code)
+            elif results is not None and index >= len(results):
+                outcome.emit("error", "invalid_response", code)
+            elif results is not None and "error" in results[index]:
+                outcome.emit("error", "bad_message", code)
+            elif results is not None and (
+                not isinstance(results[index], dict)
+                or not results[index].get("message_id")
+            ):
+                outcome.emit("error", "invalid_response", code)
+            else:
+                outcome.emit("accepted", "accepted", code)
+        return result
 
     def _handle_legacy_response(
         self,
@@ -347,22 +418,16 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
                 "GCM server error, hopefully temporary.", custom_retry_delay=retry_after
             )
         elif response.code == 400:
-            log.error(
-                "%d from server, we have sent something invalid! Error: %r",
-                response.code,
-                response_text,
-            )
+            log.error("FCM rejected an invalid request (HTTP 400)")
             # permanent failure: give up
             raise NotificationDispatchException("Invalid request")
         elif response.code == 401:
-            log.error(
-                "401 from server! Our API key is invalid? Error: %r", response_text
-            )
+            log.error("FCM authentication failed (HTTP 401)")
             # permanent failure: give up
             raise NotificationDispatchException("Not authorised to push")
         elif response.code == 404:
             # assume they're all failed
-            log.info("Reg IDs %r get 404 response; assuming unregistered", pushkeys)
+            log.info("FCM reports unregistered devices (HTTP 404)")
             return pushkeys, []
         elif 200 <= response.code < 300:
             try:
@@ -370,11 +435,7 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
             except ValueError:
                 raise NotificationDispatchException("Invalid JSON response from GCM.")
             if "results" not in resp_object:
-                log.error(
-                    "%d from server but response contained no 'results' key: %r",
-                    response.code,
-                    response_text,
-                )
+                log.error("FCM response contained no results")
             if len(resp_object["results"]) < len(pushkeys):
                 log.error(
                     "Sent %d notifications but only got %d responses!",
@@ -393,30 +454,13 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
             new_pushkeys = []
             for i, result in enumerate(resp_object["results"]):
                 if "error" in result:
-                    log.warning(
-                        "Error for pushkey %s: %s", pushkeys[i], result["error"]
-                    )
-                    span.set_tag("gcm_error", result["error"])
+                    # Ошибка провайдера может содержать токен: только класс в span.
+                    span.set_tag("gcm_error", "provider_error")
                     if result["error"] in BAD_PUSHKEY_FAILURE_CODES:
-                        log.info(
-                            "Reg ID %r has permanently failed with code %r: "
-                            "rejecting upstream",
-                            pushkeys[i],
-                            result["error"],
-                        )
                         failed.append(pushkeys[i])
                     elif result["error"] in BAD_MESSAGE_FAILURE_CODES:
-                        log.info(
-                            "Message for reg ID %r has permanently failed with code %r",
-                            pushkeys[i],
-                            result["error"],
-                        )
+                        pass
                     else:
-                        log.info(
-                            "Reg ID %r has temporarily failed with code %r",
-                            pushkeys[i],
-                            result["error"],
-                        )
                         new_pushkeys.append(pushkeys[i])
             return failed, new_pushkeys
         else:
@@ -447,21 +491,15 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
                 "GCM server error, hopefully temporary.", custom_retry_delay=retry_after
             )
         elif response.code == 400:
-            log.error(
-                "%d from server, we have sent something invalid! Error: %r",
-                response.code,
-                response_text,
-            )
+            log.error("FCM rejected an invalid request (HTTP 400)")
             # permanent failure: give up
             raise NotificationDispatchException("Invalid request")
         elif response.code == 401:
-            log.error(
-                "401 from server! Our API key is invalid? Error: %r", response_text
-            )
+            log.error("FCM authentication failed (HTTP 401)")
             # permanent failure: give up
             raise NotificationDispatchException("Not authorised to push")
         elif response.code == 403:
-            log.error("403 from server! Sender ID mismatch! Error: %r", response_text)
+            log.error("FCM sender mismatch (HTTP 403)")
             # permanent failure: give up
             raise NotificationDispatchException("Sender ID mismatch")
         elif response.code == 429:
@@ -480,7 +518,7 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
                 "Message rate quota exceeded.", custom_retry_delay=retry_after
             )
         elif response.code == 404:
-            log.info("Reg IDs %r get 404 response; assuming unregistered", pushkeys)
+            log.info("FCM reports unregistered devices (HTTP 404)")
             return pushkeys, []
         elif 200 <= response.code < 300:
             return [], []
@@ -621,14 +659,6 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
                     else:
                         body["registration_ids"] = pushkeys
 
-                log.info(
-                    "Sending (attempt %i) => %r room:%s, event:%s",
-                    retry_number,
-                    pushkeys,
-                    n.room_id,
-                    n.event_id,
-                )
-
                 try:
                     span_tags = {"retry_num": retry_number}
 
@@ -636,7 +666,7 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
                         "gcm_dispatch_try", tags=span_tags, child_of=span_parent
                     ) as span:
                         new_failed, new_pushkeys = await self._request_dispatch(
-                            n, log, body, headers, pushkeys, span
+                            n, log, body, headers, pushkeys, span, attempt=retry_number
                         )
                     pushkeys = new_pushkeys
                     failed += new_failed
@@ -651,7 +681,6 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
                     log.warning(
                         "Temporary failure, will retry in %d seconds",
                         retry_delay,
-                        exc_info=True,
                     )
 
                     span_parent.log_kv(
@@ -669,7 +698,6 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
                     log.warning(
                         "Quota exceeded, will retry in %d seconds",
                         retry_delay,
-                        exc_info=True,
                     )
 
                     span_parent.log_kv(
@@ -681,7 +709,16 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
                     )
 
             if len(pushkeys) > 0:
-                log.info("Gave up retrying reg IDs: %r", pushkeys)
+                for key in pushkeys:
+                    PushOutcome(
+                        log,
+                        "fcm",
+                        self.name,
+                        key,
+                        n.event_id,
+                        MAX_TRIES - 1,
+                        not n.event_id and not n.type,
+                    ).emit("error", "retry_exhausted")
             # Count the number of failed devices.
             span_parent.set_tag("gcm_num_failed", len(failed))
             return failed

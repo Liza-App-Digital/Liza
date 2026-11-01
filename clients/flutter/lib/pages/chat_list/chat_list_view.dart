@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 
-
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/config/themes.dart';
 import 'package:liza/pages/chat_list/chat_list.dart';
 import 'package:liza/widgets/navigation_rail.dart';
+import 'package:liza/widgets/notification_health_panel.dart';
 import 'chat_list_body.dart';
 
 class ChatListView extends StatelessWidget {
@@ -44,7 +44,12 @@ class ChatListView extends StatelessWidget {
               excludeFromSemantics: true,
               behavior: HitTestBehavior.translucent,
               child: Scaffold(
-                body: ChatListViewBody(controller),
+                body: Column(
+                  children: [
+                    const NotificationHealthPanel(compact: true),
+                    Expanded(child: ChatListViewBody(controller)),
+                  ],
+                ),
                 // floatingActionButton:
                 //     !controller.isSearchMode && controller.activeSpaceId == null
                 //     ? FloatingActionButton.extended(

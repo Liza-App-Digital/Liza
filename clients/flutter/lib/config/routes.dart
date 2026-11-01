@@ -6,6 +6,9 @@ import 'package:go_router/go_router.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/themes.dart';
+import 'package:liza/pages/bot_link/bot_link_page.dart';
+import 'package:liza/pages/bot_link/join_request_page.dart';
+import 'package:liza/utils/bot_deep_link.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/pages/demo_auth/demo_auth_flow.dart';
 import 'package:liza/l10n/l10n.dart';
@@ -254,6 +257,35 @@ abstract class AppRoutes {
         final handle = state.pathParameters['handle']!;
         return _handleUserHandle(context, handle);
       },
+    ),
+    GoRoute(
+      path: '/b/:username',
+      redirect: (context, state) {
+        final link = parseWebBotLink(state.uri);
+        if (link == null) return '/rooms';
+        final isLogged = Matrix.of(
+          context,
+        ).widget.clients.any((client) => client.isLogged());
+        if (!isLogged) {
+          PendingDeepLinkStore.set(DeepLinkKind.bot, link.route);
+          return '/home';
+        }
+        return null;
+      },
+      pageBuilder: (context, state) => defaultPageBuilder(
+        context,
+        state,
+        BotLinkPage(link: parseWebBotLink(state.uri)!),
+      ),
+    ),
+    GoRoute(
+      path: '/join-request',
+      redirect: loggedOutRedirect,
+      pageBuilder: (context, state) => defaultPageBuilder(
+        context,
+        state,
+        JoinRequestPage(roomId: state.uri.queryParameters['room_id'] ?? ''),
+      ),
     ),
     GoRoute(
       path: '/invite/:code/:state',

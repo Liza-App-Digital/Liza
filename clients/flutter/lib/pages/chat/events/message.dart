@@ -34,6 +34,7 @@ import 'reply_content.dart';
 import 'bubble_receipts_side.dart';
 import 'seen_by_receipts_sheet.dart';
 import 'state_message.dart';
+import 'bot_interactive_content.dart';
 
 /// Атрибуция релея «Входящие»: сообщение клиента бот постит в единую комнату
 /// владельца от своего имени, но с полем `com.liza.relay` (кто клиент). Владелец
@@ -361,35 +362,37 @@ class Message extends StatelessWidget {
               ? album.state == GallerySendState.sending
               : event.status.isSending,
           isRead: isRead,
+          isDraft: isBotDraft(event, displayEvent),
         );
-    Widget messageFooter({required bool overlay}) => SelectionContainer.disabled(
-      child: albumId == null
-          ? footerTime(overlay: overlay)
-          : ValueListenableBuilder<int>(
-              valueListenable: UploadProgressTracker.instance.seriesChanges,
-              builder: (context, _, _) {
-                final album = GallerySendSummary.of(timeline, albumId);
-                final time = footerTime(overlay: overlay, album: album);
-                if (album.state != GallerySendState.error) return time;
-                final label = L10n.of(
-                  context,
-                ).albumNotSentCount(album.failed.length, album.total);
-                return Semantics(
-                  button: true,
-                  label: label,
-                  child: Tooltip(
-                    message: label,
-                    child: GestureDetector(
-                      key: const ValueKey('album-unsent-status'),
-                      behavior: HitTestBehavior.opaque,
-                      onTap: () => showAlbumUnsentMenu(context, album),
-                      child: time,
-                    ),
-                  ),
-                );
-              },
-            ),
-    );
+    Widget messageFooter({required bool overlay}) =>
+        SelectionContainer.disabled(
+          child: albumId == null
+              ? footerTime(overlay: overlay)
+              : ValueListenableBuilder<int>(
+                  valueListenable: UploadProgressTracker.instance.seriesChanges,
+                  builder: (context, _, _) {
+                    final album = GallerySendSummary.of(timeline, albumId);
+                    final time = footerTime(overlay: overlay, album: album);
+                    if (album.state != GallerySendState.error) return time;
+                    final label = L10n.of(
+                      context,
+                    ).albumNotSentCount(album.failed.length, album.total);
+                    return Semantics(
+                      button: true,
+                      label: label,
+                      child: Tooltip(
+                        message: label,
+                        child: GestureDetector(
+                          key: const ValueKey('album-unsent-status'),
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => showAlbumUnsentMenu(context, album),
+                          child: time,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        );
 
     // ТЕКСТ размещает время+статус (и метку «изменено») ЕДИНЫМ футером на уровне
     // пузыря (`textCornerFooterWidget`, блок рендера ниже), а НЕ внутри
@@ -401,10 +404,9 @@ class Message extends StatelessWidget {
     // Единый футер под общим `IntrinsicWidth` (reply+текст+футер) выравнивается
     // по правому краю ВСЕГО пузыря, а «изменено» встаёт в ту же строку.
     final textCornerFooter = contentPlacesTime && rendersAsText;
-    final isEdited = event.hasAggregatedEvents(
-      timeline,
-      RelationshipTypes.edit,
-    );
+    final isEdited =
+        !isBotDraft(event, displayEvent) &&
+        event.hasAggregatedEvents(timeline, RelationshipTypes.edit);
     // Футер текста — Row во всю ширину пузыря: «изменено» (карандаш + время
     // правки) в ЛЕВОМ нижнем углу, время отправки + статус — в ПРАВОМ, оба на
     // ОДНОЙ строке (по просьбе пользователя, 2026-07-29). `spaceBetween`

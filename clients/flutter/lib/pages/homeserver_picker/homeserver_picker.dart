@@ -26,6 +26,7 @@ import 'package:liza/utils/auth_proxy_login_helper.dart';
 import 'package:liza/utils/auth_proxy_service.dart';
 import 'package:liza/utils/deep_link_target.dart';
 import 'package:liza/utils/invite_link_parser.dart';
+import 'package:liza/utils/bot_deep_link.dart';
 import 'package:liza/utils/pending_deep_link.dart';
 import 'package:liza/utils/phone_country_resolver.dart';
 import 'package:liza/utils/pending_invite_code.dart';
@@ -119,9 +120,9 @@ class HomeserverPickerController extends State<HomeserverPicker> {
   }
 
   void dismissAuthOutcome() => setState(() {
-        authOutcome = null;
-        error = null;
-      });
+    authOutcome = null;
+    error = null;
+  });
 
   /// Background listener for legacy liza://register-callback deep-link
   /// (macOS/Windows). Триггерится в двух случаях:
@@ -171,8 +172,9 @@ class HomeserverPickerController extends State<HomeserverPicker> {
         final errParam = uri.queryParameters['error'];
         if (errParam != null && errParam.isNotEmpty) {
           setState(() {
-            error = AuthProxyServerException(serverError: errParam)
-                .toLocalizedString(context);
+            error = AuthProxyServerException(
+              serverError: errParam,
+            ).toLocalizedString(context);
           });
           return;
         }
@@ -232,6 +234,11 @@ class HomeserverPickerController extends State<HomeserverPicker> {
 
   /// Web-only: восстановить invite-код после перезагрузки страницы.
   Future<void> _restoreInviteCodeForWeb() async {
+    final botLink = parseWebBotLink(Uri.base);
+    if (botLink != null) {
+      PendingDeepLinkStore.set(DeepLinkKind.bot, botLink.route);
+      return;
+    }
     final fromUrl = parseWebInviteCode(Uri.base);
     if (fromUrl != null) {
       Logs().i(
@@ -266,6 +273,11 @@ class HomeserverPickerController extends State<HomeserverPicker> {
 
   void _handlePreLoginUri(Uri? uri) {
     if (uri == null) return;
+    final botLink = parseBotLink(uri);
+    if (botLink != null) {
+      PendingDeepLinkStore.set(DeepLinkKind.bot, botLink.route);
+      return;
+    }
     final code = parseInviteCode(uri);
     if (code == null) return;
     if (PendingInviteCode.current == code) return;
@@ -291,11 +303,8 @@ class HomeserverPickerController extends State<HomeserverPicker> {
   String get _basePath =>
       GoRouter.of(context).routeInformationProvider.value.uri.path;
 
-  void submitPhoneAction(String phone) => openPhoneAuth(
-    context,
-    phone,
-    addMultiAccount: widget.addMultiAccount,
-  );
+  void submitPhoneAction(String phone) =>
+      openPhoneAuth(context, phone, addMultiAccount: widget.addMultiAccount);
 
   /// Starts an analysis of the given homeserver. It uses the current domain and
   /// makes sure that it is prefixed with https. Then it searches for the
@@ -343,10 +352,7 @@ class HomeserverPickerController extends State<HomeserverPicker> {
         }
         return ssoLoginAction();
       }
-      context.push(
-        '$_basePath/login',
-        extra: client,
-      );
+      context.push('$_basePath/login', extra: client);
     } catch (e) {
       setState(
         () => error = (e).toLocalizedString(
@@ -460,15 +466,16 @@ class HomeserverPickerController extends State<HomeserverPicker> {
 
     try {
       final urlScheme = AppConfig.appOpenUrlScheme.toLowerCase();
-      final supportsDeepLink = !kIsWeb &&
+      final supportsDeepLink =
+          !kIsWeb &&
           (PlatformInfos.isMobile ||
               PlatformInfos.isMacOS ||
               PlatformInfos.isWindows);
       final redirectUrl = kIsWeb
           ? _webRedirectUrl
           : supportsDeepLink
-              ? '$urlScheme://auth/callback'
-              : 'https://${AppConfig.authProxyBaseUrl}/done';
+          ? '$urlScheme://auth/callback'
+          : 'https://${AppConfig.authProxyBaseUrl}/done';
 
       final client = await Matrix.of(context).getLoginClient();
       final homeserver = AppSettings.defaultHomeserver.value;
@@ -623,29 +630,30 @@ class HomeserverPickerController extends State<HomeserverPicker> {
       final homeserver = AppSettings.defaultHomeserver.value;
       Logs().i('[AuthProxy] Checking homeserver: $homeserver');
       await client.checkHomeserver(Uri.https(homeserver, ''));
-      Logs().i(
-        '[AuthProxy] Homeserver OK, homeserver=${client.homeserver}',
-      );
+      Logs().i('[AuthProxy] Homeserver OK, homeserver=${client.homeserver}');
 
       // macOS/Windows тоже используют deep-link (liza://auth/callback) —
       // схема liza:// зарегистрирована в Info.plist (macOS) и в реестре
       // через Inno Setup инсталлер (Windows). На Linux схемы нет, поэтому
       // там оставляем https-redirect на /done и поллинг.
-      final supportsDeepLink = !kIsWeb &&
+      final supportsDeepLink =
+          !kIsWeb &&
           (PlatformInfos.isMobile ||
               PlatformInfos.isMacOS ||
               PlatformInfos.isWindows);
       final redirectUrl = kIsWeb
           ? _webRedirectUrl
           : supportsDeepLink
-              ? '${AppConfig.appOpenUrlScheme.toLowerCase()}://auth/callback'
-              : 'https://${AppConfig.authProxyBaseUrl}/done';
+          ? '${AppConfig.appOpenUrlScheme.toLowerCase()}://auth/callback'
+          : 'https://${AppConfig.authProxyBaseUrl}/done';
 
       // Если юзер пришёл по инвайт-ссылке — передаём invite_code в auth-proxy,
       // чтобы тот после OIDC-callback вызвал register_via_invite.
       final pendingInvite = await inviteCodeAfterRestore(_pendingRestore);
-      Logs().i('[AuthProxy] Initiating login, redirect_url=$redirectUrl'
-          '${pendingInvite != null ? ', invite_code=${pendingInvite.substring(0, pendingInvite.length.clamp(0, 4))}...' : ''}');
+      Logs().i(
+        '[AuthProxy] Initiating login, redirect_url=$redirectUrl'
+        '${pendingInvite != null ? ', invite_code=${pendingInvite.substring(0, pendingInvite.length.clamp(0, 4))}...' : ''}',
+      );
       final authResponse = await _authProxyService.initiateLogin(
         redirectUrl,
         inviteCode: pendingInvite,
@@ -659,9 +667,7 @@ class HomeserverPickerController extends State<HomeserverPicker> {
         final sdkVersion = await AuthDiagnostics.getAndroidSdkVersion();
         if (AuthDiagnostics.shouldUsePollingFallback(sdkVersion)) {
           // Old Android — skip WebView, use polling directly
-          Logs().i(
-            '[AuthProxy] Old Android SDK $sdkVersion, using polling',
-          );
+          Logs().i('[AuthProxy] Old Android SDK $sdkVersion, using polling');
           await _authViaPolling(authResponse, client);
         } else {
           // Modern Android — WebView with parallel polling built-in
@@ -711,9 +717,7 @@ class HomeserverPickerController extends State<HomeserverPicker> {
     final webViewFuture = FlutterWebAuth2.authenticate(
       url: authResponse.authorizationUrl,
       callbackUrlScheme: urlScheme,
-      options: const FlutterWebAuth2Options(
-        useWebview: true,
-      ),
+      options: const FlutterWebAuth2Options(useWebview: true),
     );
 
     try {
@@ -750,9 +754,7 @@ class HomeserverPickerController extends State<HomeserverPicker> {
             );
             return;
           } on MatrixException {
-            Logs().w(
-              '[AuthProxy] Redirect token expired, trying refresh',
-            );
+            Logs().w('[AuthProxy] Redirect token expired, trying refresh');
             try {
               final fresh = await _authProxyService.refreshToken(
                 sessionState: authResponse.sessionState,
@@ -764,10 +766,7 @@ class HomeserverPickerController extends State<HomeserverPicker> {
               );
               return;
             } catch (refreshErr) {
-              Logs().w(
-                '[AuthProxy] Refresh failed too',
-                refreshErr,
-              );
+              Logs().w('[AuthProxy] Refresh failed too', refreshErr);
               // Both redirect token and refresh failed — wait for poll
               final pollResult = await pollFuture;
               await _handlePollResult(pollResult, client);
@@ -906,7 +905,8 @@ class HomeserverPickerController extends State<HomeserverPicker> {
             );
           }
           throw AuthProxyServerException(
-            serverError: statusData['error'] as String? ??
+            serverError:
+                statusData['error'] as String? ??
                 statusData['message'] as String? ??
                 'unknown_auth_error',
           );
@@ -919,9 +919,7 @@ class HomeserverPickerController extends State<HomeserverPicker> {
         }
 
         if (e.isNonTransient) {
-          Logs().e(
-            '[AuthProxy] Non-transient server error, stopping poll: $e',
-          );
+          Logs().e('[AuthProxy] Non-transient server error, stopping poll: $e');
           throw AuthProxyServerException(
             serverError: e.serverError ?? e.message,
             statusCode: e.statusCode,
@@ -1095,10 +1093,7 @@ class HomeserverPickerController extends State<HomeserverPicker> {
               );
               return;
             } catch (refreshErr) {
-              Logs().w(
-                '[AuthProxy] desktop: refresh failed too',
-                refreshErr,
-              );
+              Logs().w('[AuthProxy] desktop: refresh failed too', refreshErr);
               final pollResult = await pollFuture;
               await _handlePollResult(pollResult, client);
               return;
@@ -1114,9 +1109,7 @@ class HomeserverPickerController extends State<HomeserverPicker> {
         }
       } else if (winner is _PollResult) {
         cancellation.cancel();
-        Logs().i(
-          '[AuthProxy] desktop: poll won, status=${winner.status}',
-        );
+        Logs().i('[AuthProxy] desktop: poll won, status=${winner.status}');
         await _handlePollResult(winner, client);
         return;
       }
@@ -1181,7 +1174,8 @@ class HomeserverPickerController extends State<HomeserverPicker> {
           }
         }
 
-        final isTransient = e is http.ClientException ||
+        final isTransient =
+            e is http.ClientException ||
             e is SocketException ||
             e is IOException;
         if (isLastAttempt || !isTransient) rethrow;
@@ -1218,7 +1212,9 @@ class HomeserverPickerController extends State<HomeserverPicker> {
         // Если он есть — навигируем без лишнего redeem-запроса.
         final inviteRoomId = callback.inviteRoomId;
         if (inviteRoomId != null && inviteRoomId.isNotEmpty) {
-          Logs().i('[InviteRedeem] Deep-link provided inviteRoomId: $inviteRoomId');
+          Logs().i(
+            '[InviteRedeem] Deep-link provided inviteRoomId: $inviteRoomId',
+          );
           PendingInviteCode.clear();
           if (mounted) {
             context.go('/rooms/${Uri.encodeComponent(inviteRoomId)}');

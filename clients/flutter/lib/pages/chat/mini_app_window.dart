@@ -55,6 +55,11 @@ class MiniAppWindowConfig {
   final String appName;
   final String appType;
   final String appStartPath;
+  final String startParam;
+  final String? botMxid;
+  final String? joinRequestQueryId;
+  final String interactiveSessionId;
+  final String? accountUserId;
   final String roomId;
   final String contentKey;
   final bool dark;
@@ -66,6 +71,11 @@ class MiniAppWindowConfig {
     required this.appName,
     required this.appType,
     required this.appStartPath,
+    this.startParam = '',
+    this.botMxid,
+    this.joinRequestQueryId,
+    this.interactiveSessionId = '',
+    this.accountUserId,
     required this.roomId,
     required this.contentKey,
     required this.dark,
@@ -79,6 +89,11 @@ class MiniAppWindowConfig {
         appName: app.appName,
         appType: app.appType,
         appStartPath: app.appStartPath,
+        startParam: app.startParam,
+        botMxid: app.botMxid,
+        joinRequestQueryId: app.joinRequestQueryId,
+        interactiveSessionId: app.interactiveSessionId,
+        accountUserId: app.accountUserId,
         roomId: app.room.id,
         contentKey: app.contentKey,
         dark: theme?.brightness == Brightness.dark,
@@ -92,6 +107,11 @@ class MiniAppWindowConfig {
         appName: json['app_name'] as String,
         appType: json['app_type'] as String,
         appStartPath: json['app_start_path'] as String,
+        startParam: json['start_param'] as String? ?? '',
+        botMxid: json['bot_mxid'] as String?,
+        joinRequestQueryId: json['join_request_query_id'] as String?,
+        interactiveSessionId: json['interactive_session_id'] as String? ?? '',
+        accountUserId: json['account_user_id'] as String?,
         roomId: json['room_id'] as String,
         contentKey: json['content_key'] as String,
         dark: json['dark'] as bool,
@@ -104,6 +124,11 @@ class MiniAppWindowConfig {
     'app_name': appName,
     'app_type': appType,
     'app_start_path': appStartPath,
+    'start_param': startParam,
+    'bot_mxid': botMxid,
+    'join_request_query_id': joinRequestQueryId,
+    'interactive_session_id': interactiveSessionId,
+    'account_user_id': accountUserId,
     'room_id': roomId,
     'content_key': contentKey,
     'dark': dark,
@@ -253,30 +278,143 @@ class MiniAppWindows {
     }
   }
 
-  MiniAppHostApi _hostFor(String appId) {
+  RoomMiniAppHostApi _hostFor(String appId, Map<String, Object?> args) {
     final app = _manager.detachedApps
         .where((a) => a.appId == appId)
         .firstOrNull;
-    if (app == null) throw StateError('mini App $appId не открыт окном');
+    if (app == null ||
+        !app.sessionCurrent ||
+        args['content_key'] != app.contentKey ||
+        args['session_id'] != app.interactiveSessionId ||
+        args['account_user_id'] != app.accountUserId) {
+      throw StateError('Mini App window session changed');
+    }
     return RoomMiniAppHostApi(
       room: app.room,
       appId: app.appId,
       appUrl: app.appUrl,
+      startParam: app.startParam,
+      botMxid: app.botMxid,
+      joinRequestQueryId: app.joinRequestQueryId,
+      interactiveSessionId: app.interactiveSessionId,
+      interactiveState: app.interactiveState,
+      isCurrent: () =>
+          app.sessionCurrent && _manager.detachedApps.contains(app),
+      beforePresent: () async {
+        if (defaultTargetPlatform == TargetPlatform.macOS) {
+          await const MethodChannel(
+            'liza/macos_window',
+          ).invokeMethod<void>('bringToFront');
+        }
+      },
     );
   }
+
+  void _setVisibility(String appId, Map<Object?, Object?> snapshot) {
+    final app = _manager.detachedApps
+        .where((app) => app.appId == appId)
+        .firstOrNull;
+    if (app == null) return;
+    final sequence = snapshot['sequence'];
+    final nativeEpoch = snapshot['visibility_epoch'];
+    if (sequence is! int || nativeEpoch is! int) {
+      app.interactiveState.setVisible(false);
+      return;
+    }
+    if (sequence <= app.interactiveState.nativeSnapshotSequence) return;
+    app.interactiveState.nativeSnapshotSequence = sequence;
+    final previous = app.interactiveState.nativeVisibilityEpoch;
+    if (previous != null && nativeEpoch != previous) {
+      app.interactiveState.setVisible(false);
+    }
+    app.interactiveState.nativeVisibilityEpoch = nativeEpoch;
+    final focusEpoch = snapshot['focus_epoch'];
+    final mainFocusEpoch = snapshot['main_focus_epoch'];
+    if (focusEpoch is! int || mainFocusEpoch is! int) {
+      app.interactiveState.setVisible(false);
+      return;
+    }
+    final state = app.interactiveState;
+    final oldFocus = state.nativeFocusEpoch;
+    final oldMainFocus = state.nativeMainFocusEpoch;
+    if (oldFocus != null && oldFocus != focusEpoch) {
+      if (state.presenting &&
+          state.presentationVisibilityEpoch == state.visibilityEpoch &&
+          !state.mainFocusTransferred &&
+          focusEpoch == oldFocus + 1 &&
+          snapshot['direct_main_focus_epoch'] == focusEpoch &&
+          snapshot['main_focused'] == true) {
+        state.mainFocusTransferred = true;
+      } else {
+        state.setVisible(false);
+      }
+    }
+    if (oldMainFocus != null && oldMainFocus != mainFocusEpoch) {
+      state.setVisible(false);
+    }
+    state.nativeFocusEpoch = focusEpoch;
+    state.nativeMainFocusEpoch = mainFocusEpoch;
+
+    // Подъём главного окна для prepared-picker — намеренный перевод фокуса.
+    // Он допускается лишь пока наш picker открыт, окно app видимо, а главное
+    // окно действительно foreground. Уход в другое приложение отменяет запрос.
+    app.interactiveState.setVisible(
+      snapshot['closed'] == false &&
+          snapshot['visible'] == true &&
+          snapshot['minimized'] == false &&
+          (snapshot['focused'] == true ||
+              (state.presenting &&
+                  state.mainFocusTransferred &&
+                  state.presentationVisibilityEpoch == state.visibilityEpoch &&
+                  snapshot['direct_main_focus_epoch'] == focusEpoch &&
+                  snapshot['main_focused'] == true)),
+    );
+  }
+
+  Future<void> _refreshVisibility(String appId) async {
+    final controller = _windows[appId]?.controller;
+    if (controller == null) return; // Тестовый IPC не создаёт настоящее окно.
+    try {
+      final snapshot = await controller
+          .invokeMethod<Object?>('interactiveVisibility')
+          .timeout(const Duration(seconds: 2));
+      _setVisibility(appId, snapshot is Map ? snapshot : const {});
+    } catch (_) {
+      _setVisibility(appId, const {});
+    }
+  }
+
+  @visibleForTesting
+  Future<Object?> debugHandleHostCall(MethodCall call) => _handleHostCall(call);
 
   Future<Object?> _handleHostCall(MethodCall call) async {
     final args = Map<String, Object?>.from(call.arguments as Map);
     final appId = args['app_id'] as String;
+    if (call.method != 'reportError') _hostFor(appId, args);
     switch (call.method) {
+      case 'windowVisibility':
+        _setVisibility(appId, args['snapshot'] as Map? ?? const {});
+        return null;
+      case 'interactive':
+        await _refreshVisibility(appId);
+        return _hostFor(appId, args).interactiveRequest(
+          args['action'] as String,
+          Map<String, dynamic>.from(args['data'] as Map),
+        );
       case 'fetchInitData':
-        return _hostFor(appId).fetchInitData();
+        return _hostFor(appId, args).fetchInitData();
       case 'sendData':
         final content = jsonDecode(args['content'] as String);
-        await _hostFor(appId).sendData(Map<String, Object?>.from(content));
+        await _hostFor(
+          appId,
+          args,
+        ).sendData(Map<String, Object?>.from(content));
         return null;
       case 'createInviteLink':
-        return _hostFor(appId).createInviteLink(args['start_path'] as String?);
+        return _hostFor(
+          appId,
+          args,
+        ).createInviteLink(args['start_path'] as String?);
       case 'attach':
         _manager.attach(appId, startPath: args['start_path'] as String?);
         // Окно Лизы могли закрыть (на macOS оно лишь скрыто) — панель
@@ -309,15 +447,50 @@ class MiniAppWindows {
 }
 
 /// Хост контента в окне ОС: каждый вызов — RPC к главному движку.
-class RemoteMiniAppHostApi implements MiniAppHostApi {
+class RemoteMiniAppHostApi
+    implements MiniAppHostApi, MiniAppInteractiveHostApi {
   final String appId;
+  final String contentKey;
+  final String sessionId;
+  final String? accountUserId;
 
-  const RemoteMiniAppHostApi(this.appId);
+  const RemoteMiniAppHostApi(
+    this.appId, {
+    this.contentKey = '',
+    this.sessionId = '',
+    this.accountUserId,
+  });
+
+  factory RemoteMiniAppHostApi.fromConfig(MiniAppWindowConfig config) =>
+      RemoteMiniAppHostApi(
+        config.appId,
+        contentKey: config.contentKey,
+        sessionId: config.interactiveSessionId,
+        accountUserId: config.accountUserId,
+      );
+
+  @override
+  Future<Map<String, dynamic>> interactiveRequest(
+    String action,
+    Map<String, dynamic> data,
+  ) async => Map<String, dynamic>.from(
+    (await _call<Map>('interactive', {'action': action, 'data': data}))!,
+  );
 
   Future<T?> _call<T>(String method, [Map<String, Object?>? args]) =>
       _hostChannel
-          .invokeMethod<T>(method, {'app_id': appId, ...?args})
-          .timeout(_rpcTimeout);
+          .invokeMethod<T>(method, {
+            'app_id': appId,
+            'content_key': contentKey,
+            'session_id': sessionId,
+            'account_user_id': accountUserId,
+            ...?args,
+          })
+          .timeout(
+            method == 'interactive'
+                ? const Duration(seconds: 100)
+                : _rpcTimeout,
+          );
 
   @override
   Future<String> fetchInitData() async =>
@@ -335,6 +508,9 @@ class RemoteMiniAppHostApi implements MiniAppHostApi {
       _call<void>('attach', {'start_path': startPath});
 
   Future<void> close() => _call<void>('close');
+
+  Future<void> reportVisibility(Map<Object?, Object?> snapshot) =>
+      _call<void>('windowVisibility', {'snapshot': snapshot});
 }
 
 void _reportError(Object error, StackTrace? stack) {
@@ -383,28 +559,83 @@ class MiniAppWindowApp extends StatefulWidget {
 
 class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
   late MiniAppWindowConfig _config = widget.config;
-  late final RemoteMiniAppHostApi _host = RemoteMiniAppHostApi(_config.appId);
+  late RemoteMiniAppHostApi _host = RemoteMiniAppHostApi.fromConfig(_config);
   // Новый ключ на каждый `navigate`: контент пересоздаётся на новом пути.
   var _contentKey = GlobalKey<MiniAppWebViewContentState>();
 
   String? _toast;
   int _toastGen = 0;
+  Timer? _visibilityTimer;
+  Future<void> _visibilityReports = Future<void>.value();
+
+  Future<Map<Object?, Object?>> _nativeVisibility() async {
+    try {
+      return await _nativeWindow.invokeMapMethod<Object?, Object?>(
+            'visibility',
+          ) ??
+          const {};
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  Future<void> _reportVisibility([Map<Object?, Object?>? snapshot]) {
+    final host = _host;
+    // Не теряем hidden/closed callback, даже если предыдущий RPC ещё идёт.
+    // Снимки сериализованы: старое visible не перезапишет более новое hidden.
+    _visibilityReports = _visibilityReports
+        .then((_) async {
+          if (!mounted || !identical(host, _host)) return;
+          final value = snapshot ?? await _nativeVisibility();
+          if (mounted && identical(host, _host)) {
+            await host.reportVisibility(value);
+          }
+        })
+        .catchError((Object _) {});
+    return _visibilityReports;
+  }
+
+  @override
+  void dispose() {
+    _visibilityTimer?.cancel();
+    _nativeWindow.setMethodCallHandler(null);
+    unawaited(
+      _host.reportVisibility(const {'closed': true}).catchError((Object _) {}),
+    );
+    super.dispose();
+  }
 
   @override
   void initState() {
     super.initState();
     widget.controller.setWindowMethodHandler(_handleWindowCall);
-    _nativeWindow.invokeMethod<void>('present', {'title': _config.appName});
+    _nativeWindow.setMethodCallHandler((call) async {
+      if (call.method == 'visibilityChanged') {
+        await _reportVisibility(
+          call.arguments is Map ? call.arguments as Map : const {},
+        );
+      }
+    });
+    _nativeWindow
+        .invokeMethod<void>('present', {'title': _config.appName})
+        .then((_) => _reportVisibility());
+    // Снимок страхует пропущенное native notification и смену главного окна.
+    _visibilityTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      unawaited(_reportVisibility());
+    });
   }
 
   Future<Object?> _handleWindowCall(MethodCall call) async {
     switch (call.method) {
+      case 'interactiveVisibility':
+        return _nativeVisibility();
       case 'navigate':
         final config = MiniAppWindowConfig.fromJson(
           Map<String, Object?>.from(call.arguments as Map),
         );
         setState(() {
           _config = config;
+          _host = RemoteMiniAppHostApi.fromConfig(config);
           _contentKey = GlobalKey<MiniAppWebViewContentState>();
         });
         await _nativeWindow.invokeMethod<void>('setTitle', {

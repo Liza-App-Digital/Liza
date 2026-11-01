@@ -29,6 +29,7 @@ import 'package:liza/pages/chat/start_poll_bottom_sheet.dart';
 import 'package:liza/pages/chat_details/chat_details.dart';
 import 'package:liza/utils/adaptive_bottom_sheet.dart';
 import 'package:liza/utils/bot_commands_registry.dart';
+import 'package:liza/utils/bot_interactive_draft.dart';
 import 'package:liza/utils/channel_discussion.dart';
 import 'package:liza/utils/clipboard_paste.dart';
 import 'package:liza/utils/composer_enter_key.dart';
@@ -531,6 +532,14 @@ class ChatController extends State<ChatPageWithRoom>
         draft.length,
       );
     }
+  }
+
+  /// ForceReply использует тот же черновик, что ручной ответ. Уже выбранную
+  /// пользователем цитату бот не перезаписывает.
+  void applyBotForceReply(Event event) {
+    if (!mounted || replyEvent != null || event.room.id != roomId) return;
+    setState(() => replyEvent = event);
+    _persistReplyDraft();
   }
 
   ReplyDraftStore get _replyDraftStore =>
@@ -1563,6 +1572,12 @@ class ChatController extends State<ChatPageWithRoom>
   Future<void> send() async {
     if (_blockedByUpdate()) return;
     if (sendController.text.trim().isEmpty) return;
+    if (BotInteractiveDraft.queryActive(room.client, room.id)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(L10n.of(context).botInlineResults)),
+      );
+      return;
+    }
     HumanInputTracker.mark(roomId);
     _storeInputTimeoutTimer?.cancel();
     final prefs = Matrix.of(context).store;
@@ -1577,18 +1592,29 @@ class ChatController extends State<ChatPageWithRoom>
     var parseCommands = !startsWithWhitespace;
 
     final commandMatch = composerCommandPattern.firstMatch(rawText);
-    if (commandMatch != null) {
+    // Адресованная групповому боту команда никогда не исполняет одноимённую
+    // Matrix-команду (например /leave@shop).
+    final addressedBotCommand = RegExp(
+      r'^/[a-zA-Z0-9_]+@[a-zA-Z0-9_.=-]+(?:\s|$)',
+    ).hasMatch(rawText);
+    if (addressedBotCommand) parseCommands = false;
+    if (commandMatch != null && !addressedBotCommand) {
       final dmPartner = room.directChatMatrixID;
       final route = routeComposerCommand(
         commandMatch[1]!,
         matrixCommands: sendingClient.commands.keys,
         botHasCommand:
-            dmPartner != null &&
-            BotCommandsRegistry.instance.hasCommand(
+            BotInteractiveDraft.selectedCommand(
               room.client,
-              dmPartner,
-              commandMatch[1]!,
-            ),
+              room.id,
+              rawText,
+            ) ||
+            dmPartner != null &&
+                BotCommandsRegistry.instance.hasCommand(
+                  room.client,
+                  dmPartner,
+                  commandMatch[1]!,
+                ),
       );
       switch (route) {
         case ComposerCommandRoute.bot:
@@ -3033,7 +3059,10 @@ class ChatController extends State<ChatPageWithRoom>
       });
     }
 
-    _updateMessageLinkPreview(text);
+    // Inline query остаётся приватным: даже URL внутри него не отправляется
+    // сервису предпросмотра ссылок и не порождает typing-сигнал в комнате.
+    final inlineInput = RegExp(r'^@[A-Za-z0-9_]{1,64}\s').hasMatch(text);
+    _updateMessageLinkPreview(inlineInput ? '' : text);
 
     _storeInputTimeoutTimer?.cancel();
     _storeInputTimeoutTimer = Timer(_storeInputTimeout, () async {
@@ -3060,7 +3089,7 @@ class ChatController extends State<ChatPageWithRoom>
         }
       }
     }
-    if (AppSettings.sendTypingNotifications.value) {
+    if (!inlineInput && AppSettings.sendTypingNotifications.value) {
       typingCoolDown?.cancel();
       typingCoolDown = Timer(const Duration(seconds: 2), () {
         typingCoolDown = null;

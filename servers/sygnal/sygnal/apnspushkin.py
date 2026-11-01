@@ -12,8 +12,8 @@
 import asyncio
 import base64
 import copy
-import logging
 import json
+import logging
 import os
 from datetime import timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -38,6 +38,7 @@ from sygnal._clean_body import (
     media_caption,
 )
 from sygnal._news_audience import device_platform
+from sygnal._push_outcomes import PushOutcome
 from sygnal.exceptions import (
     NotificationDispatchException,
     PushkinSetupException,
@@ -258,6 +259,8 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
         notif_id: str,
         push_type: Optional[PushType] = None,
         time_to_live: Optional[int] = None,
+        event_id: Optional[str] = None,
+        attempt: int = 0,
     ) -> List[str]:
         """
         Actually attempts to dispatch the notification once.
@@ -266,13 +269,27 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
         обычные — с типом из конфига. None → тип pushkin'а.
         """
         span.set_tag("apns_id", notif_id)
+        outcome = PushOutcome(
+            log,
+            "apns",
+            self.name,
+            device.pushkey,
+            event_id,
+            attempt,
+            push_type is PushType.BACKGROUND,
+        )
+        outcome.emit("attempt", "dispatch")
 
         # Some client libraries will provide the push token in hex format already. Avoid
         # attempting to convert from base 64 to hex.
-        if self.get_config("convert_device_token_to_hex", bool, True):
-            device_token = base64.b64decode(device.pushkey).hex()
-        else:
-            device_token = device.pushkey
+        try:
+            if self.get_config("convert_device_token_to_hex", bool, True):
+                device_token = base64.b64decode(device.pushkey).hex()
+            else:
+                device_token = device.pushkey
+        except Exception:
+            outcome.emit("error", "invalid_request")
+            raise NotificationDispatchException("Invalid APNs token encoding") from None
 
         request = NotificationRequest(
             device_token=device_token,
@@ -288,37 +305,46 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                 with SEND_TIME_HISTOGRAM.time():
                     response = await self._send_notification(request)
         except aioapns.ConnectionError:
-            raise TemporaryNotificationDispatchException("aioapns Connection Failure")
+            outcome.emit("retryable", "connection_failure")
+            raise TemporaryNotificationDispatchException(
+                "aioapns Connection Failure"
+            ) from None
+        except Exception:
+            outcome.emit("error", "unexpected_error")
+            raise NotificationDispatchException("APNs request failed") from None
 
-        code = int(response.status)
+        try:
+            code = int(response.status)
+        except (TypeError, ValueError):
+            outcome.emit("error", "invalid_response")
+            raise NotificationDispatchException("Invalid APNs status") from None
 
         span.set_tag(tags.HTTP_STATUS_CODE, code)
 
         RESPONSE_STATUS_CODES_COUNTER.labels(pushkin=self.name, code=code).inc()
 
         if response.is_successful:
+            outcome.emit("accepted", "accepted", code)
             return []
         else:
-            # .description corresponds to the 'reason' response field
-            span.set_tag("apns_reason", response.description or "None")
             if (code, response.description) in self.TOKEN_ERRORS:
-                log.info(
-                    "APNs token %s for pushkin %s was rejected: %d %s",
-                    device_token,
-                    self.name,
+                reason = "unregistered" if code == 410 else "bad_token"
+                span.set_tag("apns_reason", reason)
+                outcome.emit(
+                    "rejected",
+                    reason,
                     code,
-                    response.description,
                 )
                 return [device.pushkey]
             else:
                 if 500 <= code < 600:
+                    outcome.emit("retryable", "provider_unavailable", code)
                     raise TemporaryNotificationDispatchException(
-                        f"{response.status} {response.description}"
+                        f"APNs server error {code}"
                     )
                 else:
-                    raise NotificationDispatchException(
-                        f"{response.status} {response.description}"
-                    )
+                    outcome.emit("error", "provider_error", code)
+                    raise NotificationDispatchException(f"APNs request rejected {code}")
 
     async def _dispatch_notification_unlimited(
         self, n: Notification, device: Device, context: NotificationContext
@@ -382,9 +408,7 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                 # event_id-only payload — клиент дотянет содержимое через /sync.
                 log.warning(
                     "APNs payload too large after truncate, falling back to "
-                    "event_id-only (room=%s, event=%s)",
-                    n.room_id,
-                    n.event_id,
+                    "event_id-only",
                 )
                 shaved_payload = self._get_payload_event_id_only(
                     n, default_payload, send_badge_counts
@@ -431,21 +455,6 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                         notif_id = str(uuid4())
                         # XXX: shouldn't we use the same notif_id for each retry?
 
-                        # Второе поле — device.pushkey (токен устройства, константа), а не
-                        # APNs-ID запроса: старый лейбл «APNs-ID:» выдавал одинаковый токен
-                        # у всех отправок за коалесцирование (разбор 2026-09-28). Токен
-                        # позволяет слать пуши на устройство — в лог только префикс
-                        # (security-secrets.md), его хватает для сверки с pushers.
-                        log.info(
-                            "Sending (attempt %i) => %s pushkey:%s… room:%s, event:%s%s",
-                            retry_number,
-                            notif_id,
-                            device.pushkey[:8],
-                            n.room_id,
-                            n.event_id,
-                            " (clearing)" if push_type is PushType.BACKGROUND else "",
-                        )
-
                         return await self._dispatch_request(
                             log,
                             span,
@@ -455,6 +464,8 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                             notif_id,
                             push_type=push_type,
                             time_to_live=time_to_live,
+                            event_id=n.event_id,
+                            attempt=retry_number,
                         )
                 except TemporaryNotificationDispatchException as exc:
                     retry_delay = self.RETRY_DELAY_BASE * (2**retry_number)
@@ -464,7 +475,6 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                     log.warning(
                         "Temporary failure, will retry in %d seconds",
                         retry_delay,
-                        exc_info=True,
                     )
 
                     span_parent.log_kv(
@@ -475,6 +485,15 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                             retry_delay, twisted_reactor=self.sygnal.reactor
                         )
 
+            PushOutcome(
+                log,
+                "apns",
+                self.name,
+                device.pushkey,
+                n.event_id,
+                self.MAX_TRIES - 1,
+                push_type is PushType.BACKGROUND,
+            ).emit("error", "retry_exhausted")
             raise NotificationDispatchException("Retried too many times.")
 
     def _is_clearing_push(
@@ -624,9 +643,7 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
         # текст. Отдельная ветка: у сторис type=m.room.message и room_name
         # "Stories - ivan" — штатный loc-key путь дал бы неверный заголовок.
         if is_story(n.content):
-            return self._get_payload_story(
-                n, device, from_display, send_badge_counts
-            )
+            return self._get_payload_story(n, device, from_display, send_badge_counts)
 
         loc_key = None
         loc_args = None
@@ -735,7 +752,7 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                 badge += n.counts.missed_calls
 
         if loc_key is None and badge is None:
-            log.info("Nothing to do for alert of type %s", n.type)
+            log.info("Nothing to do for unsupported alert type")
             return None
 
         payload = {}
@@ -799,7 +816,9 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                     ]
             if content_preview:
                 payload["content"] = content_preview
-        if n.counts and (n.counts.unread is not None or n.counts.missed_calls is not None):
+        if n.counts and (
+            n.counts.unread is not None or n.counts.missed_calls is not None
+        ):
             # NSE на iOS и AppDelegate на macOS читают counts как JSON-строку.
             counts: Dict[str, Any] = {}
             if n.counts.unread is not None:

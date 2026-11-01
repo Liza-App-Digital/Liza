@@ -9,6 +9,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/settings_notifications/push_rule_extensions.dart';
 import 'package:liza/utils/push_rule_defaults.dart';
 import 'package:liza/widgets/developer_mark.dart';
+import 'package:liza/widgets/notification_health_panel.dart';
 import 'package:liza/widgets/layouts/max_width_body.dart';
 import '../../widgets/matrix.dart';
 import '../../widgets/if_developer.dart';
@@ -65,6 +66,8 @@ class SettingsNotificationsView extends StatelessWidget {
     return SelectionArea(
       child: Column(
         children: [
+          const NotificationHealthPanel(),
+          const Divider(),
           if (deviations != null && deviations.isNotEmpty) ...[
             ListTile(
               leading: Icon(
@@ -204,6 +207,7 @@ class SettingsNotificationsView extends StatelessWidget {
                   const DeveloperMark(),
                 ],
               ),
+              subtitle: Text(l10n.notificationLocalTestExplanation),
               trailing: controller.isSendingTestPush
                   ? const SizedBox(
                       width: 24,

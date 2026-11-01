@@ -11,6 +11,7 @@ import 'package:liza/utils/animated_gif.dart';
 import 'package:liza/utils/upload_progress_tracker.dart';
 import 'package:liza/widgets/mxc_image.dart';
 import '../../../widgets/blur_hash.dart';
+import 'inline_bot_video.dart';
 
 class ImageBubble extends StatelessWidget {
   final Event event;
@@ -152,6 +153,18 @@ class ImageBubble extends StatelessWidget {
         : _buildPlaceholder;
 
     final uploadOverlay = _uploadOverlay();
+    final image = MxcImage(
+      event: event,
+      width: width,
+      height: height,
+      fit: fit,
+      animated: animated,
+      isThumbnail: thumbnailOnly && !animateGif,
+      cacheWidth: animateGif
+          ? (width * MediaQuery.devicePixelRatioOf(context)).round()
+          : null,
+      placeholder: placeholder,
+    );
 
     return Material(
       color: Colors.transparent,
@@ -171,20 +184,7 @@ class ImageBubble extends StatelessWidget {
           children: [
             Hero(
               tag: event.eventId,
-              child: MxcImage(
-                event: event,
-                width: width,
-                height: height,
-                fit: fit,
-                animated: animated,
-                // Анимацию GIF даёт оригинал: `animated` в event-пути MxcImage
-                // не участвует, превью статично.
-                isThumbnail: thumbnailOnly && !animateGif,
-                cacheWidth: animateGif
-                    ? (width * MediaQuery.devicePixelRatioOf(context)).round()
-                    : null,
-                placeholder: placeholder,
-              ),
+              child: animateGif ? ViewportAnimation(child: image) : image,
             ),
             if (uploadOverlay != null) Positioned.fill(child: uploadOverlay),
             if (isGif && !animateGif)

@@ -24,6 +24,8 @@ import 'package:liza/utils/upload_error_classifier.dart';
 import 'package:liza/utils/show_scaffold_dialog.dart';
 import 'package:liza/utils/incoming_uri_policy.dart';
 import 'package:liza/utils/invite_link_parser.dart';
+import 'package:liza/utils/bot_deep_link.dart';
+import 'package:liza/utils/pending_deep_link.dart';
 import 'package:liza/utils/pending_invite_code.dart';
 import 'package:liza/utils/show_update_snackbar.dart';
 import 'package:liza/utils/voice_recording_guard.dart';
@@ -714,6 +716,18 @@ class ChatListController extends State<ChatList>
     // iOS/macOS — дефолт), потому что go_router матчит только uri.path и
     // теряет host у custom-scheme (`liza://story/<code>` → path `/<code>`).
     // См. [[RL-deeplink-single-path]].
+    final botLink = parseBotLink(uri);
+    if (botLink != null) {
+      final firstTime = await PendingDeepLinkStore.markDeepLinkHandled(
+        botLink.route,
+      );
+      if (isInitialLink && !firstTime) return;
+      if (!mounted) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) context.go(botLink.route);
+      });
+      return;
+    }
     final storyCode = parseStoryLinkCode(uri);
     if (storyCode != null) {
       if (!mounted) return;

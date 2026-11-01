@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'package:matrix/matrix.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
@@ -11,13 +12,20 @@ import 'package:liza/pages/chat/external_link_web_view.dart';
 import 'package:liza/utils/bot_callback.dart';
 import 'package:liza/utils/url_launcher.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
+import 'package:liza/utils/bot_interactive_api.dart';
+import 'package:liza/utils/bot_interactive_draft.dart';
+import 'package:liza/utils/bot_interactive_consent.dart';
 import 'package:liza/widgets/matrix.dart';
+import 'package:liza/pages/chat/mini_app_web_view.dart';
 import 'html_message.dart';
 
 class _XlButton {
   final String index;
   final String title;
   final String? url;
+  final String? webAppUrl;
+  final String? inlineQuery;
+  final bool currentChat;
 
   /// Сервер принимает нажатие событием [botCallbackEventType] (флаг ставит
   /// Liza Bot API). Без флага — номер текстом (кнопки @bo_food, старые сообщения).
@@ -26,6 +34,9 @@ class _XlButton {
     required this.index,
     required this.title,
     this.url,
+    this.webAppUrl,
+    this.inlineQuery,
+    this.currentChat = false,
     this.callback = false,
   });
 }
@@ -67,7 +78,7 @@ Future<void> openXlButtonUrl(BuildContext context, String url) async {
 /// [event] — display-событие (после правки — сама правка): кнопки и id для
 /// нажатия берутся из него, сервер хранит кнопки и под событием правки.
 ///
-/// Интерактивна (рисует кнопки) ТОЛЬКО когда отправитель — бот (роль `ai`):
+/// Интерактивна (рисует кнопки) ТОЛЬКО когда отправитель подтверждён реестром ботов:
 /// доверяем управляющие кнопки лишь доверенному отправителю. Иначе — обычный
 /// текст (старые клиенты и так рендерят нумерованный список из `formatted_body`).
 class XlButtonsContent extends StatefulWidget {
@@ -93,6 +104,34 @@ class XlButtonsContent extends StatefulWidget {
 }
 
 class _XlButtonsContentState extends State<XlButtonsContent> {
+  BotInteractiveApi? _api;
+  RegisteredBot? _registeredBot;
+  int _trustGeneration = 0;
+  bool get _legacySystemBot => AppConfig.legacySystemBotMxidsForHomeserver(
+    widget.event.room.client.homeserver?.host,
+  ).contains(widget.event.senderId);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTrust();
+  }
+
+  Future<void> _loadTrust() async {
+    final generation = ++_trustGeneration;
+    _api?.dispose();
+    final api = _api = BotInteractiveApi(widget.event.room.client);
+    _registeredBot = null;
+    try {
+      final bot = await api.resolve(mxid: widget.event.senderId);
+      if (mounted && generation == _trustGeneration && api.isCurrent) {
+        setState(() => _registeredBot = bot);
+      }
+    } catch (_) {
+      /* Нет проверенного реестра — только текст. */
+    }
+  }
+
   /// Сколько кнопка ждёт ответа бота после тапа. Ответа может не быть вовсе
   /// (бот не вызвал `answerCallbackQuery`) — тогда спиннер снимается молча.
   static const pendingBound = Duration(seconds: 15);
@@ -117,6 +156,8 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
 
   @override
   void dispose() {
+    ++_trustGeneration;
+    _api?.dispose();
     for (final t in _pendingTimers.values) {
       t.cancel();
     }
@@ -129,6 +170,11 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
   @override
   void didUpdateWidget(XlButtonsContent oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.event.senderId != widget.event.senderId ||
+        oldWidget.event.room.client != widget.event.room.client ||
+        _api?.isCurrent != true) {
+      _loadTrust();
+    }
     // Бот отредактировал сообщение (display-событие сменилось) — это новый набор
     // кнопок: галочка от прежнего нажатия не должна перескочить на кнопку с тем
     // же номером.
@@ -140,20 +186,83 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
   List<_XlButton> _parseButtons() {
     final raw = widget.event.content[XlButtonsContent.contentKey];
     final out = <_XlButton>[];
-    if (raw is List) {
+    if (raw is List && raw.length <= 100) {
       for (final b in raw) {
-        if (b is! Map) continue;
-        final title = b['title']?.toString() ?? '';
-        if (title.isEmpty) continue;
-        final url = b['url']?.toString();
+        if (b is! Map || b['title'] is! String || b['index'] is! String) {
+          continue;
+        }
+        if (b['kind'] == 'reply' ||
+            b.containsKey('web_app') ||
+            b.containsKey('switch_inline_query') ||
+            b.containsKey('switch_inline_query_current_chat') ||
+            b.containsKey('request_contact') ||
+            b.containsKey('request_location')) {
+          continue;
+        }
+        final title = b['title'] as String;
+        final index = b['index'] as String;
+        if (title.isEmpty ||
+            title.length > 256 ||
+            !RegExp(r'^[a-zA-Z0-9_-]{1,64}$').hasMatch(index)) {
+          continue;
+        }
+        final rawUrl = b['url'];
+        final url = rawUrl == '' ? null : rawUrl;
+        if (url != null && url is! String) continue;
+        if (b['callback'] != null && b['callback'] is! bool) continue;
+        if (url != null && b['callback'] == true) continue;
         out.add(
           _XlButton(
-            index: b['index']?.toString() ?? '',
+            index: index,
             title: title,
-            url: (url != null && url.isNotEmpty) ? url : null,
+            url: url as String?,
             callback: b['callback'] == true,
           ),
         );
+      }
+    }
+    // web_app не открывается внешним URL launcher: только зарегистрированный host.
+    final markup = widget.event.content['com.liza.bot_markup'];
+    final rows = markup is Map ? markup['inline_keyboard'] : null;
+    if (rows is List && rows.length <= 12) {
+      for (final row in rows) {
+        if (row is! List || row.length > 8) continue;
+        for (final button in row) {
+          if (button is! Map ||
+              button.length != 2 ||
+              button['text'] is! String) {
+            continue;
+          }
+          final inlineQuery =
+              button['switch_inline_query'] ??
+              button['switch_inline_query_current_chat'];
+          if (_registeredBot?.supportsInteractive == true &&
+              inlineQuery is String &&
+              inlineQuery.length <= 256) {
+            out.add(
+              _XlButton(
+                index: 'inline:${out.length}',
+                title: button['text'] as String,
+                inlineQuery: inlineQuery,
+                currentChat: button.containsKey(
+                  'switch_inline_query_current_chat',
+                ),
+              ),
+            );
+            continue;
+          }
+          final app = button['web_app'];
+          if (app is! Map || app.length != 1 || app['url'] is! String) continue;
+          final url = app['url'] as String;
+          if (_registeredBot?.appForUrl(url) == null) continue;
+          out.add(
+            _XlButton(
+              index: 'web:${out.length}',
+              title: button['text'] as String,
+              webAppUrl: url,
+            ),
+          );
+        }
       }
     }
     return out;
@@ -225,6 +334,84 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
   }
 
   Future<void> _onTap(_XlButton b) async {
+    if ((_registeredBot == null && !_legacySystemBot) ||
+        _api?.isCurrent != true) {
+      return;
+    }
+    if (b.inlineQuery != null) {
+      if (_busy) return;
+      _busy = true;
+      final event = widget.event;
+      bool current() =>
+          mounted && event == widget.event && _api?.isCurrent == true;
+      try {
+        final selectedRoom = b.currentChat
+            ? event.room
+            : await showInteractiveConsent<Room>(
+                context: context,
+                isCurrent: current,
+                builder: (context) => SimpleDialog(
+                  title: Text(L10n.of(context).botChooseChat),
+                  children: [
+                    for (final room in event.room.client.rooms)
+                      if (room.membership == Membership.join && !room.isSpace)
+                        SimpleDialogOption(
+                          onPressed: () => Navigator.of(context).pop(room),
+                          child: Text(room.getLocalizedDisplayname()),
+                        ),
+                  ],
+                ),
+              );
+        if (!current() || selectedRoom == null) return;
+        final username = _registeredBot?.data['username'];
+        final name = username is String
+            ? username
+            : (event.senderId.localpart ?? '');
+        if (!RegExp(r'^[A-Za-z0-9_]{1,64}$').hasMatch(name)) return;
+        final text = '@$name ${b.inlineQuery}';
+        if (!BotInteractiveDraft.apply(
+          event.room.client,
+          selectedRoom.id,
+          text,
+        )) {
+          await Matrix.of(
+            context,
+          ).store.setString('draft_${selectedRoom.id}', text);
+        }
+        if (current() && selectedRoom.id != event.room.id) {
+          context.go('/rooms/${selectedRoom.id}');
+        }
+      } finally {
+        _busy = false;
+      }
+      return;
+    }
+    if (b.webAppUrl != null) {
+      if (_busy) return;
+      _busy = true;
+      final event = widget.event;
+      try {
+        final bot = await _api!.resolve(mxid: event.senderId, force: true);
+        if (!mounted || event != widget.event || _api?.isCurrent != true) {
+          return;
+        }
+        final launch = bot?.appForUrl(b.webAppUrl!);
+        if (launch == null) return;
+        await MiniAppWebView.open(
+          context: context,
+          appUrl: launch.appUrl,
+          appId: launch.appId,
+          botMxid: launch.botMxid,
+          appName: launch.appName,
+          room: event.room,
+          appType: launch.appType,
+          appStartPath: launch.appStartPath,
+        );
+      } finally {
+        _busy = false;
+      }
+      return;
+    }
     if (b.url == null && b.callback) return _onCallbackTap(b);
     if (_busy) return;
     _busy = true;
@@ -283,7 +470,8 @@ class _XlButtonsContentState extends State<XlButtonsContent> {
     );
 
     final buttons = _parseButtons();
-    final senderIsBot = Matrix.of(context).isAiUser(widget.event.senderId);
+    final senderIsBot =
+        (_registeredBot != null || _legacySystemBot) && _api?.isCurrent == true;
     if (!senderIsBot || buttons.isEmpty) {
       return textWidget;
     }

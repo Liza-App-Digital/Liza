@@ -214,6 +214,26 @@ abstract class AppConfig {
   static String supportBotMxidForHomeserver(String? host) =>
       isLocalHost(host) ? '@support:liza.local' : '@support:bots.liza.ru';
 
+  /// Точные системные MXID из прежнего встроенного каталога MatrixState.
+  /// Только старые XL text/callback/URL; это НЕ реестр для контактов, WebApp
+  /// или приватных запросов. Чужая роль ai и произвольный домен ботов не подходят.
+  static Set<String> legacySystemBotMxidsForHomeserver(String? host) => {
+    '@liza:bots.liza.ru',
+    '@gpt:bots.liza.ru',
+    '@deepseek:bots.liza.ru',
+    '@botfather:bots.liza.ru',
+    '@liza-news:bots.liza.ru',
+    '@support:bots.liza.ru',
+    if (isLocalHost(host)) ...{
+      '@liza:liza.local',
+      '@bot_father:liza.local',
+      '@liza-news:liza.local',
+      '@support:liza.local',
+    },
+    if (host == 'dev.liza.laba.prodamus.tech')
+      '@liza:dev.liza.laba.prodamus.tech',
+  };
+
   static const Set<String> defaultReactions = {'👍', '❤️', '😂', '😮', '😢'};
 
   static final Uri homeserverList = Uri(

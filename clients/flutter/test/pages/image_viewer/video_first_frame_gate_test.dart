@@ -61,7 +61,7 @@ void main() {
     });
 
     test('AC:RL-video-first-frame-loading-gate/5 — дедлайн → открыт, и он '
-        'позже watchdog E2EE (15 с) и stalled-детектора (16 с)', () {
+        'сохраняет 20-секундный UX-дедлайн независимо от transport idle', () {
       expect(_open(deadline: true), isTrue);
       expect(firstFrameGateDeadline, greaterThan(const Duration(seconds: 16)));
     });
@@ -82,7 +82,7 @@ void main() {
     );
     // Единственный прямой open — внутри хелпера, взводящего гейт заново.
     expect(
-      RegExp(r'await _player\.open\(').allMatches(source).length,
+      RegExp(r'(?:await | = )(?:_player|[a-z]+\.player)\.open\(').allMatches(source).length,
       1,
       reason: 'новый open в обход _openWatchingFirstFrame оставит чужой кадр',
     );
@@ -91,6 +91,7 @@ void main() {
       greaterThanOrEqualTo(5),
       reason: 'prefetch, стрим, E2EE-прокси, web-blob, локальный файл',
     );
+    expect(source, contains('a.player.open(media, play: false)'));
     // Completer одноразовый на контроллер: после свапа/«Повторить» соврёт.
     expect(source, isNot(contains('waitUntilFirstFrameRendered')));
   });

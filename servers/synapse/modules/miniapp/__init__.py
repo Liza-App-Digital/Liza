@@ -221,6 +221,17 @@ class InitDataResource(_JsonResource):
             self._error(request, "suspended", f"Приложение '{app_id}' отключено", 403)
             return
 
+        # URL запуска недоверен (room state / deeplink). Возвращаем proof из
+        # того же реестра, который разрешил подпись, включая system=true apps.
+        app_url = body.get("app_url")
+        registered_url = app.get("url")
+        if app_url is not None and (
+            not isinstance(app_url, str) or not app_url
+            or app_url != registered_url
+        ):
+            self._error(request, "forbidden", "URL приложения не совпадает с реестром", 403)
+            return
+
         room_id = body.get("room_id")
         if room_id is not None and (not isinstance(room_id, str) or not room_id):
             self._error(request, "bad_request", "room_id должен быть непустой строкой", 400)
@@ -230,6 +241,28 @@ class InitDataResource(_JsonResource):
         if room_id is not None and self._verify_room_membership:
             if not await self._check_membership(user_id, room_id):
                 self._error(request, "forbidden", "Вы не участник указанной комнаты", 403)
+                return
+
+        try:
+            start_param = _crypto.validate_start_param(body.get("start_param"))
+        except ValueError as e:
+            self._error(request, "bad_request", str(e), 400)
+            return
+
+        # Query ID непрозрачен: подпись подтверждает переданный идентификатор,
+        # Bot API отдельно проверяет его bot/user/session/app/room binding.
+        query_id = body.get("query_id")
+        if query_id is not None:
+            import re
+            if not isinstance(query_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", query_id):
+                self._error(request, "bad_request", "query_id имеет неверный формат", 400)
+                return
+
+        join_query_id = body.get("chat_join_request_query_id")
+        if join_query_id is not None:
+            import re
+            if not isinstance(join_query_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", join_query_id):
+                self._error(request, "bad_request", "chat_join_request_query_id имеет неверный формат", 400)
                 return
 
         # Ключ подписи: per-app derived (B5) или legacy-единый.
@@ -283,6 +316,12 @@ class InitDataResource(_JsonResource):
         }
         if room_id is not None:
             params["room_id"] = room_id
+        if start_param is not None:
+            params["start_param"] = start_param
+        if join_query_id is not None:
+            params["chat_join_request_query_id"] = join_query_id
+        if query_id is not None:
+            params["query_id"] = query_id
         if self._ed25519_seed is not None:
             params["key_id"] = self._ed25519_key_id
 
@@ -294,7 +333,8 @@ class InitDataResource(_JsonResource):
 
         init_data = _crypto.encode_init_data(params, hash_value, signature)
 
-        self._json_response(request, {"init_data": init_data, "ttl": self._auth_date_ttl})
+        self._json_response(request, {"init_data": init_data, "ttl": self._auth_date_ttl,
+                                      "verified_app_url": registered_url})
 
 
 class ValidateNonceResource(_JsonResource):

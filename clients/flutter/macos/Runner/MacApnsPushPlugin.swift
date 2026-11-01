@@ -426,6 +426,15 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             result(MacApnsPushPlugin.appCopies())
         case "getScreenLocked":
             result(MacApnsPushPlugin.isScreenLocked())
+        case "readDiagnosticJournal":
+            DispatchQueue.global(qos: .utility).async {
+                let entries = NativePushJournal.shared?.read()
+                DispatchQueue.main.async { result(entries) }
+            }
+        case "openNotificationSettings":
+            let specific = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!
+            let fallback = URL(string: "x-apple.systempreferences:com.apple.preference.notifications")!
+            result(NSWorkspace.shared.open(specific) || NSWorkspace.shared.open(fallback))
         case "getNotificationSettings":
             // Единственный способ отличить «ОС подавила рендер» от «мы не
             // записали». Read-back бейджа на macOS ТАВТОЛОГИЧЕН: в
@@ -435,20 +444,21 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             // архитектурно, даже когда система бейдж не рисует. Поэтому
             // спрашиваем САМУ ОС (диагностика 2026-09-09).
             UNUserNotificationCenter.current().getNotificationSettings { s in
-                DispatchQueue.main.async {
-                    // alertStyle/notificationCenter — для когорт push-report:
-                    // `alert=enabled` при `alertStyle=none` = «разрешено, но
-                    // баннер не всплывает», ровно «пуши идут, баннеров нет».
-                    result([
-                        "authorization": s.authorizationStatus.rawValue,
-                        "alert": s.alertSetting.rawValue,
-                        "badge": s.badgeSetting.rawValue,
-                        "sound": s.soundSetting.rawValue,
-                        "alertStyle": s.alertStyle.rawValue,
-                        "notificationCenter": s.notificationCenterSetting.rawValue,
-                        "lockScreen": s.lockScreenSetting.rawValue,
-                    ])
+                var settings: [String: Any] = [
+                    "authorization": s.authorizationStatus.rawValue,
+                    "alert": s.alertSetting.rawValue,
+                    "badge": s.badgeSetting.rawValue,
+                    "sound": s.soundSetting.rawValue,
+                    "alertStyle": s.alertStyle.rawValue,
+                    "notificationCenter": s.notificationCenterSetting.rawValue,
+                    "lockScreen": s.lockScreenSetting.rawValue,
+                    "timeSensitive": -1, "scheduledDelivery": -1,
+                ]
+                if #available(iOS 15.0, macOS 12.0, *) {
+                    settings["timeSensitive"] = s.timeSensitiveSetting.rawValue
+                    settings["scheduledDelivery"] = s.scheduledDeliverySetting.rawValue
                 }
+                DispatchQueue.main.async { result(settings) }
             }
         default:
             result(FlutterMethodNotImplemented)
@@ -459,6 +469,7 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
 
     public static func didRegisterForRemoteNotifications(deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        NativePushJournal.shared?.token(token)
 
         queue.sync {
             pendingToken = token
@@ -473,6 +484,7 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
     }
 
     public static func didFailToRegisterForRemoteNotifications(error: Error) {
+        NativePushJournal.shared?.append(.token, reason: .registration_failed)
         queue.sync {
             if let pending = pendingTokenResult {
                 pending(FlutterError(

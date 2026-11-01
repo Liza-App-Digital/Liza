@@ -19,8 +19,11 @@ import 'package:liza/utils/bot_callback.dart';
 import 'package:liza/utils/matrix_sdk_extensions/filtered_timeline_extension.dart';
 import 'package:liza/widgets/matrix.dart';
 import '../../utils/test_client.dart';
+import '../../utils/registered_bot_test_transport.dart';
 
 void main() {
+  setUp(installRegisteredBotTestTransport);
+  tearDown(resetRegisteredBotTestTransport);
   Widget wrap(Widget child) => MaterialApp(
     locale: const Locale('ru'),
     localizationsDelegates: L10n.localizationsDelegates,

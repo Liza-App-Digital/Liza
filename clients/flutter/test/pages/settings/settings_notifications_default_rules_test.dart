@@ -9,6 +9,7 @@
 //   • разработчик видит сырые правила как раньше.
 // Рендерит РЕАЛЬНЫЙ SettingsNotificationsView через Matrix.of(context).
 // ledger:RL-push-rules-default-reset-client
+// ledger:RL-push-notification-health-ui
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -19,6 +20,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/settings_notifications/settings_notifications.dart';
 import 'package:liza/pages/settings_notifications/settings_notifications_view.dart';
 import 'package:liza/utils/push_rule_defaults.dart';
+import 'package:liza/utils/notification_health.dart';
 import 'package:liza/utils/user_role_service.dart';
 import 'package:liza/widgets/matrix.dart' as liza_matrix;
 
@@ -54,9 +56,19 @@ Map<String, Object?> _rule(String id, bool enabled) => {
 };
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    await L10n.delegate.load(const Locale('en'));
+    await L10n.delegate.load(const Locale('ru'));
+  });
   late Client client;
 
   setUp(() async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          NotificationHealth.appleChannel,
+          (call) async => null,
+        );
     client = await prepareTestClient(loggedIn: true);
     client.backgroundSync = false;
     await client.abortSync();
@@ -74,6 +86,7 @@ void main() {
     required bool messageEnabled,
     required bool suppressEditsEnabled,
     String role = 'user',
+    String locale = 'ru',
   }) async {
     client.accountData['m.push_rules'] = BasicEvent(
       type: 'm.push_rules',
@@ -95,7 +108,7 @@ void main() {
       MaterialApp(
         localizationsDelegates: L10n.localizationsDelegates,
         supportedLocales: L10n.supportedLocales,
-        locale: const Locale('ru'),
+        locale: Locale(locale),
         home: Provider<liza_matrix.MatrixState>.value(
           value: _TestMatrixState(client, service),
           child: SettingsNotificationsView(controller),
@@ -153,6 +166,7 @@ void main() {
         findsOneWidget,
       );
       expect(resetButton, findsOneWidget);
+      await tester.ensureVisible(resetButton);
       await tester.tap(resetButton);
       await tester.pump();
       expect(controller.resetWith!.map((r) => r.ruleId), [
@@ -161,4 +175,27 @@ void main() {
       ]);
     },
   );
+  for (final locale in ['en', 'ru']) {
+    testWidgets(
+      'AC:RL-push-notification-health-ui/6 $locale local notification is not end-to-end',
+      (tester) async {
+        await pumpScreen(
+          tester,
+          messageEnabled: true,
+          suppressEditsEnabled: true,
+          role: 'developer',
+          locale: locale,
+        );
+        final l10n = L10n.of(
+          tester.element(find.byType(SettingsNotificationsView)),
+        );
+        expect(find.text(l10n.testPushNotification), findsOneWidget);
+        expect(
+          find.text(l10n.notificationLocalTestExplanation),
+          findsOneWidget,
+        );
+        expect(find.textContaining('APNs/FCM'), findsOneWidget);
+      },
+    );
+  }
 }

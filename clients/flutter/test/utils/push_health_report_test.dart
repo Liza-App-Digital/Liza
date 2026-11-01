@@ -19,7 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:liza/utils/push_report_outbox.dart';
 
 import 'package:liza/utils/apns_push_service.dart';
 import 'package:liza/utils/background_push.dart';
@@ -27,6 +27,7 @@ import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/push_journal.dart';
 
 import 'per_user_fake_api.dart';
+import 'push_report_test_support.dart';
 import 'test_client.dart';
 
 const _platforms = ['macos', 'ios', 'android', 'windows', 'linux', 'web'];
@@ -61,6 +62,7 @@ class _ThrowingJournal extends PushJournal {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  tearDown(() => Monitoring.setPushReportOutboxForTest(null));
 
   // AC:RL-push-health-report/1
   test('title отчёта: ∀ платформа — маркер [health], без env=, ≤100', () {
@@ -78,7 +80,6 @@ void main() {
 
   // AC:RL-push-health-report/4
   test('отчёт ∀ стадия журнала не несёт сырых id, mxid и текста', () async {
-    SharedPreferences.setMockInitialValues({});
     final j = PushJournal.forTest();
     final now = DateTime(2026, 10, 16, 12);
     for (final stage in PushStage.values) {
@@ -94,7 +95,19 @@ void main() {
     }
     String? title;
     Map<String, String>? tags;
-    Map<String, Object>? extra;
+    Map<String, Object?>? extra;
+    Monitoring.setPushReportOutboxForTest(
+      PushReportOutbox(
+        store: MemoryPushReportStore(),
+        transport: () => CallbackPushReportTransport((report) {
+          final payload = report['payload'] as Map;
+          title = payload['title'] as String;
+          tags = Map<String, String>.from(payload['tags'] as Map);
+          extra = Map<String, Object?>.from(payload['context'] as Map);
+          return report['event_id'] as String;
+        }),
+      ),
+    );
     await Monitoring.reportPushHealth(
       platform: 'macos',
       tags: {
@@ -107,12 +120,12 @@ void main() {
       ),
       journalTail: PushJournal.tail(j.entries, Monitoring.pushReportTailBytes),
       now: now,
-      send: (t, tg, ex) {
-        title = t;
-        tags = tg;
-        extra = ex;
-      },
+      settingsObservedAt: now,
+      nativeJournalStatus: 'available',
     );
+    expect(extra!['settings_observed_at'], now.toUtc().toIso8601String());
+    expect((extra!['coverage'] as Map)['native_journal'], 'available');
+    expect(extra!['captured_at'], now.toUtc().toIso8601String());
     final blob = jsonEncode({'title': title, 'tags': tags, 'extra': extra});
     for (final forbidden in [
       '@',
@@ -309,35 +322,166 @@ void main() {
 
   // AC:RL-push-health-report/10
   test(
-    'троттл 24 ч; отметка пишется ДО отправки (сбой не даёт повтор)',
+    'сбой сохраняет снимок: retry через минуту, новый сбор через сутки',
     () async {
-      SharedPreferences.setMockInitialValues({});
       final t0 = DateTime(2026, 10, 16, 9);
-      var sent = 0;
-      Future<bool> run(DateTime at, {bool fail = false}) =>
-          Monitoring.reportPushHealth(
-            platform: 'macos',
-            tags: const {},
-            counters: const {},
-            journalTail: '',
-            now: at,
-            send: (_, _, _) {
-              if (fail) throw StateError('сеть');
-              sent++;
-            },
-          );
-      expect(await run(t0), isTrue);
-      expect(await run(t0.add(const Duration(hours: 3))), isFalse);
-      expect(await run(t0.add(const Duration(hours: 25)), fail: true), isFalse);
-      expect(
-        await run(t0.add(const Duration(hours: 26))),
-        isFalse,
-        reason: 'сбой отправки не открывает окно заново',
+      final attempts = <String>[];
+      var fail = true;
+      Monitoring.setPushReportOutboxForTest(
+        PushReportOutbox(
+          store: MemoryPushReportStore(),
+          transport: () => CallbackPushReportTransport((report) {
+            attempts.add(report['event_id'] as String);
+            if (fail) throw StateError('сеть');
+            return report['event_id'] as String;
+          }),
+        ),
       );
-      expect(await run(t0.add(const Duration(hours: 50))), isTrue);
-      expect(sent, 2);
+      Future<bool> run(DateTime at) => Monitoring.reportPushHealth(
+        platform: 'macos',
+        tags: const {},
+        counters: const {},
+        journalTail: '',
+        now: at,
+      );
+      expect(await run(t0), isFalse);
+      expect(Monitoring.pushReportStatus.value, PushReportStatus.pending);
+      fail = false;
+      expect(await run(t0.add(const Duration(seconds: 59))), isFalse);
+      expect(await run(t0.add(const Duration(minutes: 1))), isTrue);
+      expect(attempts, hasLength(2));
+      expect(
+        attempts[1],
+        attempts[0],
+        reason: 'повтор того же сохранённого снимка',
+      );
+      expect(await run(t0.add(const Duration(hours: 3))), isFalse);
+      expect(await run(t0.add(const Duration(hours: 24))), isTrue);
+      expect(attempts.last, isNot(attempts.first));
     },
   );
+
+  test(
+    'production report: disposed owner сохраняет pending; oversized не маскируется старым ACK',
+    () async {
+      final now = DateTime.utc(2026, 10, 30);
+      final store = MemoryPushReportStore();
+      var calls = 0;
+      final box = PushReportOutbox(
+        store: store,
+        transport: () => CallbackPushReportTransport((report) {
+          calls++;
+          return report['event_id'] as String;
+        }),
+      );
+      Monitoring.setPushReportOutboxForTest(box);
+      expect(
+        await Monitoring.reportPushHealth(
+          platform: 'ios',
+          tags: {},
+          counters: {},
+          journalTail: '',
+          now: now,
+          canSend: () => false,
+        ),
+        isFalse,
+      );
+      expect(calls, 0);
+      expect(Monitoring.pushReportStatus.value, PushReportStatus.pending);
+      expect(
+        await Monitoring.reportPushHealth(
+          platform: 'ios',
+          tags: {},
+          counters: {},
+          journalTail: 'x' * PushReportOutbox.maxBytes,
+          now: now.add(const Duration(minutes: 1)),
+          force: true,
+        ),
+        isFalse,
+      );
+      expect(
+        calls,
+        0,
+        reason: 'старый HTTP ACK не маскирует отказ записи нового снимка',
+      );
+      expect(Monitoring.pushReportStatus.value, PushReportStatus.error);
+      expect((await box.inspect())['reports'], hasLength(1));
+    },
+  );
+
+  // AC:RL-push-report-outbox/10
+  test(
+    'production report: native loss/truncation не выдают полное окно',
+    () async {
+      final now = DateTime.utc(2026, 10, 30);
+      Map<String, dynamic>? context;
+      Monitoring.setPushReportOutboxForTest(
+        PushReportOutbox(
+          store: MemoryPushReportStore(),
+          transport: () => CallbackPushReportTransport((report) {
+            context = report['payload']['context'] as Map<String, dynamic>;
+            return report['event_id'] as String;
+          }),
+        ),
+      );
+      final loss = <String, Object>{
+        'id': 'native-diagnostic-loss',
+        't': now.millisecondsSinceEpoch,
+        's': 'diagnosticLoss',
+        'value': 12,
+      };
+      for (final records in <List<Map<String, Object>>>[
+        [loss],
+        List.generate(
+          257,
+          (i) => {
+            'id': '$i',
+            't': now.millisecondsSinceEpoch,
+            's': 'nseReceived',
+          },
+        ),
+      ]) {
+        final at = now.add(Duration(minutes: records.length));
+        expect(
+          await Monitoring.reportPushHealth(
+            platform: 'ios',
+            tags: {},
+            counters: {},
+            journalTail: '',
+            now: at,
+            nativeJournal: records,
+            nativeJournalStatus: 'available',
+            force: true,
+          ),
+          isTrue,
+        );
+        expect(context!['coverage']['native_journal'], 'partial');
+        expect(context!['coverage']['native_window'], 'unknown');
+        expect(
+          context!['coverage']['truncated'],
+          isFalse,
+          reason: 'account coverage отдельно',
+        );
+        expect(context!['native_journal'].length, lessThanOrEqualTo(256));
+        if (records.length == 1) {
+          expect(context!['native_loss'], 12);
+          expect(
+            context!['coverage']['native_loss_semantics'],
+            'cumulative_unknown_window',
+          );
+        } else {
+          expect(context!['native_report_dropped'], 1);
+          expect(context!['coverage']['native_truncated'], isTrue);
+        }
+      }
+    },
+  );
+
+  test('выключенный мониторинг сообщает disabled до раннего выхода Matrix', () async {
+    Monitoring.setPushReportOutboxForTest(null);
+    expect(await Monitoring.pushReportIsDue(manual: true), isFalse);
+    expect(Monitoring.pushReportStatus.value, PushReportStatus.disabled);
+  });
 
   // AC:RL-push-health-report/11
   test('теги: только словарь когорты, значения ≤32', () {

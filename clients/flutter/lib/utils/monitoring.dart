@@ -1,15 +1,19 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show ValueNotifier, visibleForTesting;
 import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding;
 
 import 'package:http/http.dart' as http show ClientException;
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:matrix/matrix.dart' show Client;
+import 'package:liza/utils/push_rule_defaults.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:liza/config/app_config.dart';
+import 'package:liza/utils/push_report_outbox.dart';
 
 /// Мониторинг ошибок клиента Liza поверх Sentry-совместимого бэкенда (GlitchTip).
 ///
@@ -21,6 +25,8 @@ import 'package:liza/config/app_config.dart';
 /// (`FlutterError.onError`, `PlatformDispatcher.onError`, `runZonedGuarded`) —
 /// собственную error-зону SDK не создаёт, чтобы не ломать порядок
 /// инициализации (`FileLogger`, `Vodozemac`, `ClientManager`).
+enum PushReportStatus { idle, pending, httpAccepted, error, disabled }
+
 abstract final class Monitoring {
   static bool _active = false;
 
@@ -63,6 +69,7 @@ abstract final class Monitoring {
   /// Без build-флагов или с пустым DSN — no-op.
   static Future<void> init() async {
     if (!AppConfig.monitoringEnabled || AppConfig.monitoringDsn.isEmpty) {
+      pushReportStatus.value = PushReportStatus.disabled;
       return;
     }
     await SentryFlutter.init((options) {
@@ -108,6 +115,7 @@ abstract final class Monitoring {
     Object error,
     StackTrace? stack, {
     bool fatal = false,
+    Map<String, Object>? videoFlight,
   }) {
     if (!_active) return;
     if (_isNetworkError(error)) return;
@@ -115,8 +123,10 @@ abstract final class Monitoring {
     Sentry.captureException(
       error,
       stackTrace: stack,
-      withScope: (scope) => scope.level =
-          fatal ? SentryLevel.fatal : SentryLevel.error,
+      withScope: (scope) {
+        scope.level = fatal ? SentryLevel.fatal : SentryLevel.error;
+        if (videoFlight != null) scope.setContexts('video_flight', videoFlight);
+      },
     );
   }
 
@@ -254,11 +264,14 @@ abstract final class Monitoring {
   /// В теги класть бесполезно — Slack-webhook GlitchTip их до notifier не несёт.
   /// Кардинальность контекста держать низкой (бакеты, не сырой size), иначе
   /// GlitchTip расклеит message-issue. Секретов не кладём (пин `RL-mediadiag-no-secret`).
+  /// [videoFlight] — «чёрный ящик» сессии (`VideoFlightRecorder.toContext`): уходит
+  /// контекстом события и читается только через API GlitchTip, в чат не едет.
   static void reportVideoIssue({
     required String prefix,
     required String reason,
     String? host,
     Map<String, String> context = const {},
+    Map<String, Object>? videoFlight,
   }) {
     if (!_active) return;
     Sentry.captureMessage(
@@ -269,7 +282,10 @@ abstract final class Monitoring {
         context: context,
       ),
       level: SentryLevel.warning,
-      withScope: (scope) => scope.setTag('liza.category', 'video'),
+      withScope: (scope) {
+        scope.setTag('liza.category', 'video');
+        if (videoFlight != null) scope.setContexts('video_flight', videoFlight);
+      },
     );
   }
 
@@ -280,7 +296,8 @@ abstract final class Monitoring {
   /// троттл-политика (per-reason окно, [audioIssueThrottleAllows]) — проект
   /// осознанно держит параллельные `reportVideoIssue`/`reportPushIssue`.
   static const String audioFailurePrefix = '[audio-fail]';
-  static const String audioTranscriptionFailurePrefix = '[audio-transcription-fail]';
+  static const String audioTranscriptionFailurePrefix =
+      '[audio-transcription-fail]';
 
   /// Строит стабильный low-cardinality title аудио-сигнала. host+reason в TITLE
   /// (как у видео) — дедуп notifier `room|title` различает инциденты по хосту
@@ -465,7 +482,8 @@ abstract final class Monitoring {
   /// Строит стабильный low-cardinality title клиентского push-сигнала. Только
   /// префикс + reason (техническая метка) — без токена/pushkey/mxid (пин
   /// `RL-mediadiag-no-secret`). Выделено для страж-теста контракта.
-  static String pushIssueTitle(String reason) => '$pushFailurePrefix reason=$reason';
+  static String pushIssueTitle(String reason) =>
+      '$pushFailurePrefix reason=$reason';
 
   /// Троттл push-сигнала per-reason. `fcm_token_unavailable` иначе повторялся бы
   /// на КАЖДЫЙ resume (>5с) при устройстве без FCM → счётчик issue в GlitchTip
@@ -514,7 +532,8 @@ abstract final class Monitoring {
   /// серверного `pusher-health-poller.py`; notifier роутит в общий `ALERT_ROOM`.
   static const String pushConfigPrefix = '[push-config]';
 
-  static String pushConfigTitle(String reason) => '$pushConfigPrefix reason=$reason';
+  static String pushConfigTitle(String reason) =>
+      '$pushConfigPrefix reason=$reason';
 
   static const Duration _pushConfigWindow = Duration(hours: 24);
 
@@ -522,8 +541,10 @@ abstract final class Monitoring {
   /// [pushIssueThrottleAllows]: состояние хроническое, а мобильная ОС убивает
   /// процесс — in-memory окно обнулялось бы на каждом холодном старте.
   @visibleForTesting
-  static bool pushConfigDue({required DateTime? lastSent, required DateTime now}) =>
-      lastSent == null || now.difference(lastSent) >= _pushConfigWindow;
+  static bool pushConfigDue({
+    required DateTime? lastSent,
+    required DateTime now,
+  }) => lastSent == null || now.difference(lastSent) >= _pushConfigWindow;
 
   /// [reason] — закрытый перечень: `default_rule_disabled` (выключено дефолтное
   /// notify-правило, часть чатов без пуша и счётчика), `os_denied` (ОС запретила
@@ -633,7 +654,54 @@ abstract final class Monitoring {
       '$healthPrefix push-report platform=$platform';
 
   static const Duration _pushReportWindow = Duration(hours: 24);
-  static const String _pushReportLastKey = 'monitoring.push_report_last_ms';
+  static final pushReportStatus = ValueNotifier<PushReportStatus>(
+    PushReportStatus.idle,
+  );
+  static PushReportOutbox? _pushOutbox;
+
+  @visibleForTesting
+  static void setPushReportOutboxForTest(PushReportOutbox? outbox) {
+    _pushOutbox = outbox;
+    pushReportStatus.value = PushReportStatus.idle;
+  }
+
+  static PushReportOutbox get _outbox => _pushOutbox ??= PushReportOutbox(
+    store: FilePushReportStore(),
+    transport: () => SentryPushReportTransport(
+      dsn: AppConfig.monitoringDsn,
+      environment: AppConfig.monitoringEnv,
+    ),
+  );
+
+  static void _syncPushStatus() {
+    pushReportStatus.value = switch (_outbox.status) {
+      PushReportDelivery.idle => PushReportStatus.idle,
+      PushReportDelivery.pending => PushReportStatus.pending,
+      PushReportDelivery.httpAccepted => PushReportStatus.httpAccepted,
+      PushReportDelivery.failed => PushReportStatus.error,
+    };
+  }
+
+  static bool _pushNetworkAllowed() {
+    final state = WidgetsBinding.instance.lifecycleState;
+    return state != AppLifecycleState.paused &&
+        state != AppLifecycleState.detached;
+  }
+
+  static Future<bool> retryPushReports({bool Function()? canSend}) async {
+    if (!_active || !_pushNetworkAllowed()) return false;
+    try {
+      final accepted = await _outbox.drain(
+        DateTime.now(),
+        canSend: () => _pushNetworkAllowed() && (canSend?.call() ?? true),
+      );
+      _syncPushStatus();
+      return accepted;
+    } catch (_) {
+      pushReportStatus.value = PushReportStatus.error;
+      return false;
+    }
+  }
 
   /// Потолок хвоста журнала в `extra`: события GlitchTip до ~56 КБ лежат целиком,
   /// но отчёт шлётся с каждого устройства — держим запас.
@@ -662,6 +730,11 @@ abstract final class Monitoring {
     'liza.running_copies',
     'liza.install_location',
     'liza.lock_screen',
+    'liza.time_sensitive',
+    'liza.scheduled_delivery',
+    'liza.channel_importance',
+    'liza.battery_optimization',
+    'liza.native_auto_display',
     // Разрешение на уведомления (`NotificationAuthTracker`).
     'liza.auth_first',
     'liza.auth_first_session',
@@ -685,81 +758,208 @@ abstract final class Monitoring {
   /// Оставить только ключи словаря и обрезать значения — свободный текст в
   /// теги не просочится, кардинальность ограничена.
   @visibleForTesting
-  static Map<String, String> sanitizePushReportTags(Map<String, String> raw) => {
-    for (final e in raw.entries)
-      if (pushReportTagKeys.contains(e.key) && e.value.isNotEmpty)
-        e.key: e.value.length > _tagValueMax
-            ? e.value.substring(0, _tagValueMax)
-            : e.value,
-  };
+  static Map<String, String> sanitizePushReportTags(Map<String, String> raw) =>
+      {
+        for (final e in raw.entries)
+          if (pushReportTagKeys.contains(e.key) && e.value.isNotEmpty)
+            e.key: e.value.length > _tagValueMax
+                ? e.value.substring(0, _tagValueMax)
+                : e.value,
+      };
 
   @visibleForTesting
-  static bool pushReportDue({required DateTime? lastSent, required DateTime now}) =>
-      lastSent == null || now.difference(lastSent) >= _pushReportWindow;
+  static bool pushReportDue({
+    required DateTime? lastSent,
+    required DateTime now,
+  }) => lastSent == null || now.difference(lastSent) >= _pushReportWindow;
 
-  /// Пора ли собирать отчёт — дешёвая проверка ДО нативных проб (их не дёргаем
-  /// на каждом resume).
-  static Future<bool> pushReportIsDue() async {
-    if (!_active) return false;
+  /// Суточный сбор независим от повторов уже сохранённых снимков.
+  static Future<bool> pushReportIsDue({bool manual = false}) async {
+    if (!_active) {
+      pushReportStatus.value = PushReportStatus.disabled;
+      return false;
+    }
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final lastMs = prefs.getInt(_pushReportLastKey);
-      return pushReportDue(
-        lastSent: lastMs == null ? null : DateTime.fromMillisecondsSinceEpoch(lastMs),
-        now: DateTime.now(),
-      );
+      return await _outbox.isDue(DateTime.now(), manual: manual);
     } catch (_) {
+      pushReportStatus.value = PushReportStatus.error;
       return false;
     }
   }
 
-  /// Суточный отчёт о пути уведомлений с устройства: теги когорты + счётчики
-  /// журнала + хвост журнала (только hash8, без текста). Отметка времени
-  /// пишется ДО отправки: сбой capture не должен давать повтор в том же окне.
-  ///
-  /// [send] — точка подмены для стража (по умолчанию `Sentry.captureMessage`).
+  /// Синхронная копия logged clients до native/network await. Содержимое
+  /// custom правил (room id, display name, pattern) никогда не экспортируется.
+  static List<Map<String, Object?>> collectPushAccounts(
+    Iterable<Client> clients, {
+    Map<String, bool> registrations = const {},
+  }) => [
+    for (final c in List<Client>.of(clients))
+      if (c.isLogged())
+        {
+          'user_id': c.userID,
+          'device_id': c.deviceID,
+          'homeserver': c.homeserver?.toString(),
+          'registration': registrations[c.clientName] == true
+              ? 'client_registered'
+              : 'unknown',
+          'push_rules': {
+            'status': PushRuleDefaults.deviations(c.globalPushRules) == null
+                ? 'unknown'
+                : 'observed',
+            if (PushRuleDefaults.deviations(c.globalPushRules)
+                case final deviations?)
+              'default_deviations': deviations.length,
+            if (c.globalPushRules?.override
+                    ?.where((r) => r.ruleId == '.m.rule.master')
+                    .firstOrNull
+                case final master?)
+              'master_enabled': master.enabled,
+          },
+        },
+  ];
+
+  /// Точные идентификаторы живут только в contexts. Ограничение числа/байтов
+  /// явное: аккаунт не режется посередине, неполнота отражается в coverage.
+  @visibleForTesting
+  static Map<String, dynamic> pushReportContext({
+    required Map<String, num> counters,
+    required String journalTail,
+    required Map<String, String> settings,
+    required List<Map<String, Object?>> accounts,
+    required List<Map<String, Object>> nativeJournal,
+    required String platform,
+    DateTime? settingsObservedAt,
+    String nativeJournalStatus = 'unknown',
+  }) {
+    final bounded = <Map<String, Object?>>[];
+    var bytes = 0;
+    for (final account in accounts) {
+      final clean = <String, Object?>{
+        for (final key in [
+          'user_id',
+          'device_id',
+          'homeserver',
+          'push_rules',
+          'registration',
+        ])
+          if (account.containsKey(key)) key: account[key],
+      };
+      final size = utf8.encode(jsonEncode(clean)).length;
+      if (bounded.length >= 16 || bytes + size > 32 * 1024) break;
+      bytes += size;
+      bounded.add(clean);
+    }
+    // Потери spool — cumulative gauge, не число потерь в текущие сутки.
+    // Даже при успешном чтении такой журнал не доказывает полноту окна.
+    var nativeLoss = 0;
+    for (final entry in nativeJournal) {
+      if (entry['s'] == 'diagnosticLoss' && entry['value'] is int) {
+        final value = entry['value'] as int;
+        if (value > nativeLoss) nativeLoss = value;
+      }
+    }
+    final boundedNative = <Map<String, Object>>[];
+    var nativeBytes = 0;
+    for (final entry in nativeJournal.reversed) {
+      final size = utf8.encode(jsonEncode(entry)).length;
+      if (boundedNative.length >= 256 || nativeBytes + size > 128 * 1024) break;
+      nativeBytes += size;
+      boundedNative.add(entry);
+    }
+    final nativeTruncated = boundedNative.length != nativeJournal.length;
+    final nativePartial =
+        nativeLoss > 0 || nativeTruncated || nativeJournalStatus == 'partial';
+    return {
+      ...counters,
+      'counters': counters,
+      'native_loss': nativeLoss,
+      'native_report_dropped': nativeJournal.length - boundedNative.length,
+      'journal': journalTail,
+      'settings': sanitizePushReportTags(settings),
+      'settings_observed_at': settingsObservedAt?.toUtc().toIso8601String(),
+      'accounts': bounded,
+      'native_journal': boundedNative.reversed.toList(),
+      'coverage': {
+        'accounts_total': accounts.length,
+        'accounts_included': bounded.length,
+        'truncated': bounded.length != accounts.length,
+        'counter_scope': 'installation',
+        'journal_account_binding': 'unknown',
+        'legacy_event_hash': 'sha256-32',
+        'legacy_hash_correlation': 'approximate',
+        'local_shown_semantics': 'submitted_to_os',
+        'native_journal': nativePartial ? 'partial' : nativeJournalStatus,
+        'native_truncated': nativeTruncated,
+        'native_loss_semantics': 'cumulative_unknown_window',
+        'native_window': nativePartial ? 'unknown' : 'bounded_observations',
+        'native_received':
+            boundedNative.any(
+              (r) => const {'nseReceived', 'fcmReceived'}.contains(r['s']),
+            )
+            ? 'observed'
+            : 'unknown',
+        'os_display': 'unknown',
+        'android_auto_display': platform == 'android'
+            ? 'unknown'
+            : 'unsupported',
+      },
+    };
+  }
+
+  /// bool означает HTTP ACK. Пустой/чужой ACK и ошибка оставляют pending.
+  /// Тесты используют outbox с транспортом, возвращающим expected event_id.
   static Future<bool> reportPushHealth({
     required String platform,
     required Map<String, String> tags,
     required Map<String, num> counters,
     required String journalTail,
+    List<Map<String, Object?>> accounts = const [],
+    List<Map<String, Object>> nativeJournal = const [],
+    String? release,
+    DateTime? settingsObservedAt,
+    String nativeJournalStatus = 'unknown',
     DateTime? now,
-    @visibleForTesting
-    void Function(String title, Map<String, String> tags, Map<String, Object> extra)?
-        send,
-    @visibleForTesting bool force = false,
+    bool force = false,
+    bool Function()? canSend,
   }) async {
-    if (!_active && send == null) return false;
+    if (!_active && _pushOutbox == null) {
+      pushReportStatus.value = PushReportStatus.disabled;
+      return false;
+    }
     try {
       final at = now ?? DateTime.now();
-      final prefs = await SharedPreferences.getInstance();
-      final lastMs = prefs.getInt(_pushReportLastKey);
-      final lastSent = lastMs == null ? null : DateTime.fromMillisecondsSinceEpoch(lastMs);
-      if (!force && !pushReportDue(lastSent: lastSent, now: at)) return false;
-      await prefs.setInt(_pushReportLastKey, at.millisecondsSinceEpoch);
       final cleanTags = sanitizePushReportTags(tags);
-      final extra = <String, Object>{...counters, 'journal': journalTail};
-      final title = pushReportTitle(platform);
-      if (send != null) {
-        send(title, cleanTags, extra);
-        return true;
-      }
-      // Теги и данные — в самом событии, а не в scope: scope синхронизируется в
-      // нативный SDK, и хвост журнала прилип бы ко всем последующим событиям.
-      // Данные — контекстом `push_report` (`extra` в SDK объявлен устаревшим);
-      // GlitchTip хранит contexts целиком, сервер читает
-      // `data->'contexts'->'push_report'`.
-      await Sentry.captureEvent(
-        SentryEvent(
-          message: SentryMessage(title),
-          level: SentryLevel.info,
-          tags: {'liza.category': 'push-report', ...cleanTags},
-          contexts: Contexts()..[pushReportContextKey] = extra,
-        ),
+      final enqueued = await _outbox.enqueue(
+        {
+          'title': pushReportTitle(platform),
+          'tags': {'liza.category': 'push-report', ...cleanTags},
+          if (release != null) 'release': release,
+          'context': pushReportContext(
+            counters: counters,
+            journalTail: journalTail,
+            settings: cleanTags,
+            accounts: accounts,
+            nativeJournal: nativeJournal,
+            nativeJournalStatus: nativeJournalStatus,
+            settingsObservedAt: settingsObservedAt,
+            platform: platform,
+          ),
+        },
+        at,
+        manual: force,
       );
-      return true;
+      _syncPushStatus();
+      if (!enqueued && _outbox.status == PushReportDelivery.failed) {
+        return false;
+      }
+      final accepted = await _outbox.drain(
+        at,
+        canSend: () => _pushNetworkAllowed() && (canSend?.call() ?? true),
+      );
+      _syncPushStatus();
+      return accepted;
     } catch (_) {
-      // Отчёт диагностический — не мешает resume/старту.
+      pushReportStatus.value = PushReportStatus.error;
       return false;
     }
   }
@@ -769,7 +969,8 @@ abstract final class Monitoring {
   static final BadgeDriftAggregator _badgeDrift = BadgeDriftAggregator();
 
   /// Оконный агрегатор РАСХОЖДЕНИЯ РЕНДЕРА бейджа — зеркало [_badgeDrift].
-  static final BadgeMismatchAggregator _badgeMismatch = BadgeMismatchAggregator();
+  static final BadgeMismatchAggregator _badgeMismatch =
+      BadgeMismatchAggregator();
 
   /// Префикс title сигнала о расхождении рендера бейджа. Отдельный маркер от
   /// `[video-/audio-/media-]` — своя комната «Liza · Бейдж» (notifier роутит по
@@ -825,7 +1026,11 @@ abstract final class Monitoring {
     DateTime? now,
   }) {
     if (!_active) return;
-    final flushed = _badgeDrift.observe(pushUnread, postSyncRaw, now ?? DateTime.now());
+    final flushed = _badgeDrift.observe(
+      pushUnread,
+      postSyncRaw,
+      now ?? DateTime.now(),
+    );
     if (flushed == null || flushed.count == 0) return;
     Sentry.captureMessage(
       'Badge count drift',
@@ -859,11 +1064,15 @@ abstract final class Monitoring {
   }) {
     if (!_active) return;
     if (shown == null) return;
-    final flushed =
-        _badgeMismatch.observe(expected, shown, now ?? DateTime.now());
+    final flushed = _badgeMismatch.observe(
+      expected,
+      shown,
+      now ?? DateTime.now(),
+    );
     if (flushed == null || flushed.count == 0) return;
-    final platform =
-        Platform.isIOS ? 'ios' : (Platform.isMacOS ? 'macos' : 'other');
+    final platform = Platform.isIOS
+        ? 'ios'
+        : (Platform.isMacOS ? 'macos' : 'other');
     Sentry.captureMessage(
       badgeMismatchTitle(platform),
       level: SentryLevel.warning,
@@ -937,16 +1146,15 @@ abstract final class Monitoring {
   /// localpart из `@localpart:server`: берём между `@` и первым `:`. Для
   /// невалидного mxid (нет `@`/`:`) — как есть, чтобы не терять идентификатор.
   @visibleForTesting
-  static SentryUser buildSentryUser(String matrixUserId, {String? displayName}) {
+  static SentryUser buildSentryUser(
+    String matrixUserId, {
+    String? displayName,
+  }) {
     var localpart = matrixUserId;
     if (localpart.startsWith('@')) localpart = localpart.substring(1);
     final colon = localpart.indexOf(':');
     if (colon >= 0) localpart = localpart.substring(0, colon);
-    return SentryUser(
-      id: matrixUserId,
-      username: localpart,
-      name: displayName,
-    );
+    return SentryUser(id: matrixUserId, username: localpart, name: displayName);
   }
 
   /// Прикрепляет ЛИЧНОСТЬ пользователя к событиям в self-hosted GlitchTip, чтобы
@@ -969,7 +1177,9 @@ abstract final class Monitoring {
   static void setUserIdentity(String matrixUserId, {String? displayName}) {
     if (!_active) return;
     Sentry.configureScope(
-      (scope) => scope.setUser(buildSentryUser(matrixUserId, displayName: displayName)),
+      (scope) => scope.setUser(
+        buildSentryUser(matrixUserId, displayName: displayName),
+      ),
     );
   }
 
@@ -1042,8 +1252,9 @@ abstract final class Monitoring {
         throwable is! PathAccessException) {
       return false;
     }
-    final frames = event.exceptions
-        ?.expand((e) => e.stackTrace?.frames ?? <SentryStackFrame>[]);
+    final frames = event.exceptions?.expand(
+      (e) => e.stackTrace?.frames ?? <SentryStackFrame>[],
+    );
     if (frames == null) return false;
     return frames.any(
       (f) =>
@@ -1084,7 +1295,8 @@ class BadgeDriftAggregator {
 
   /// Чистый детектор: величина дрейфа = серверное − клиентское сырое. ≤0 — дрейфа
   /// нет (клиент считающий МЕНЬШЕ сервера — не патология, это и есть цель фикса).
-  static int amount(int pushUnread, int postSyncRaw) => pushUnread - postSyncRaw;
+  static int amount(int pushUnread, int postSyncRaw) =>
+      pushUnread - postSyncRaw;
 
   /// Зарегистрировать наблюдение. Возвращает payload `(count, maxDrift)`, когда
   /// истёкшее окно надо ЭМИТИТЬ (первое наблюдение нового окна сбрасывает

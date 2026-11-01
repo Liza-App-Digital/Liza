@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,110 @@ using flutter::EncodableValue;
 // Каналы живут, пока жив процесс: обработчик держит мессенджер движка, а
 // движок окна уходит вместе с окном.
 std::vector<std::unique_ptr<flutter::MethodChannel<EncodableValue>>> g_channels;
+
+// Снимок ОС и уведомления относятся только к окнам MiniApp. Не подменяем
+// делегат главного окна и всегда продолжаем исходную цепочку WndProc.
+struct VisibilityObserver {
+  WNDPROC original;
+  flutter::MethodChannel<EncodableValue>* channel;
+  int64_t visibility_epoch = 0;
+  int64_t snapshot_sequence = 0;
+  int64_t focus_epoch = 0;
+  int64_t direct_main_focus_epoch = -1;
+};
+std::map<HWND, VisibilityObserver> g_visibility;
+
+HWINEVENTHOOK g_foreground_hook = nullptr;
+HWND g_previous_foreground = nullptr;
+int64_t g_main_focus_epoch = 0;
+
+HWND MiniAppMainWindow() {
+  HWND window = ::FindWindow(L"FLUTTER_RUNNER_WIN32_WINDOW", nullptr);
+  DWORD process = 0;
+  if (window) ::GetWindowThreadProcessId(window, &process);
+  return process == ::GetCurrentProcessId() ? window : nullptr;
+}
+
+void CALLBACK ForegroundChanged(HWINEVENTHOOK, DWORD, HWND window,
+                                LONG, LONG, DWORD, DWORD) {
+  const HWND main = MiniAppMainWindow();
+  if (g_previous_foreground == main && window != main) ++g_main_focus_epoch;
+  g_previous_foreground = window;
+}
+
+EncodableMap Visibility(HWND window, bool closed = false) {
+  const HWND foreground = ::GetForegroundWindow();
+  const HWND main = MiniAppMainWindow();
+  const auto observer = g_visibility.find(window);
+  const int64_t epoch = observer == g_visibility.end() ? 0 : observer->second.visibility_epoch;
+  const int64_t sequence = observer == g_visibility.end() ? 0 : ++observer->second.snapshot_sequence;
+  return {
+      {EncodableValue("sequence"), EncodableValue(sequence)},
+      {EncodableValue("focus_epoch"), EncodableValue(observer == g_visibility.end() ? int64_t{0} : observer->second.focus_epoch)},
+      {EncodableValue("main_focus_epoch"), EncodableValue(g_main_focus_epoch)},
+      {EncodableValue("direct_main_focus_epoch"), EncodableValue(observer == g_visibility.end() ? int64_t{-1} : observer->second.direct_main_focus_epoch)},
+      {EncodableValue("visibility_epoch"), EncodableValue(epoch)},
+      {EncodableValue("closed"), EncodableValue(closed || !::IsWindow(window) || observer == g_visibility.end())},
+      {EncodableValue("visible"), EncodableValue(::IsWindowVisible(window) != FALSE)},
+      {EncodableValue("minimized"), EncodableValue(::IsIconic(window) != FALSE)},
+      {EncodableValue("focused"), EncodableValue(foreground == window)},
+      {EncodableValue("main_focused"), EncodableValue(g_foreground_hook && main && foreground == main)},
+  };
+}
+
+LRESULT CALLBACK MiniAppVisibilityProc(HWND window, UINT message,
+                                      WPARAM wparam, LPARAM lparam) {
+  const auto found = g_visibility.find(window);
+  if (found == g_visibility.end()) return ::DefWindowProc(window, message, wparam, lparam);
+  if ((message == WM_SIZE && wparam == SIZE_MINIMIZED) ||
+      (message == WM_SHOWWINDOW && !wparam) || message == WM_CLOSE ||
+      (message == WM_ACTIVATEAPP && !wparam)) {
+    found->second.visibility_epoch++;
+  }
+  if (message == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE) {
+    found->second.focus_epoch++;
+    // При WA_INACTIVE lParam содержит HWND фактического получателя фокуса.
+    // Сохраняем destination до любой очереди callbacks / позднего snapshot.
+    const HWND destination = reinterpret_cast<HWND>(lparam);
+    found->second.direct_main_focus_epoch =
+        destination && destination == MiniAppMainWindow()
+          ? found->second.focus_epoch : -1;
+  }
+  const auto observer = found->second;
+  if (message == WM_DESTROY) {
+    // desktop_multi_window уничтожает FlutterViewController внутри original
+    // WM_DESTROY. Всё, что обращается к messenger, снимаем ДО этой границы.
+    observer.channel->InvokeMethod("visibilityChanged",
+        std::make_unique<EncodableValue>(Visibility(window, true)));
+    observer.channel->SetMethodCallHandler(nullptr);
+    ::SetWindowLongPtr(window, GWLP_WNDPROC,
+                      reinterpret_cast<LONG_PTR>(observer.original));
+    g_visibility.erase(window);
+    g_channels.erase(std::remove_if(g_channels.begin(), g_channels.end(),
+        [observer](const auto& channel) { return channel.get() == observer.channel; }),
+        g_channels.end());
+    if (g_visibility.empty() && g_foreground_hook) {
+      ::UnhookWinEvent(g_foreground_hook);
+      g_foreground_hook = nullptr;
+    }
+    return ::CallWindowProc(observer.original, window, message, wparam, lparam);
+  }
+  if (message == WM_CLOSE) {
+    observer.channel->InvokeMethod("visibilityChanged",
+        std::make_unique<EncodableValue>(Visibility(window, true)));
+  }
+  const auto result = ::CallWindowProc(observer.original, window, message, wparam, lparam);
+  // Original proc мог синхронно вызвать DestroyWindow. Raw channel из старого
+  // observer после этой точки использовать нельзя.
+  const auto alive = g_visibility.find(window);
+  if (alive != g_visibility.end() &&
+      (message == WM_SHOWWINDOW || message == WM_SIZE ||
+       message == WM_ACTIVATE || message == WM_ACTIVATEAPP || message == WM_WINDOWPOSCHANGED)) {
+    alive->second.channel->InvokeMethod("visibilityChanged",
+        std::make_unique<EncodableValue>(Visibility(window)));
+  }
+  return result;
+}
 
 // Позиция и размер последнего закрытого окна — следующее откроется там же.
 RECT g_last_frame{};
@@ -92,7 +197,9 @@ void RegisterMiniAppWindowChannel(flutter::FlutterViewController* controller) {
           return;
         }
         const std::string& method = call.method_name();
-        if (method == "present") {
+        if (method == "visibility") {
+          result->Success(EncodableValue(Visibility(window)));
+        } else if (method == "present") {
           ::SetWindowTextW(window,
                            Utf16FromUtf8(TitleArg(call.arguments())).c_str());
           const RECT frame =
@@ -122,5 +229,18 @@ void RegisterMiniAppWindowChannel(flutter::FlutterViewController* controller) {
           result->NotImplemented();
         }
       });
+  const HWND window = ::GetAncestor(view, GA_ROOT);
+  if (window && g_visibility.find(window) == g_visibility.end()) {
+    const auto original = reinterpret_cast<WNDPROC>(::SetWindowLongPtr(
+        window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(MiniAppVisibilityProc)));
+    if (original) {
+      g_visibility.emplace(window, VisibilityObserver{original, channel.get()});
+      if (!g_foreground_hook) {
+        g_previous_foreground = ::GetForegroundWindow();
+        g_foreground_hook = ::SetWinEventHook(EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND, nullptr, ForegroundChanged, 0, 0, WINEVENT_OUTOFCONTEXT);
+      }
+    }
+  }
   g_channels.push_back(std::move(channel));
 }

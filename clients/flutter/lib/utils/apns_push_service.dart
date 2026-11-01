@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/utils/push_journal.dart';
+import 'package:liza/utils/notification_health.dart';
 import 'package:liza/utils/screen_lock_state.dart';
 
 /// Native APNs push service — drop-in replacement for FcmSharedIsolate on iOS.
@@ -112,18 +113,12 @@ class ApnsPushService {
 
   /// Снимок окружения уведомлений для тегов push-report (только macOS/iOS;
   /// чего натив не умеет — просто нет в ответе).
-  Future<Map<String, String>> environmentTags() async {
+  Future<Map<String, String>> environmentTags({
+    NotificationHealthSnapshot? snapshot,
+  }) async {
     final tags = <String, String>{};
-    try {
-      final raw = await _channel
-          .invokeMethod('getNotificationSettings')
-          .timeout(const Duration(seconds: 3));
-      if (raw is Map) {
-        tags.addAll(notificationSettingsTags(raw));
-        final auth = raw['authorization'];
-        await NotificationAuthTracker.observe(auth is int ? auth : null);
-      }
-    } catch (_) {}
+    final health = snapshot ?? await NotificationHealth.instance.refresh();
+    tags.addAll(health.tags);
     tags.addAll(await NotificationAuthTracker.reportTags());
     try {
       final raw = await _channel
@@ -137,24 +132,10 @@ class ApnsPushService {
   /// `UNAuthorizationStatus` / `UNNotificationSetting` / `UNAlertStyle` →
   /// стабильные имена для тегов когорты.
   @visibleForTesting
-  static Map<String, String> notificationSettingsTags(Map<Object?, Object?> raw) {
-    const auth = {0: 'not_determined', 1: 'denied', 2: 'authorized', 3: 'provisional', 4: 'ephemeral'};
-    const setting = {0: 'not_supported', 1: 'disabled', 2: 'enabled'};
-    const style = {0: 'none', 1: 'banner', 2: 'alert'};
-    final out = <String, String>{};
-    void put(String tag, String key, Map<int, String> names) {
-      final v = raw[key];
-      if (v is int) out[tag] = names[v] ?? 'unknown_$v';
-    }
-
-    put('liza.auth', 'authorization', auth);
-    put('liza.alert', 'alert', setting);
-    put('liza.alert_style', 'alertStyle', style);
-    put('liza.badge_setting', 'badge', setting);
-    put('liza.sound_setting', 'sound', setting);
-    put('liza.nc_setting', 'notificationCenter', setting);
-    put('liza.lock_screen', 'lockScreen', setting);
-    return out;
+  static Map<String, String> notificationSettingsTags(
+    Map<Object?, Object?> raw,
+  ) {
+    return NotificationHealth.settingsTags(raw);
   }
 
   @visibleForTesting
@@ -169,7 +150,17 @@ class ApnsPushService {
       if (v is int) out[tag] = '$v';
     }
     final location = raw['location'];
-    if (location is String) out['liza.install_location'] = location;
+    if (const {
+      'translocated',
+      'applications',
+      'volumes',
+      'downloads',
+      'user_applications',
+      'dev_build',
+      'other',
+    }.contains(location)) {
+      out['liza.install_location'] = location as String;
+    }
     return out;
   }
 
@@ -212,24 +203,22 @@ class ApnsPushService {
     Duration timeout = const Duration(seconds: 3),
     bool? hasSession,
   }) async {
-    try {
-      final raw = await _channel
-          .invokeMethod('getNotificationSettings')
-          .timeout(timeout);
-      final auth = raw is Map ? raw['authorization'] : null;
-      if (auth is! int) return null;
-      await NotificationAuthTracker.observe(auth, hasSession: hasSession);
-      return auth;
-    } catch (_) {
-      return null;
-    }
+    final health = await NotificationHealth.instance.refresh(
+      hasSession: hasSession,
+    );
+    final auth = NotificationHealth.authorization(health.tags);
+    await NotificationAuthTracker.observe(auth, hasSession: hasSession);
+    return auth;
   }
+
+  Future<List<Map<String, Object>>> diagnosticJournal() =>
+      NativePushDiagnostics.readJournal();
 
   /// Get the native APNs device token as a hex string.
   Future<String?> getToken() async {
     try {
       final token = await _channel.invokeMethod<String>('getToken');
-      Logs().v('[APNs] Got native APNs token: ${token?.substring(0, 16)}...');
+      Logs().v('[APNs] Native token available: ${token != null}');
       return token;
     } catch (e) {
       Logs().w('[APNs] getToken failed', e);

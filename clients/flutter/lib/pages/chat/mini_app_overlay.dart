@@ -783,9 +783,7 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
               onDragUpdate: scope.onDragUpdate,
               onDragEnd: scope.onDragEnd,
               onShareLink: _shareActiveAppLink,
-              onDetach: miniAppDetachAllowed(context)
-                  ? _detachActiveApp
-                  : null,
+              onDetach: miniAppDetachAllowed(context) ? _detachActiveApp : null,
             ),
             Expanded(child: _buildContentStack()),
           ],
@@ -827,6 +825,15 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
                     room: app.room,
                     appId: app.appId,
                     appUrl: app.appUrl,
+                    startParam: app.startParam,
+                    botMxid: app.botMxid,
+                    joinRequestQueryId: app.joinRequestQueryId,
+                    interactiveSessionId: app.interactiveSessionId,
+                    interactiveState: app.interactiveState,
+                    isCurrent: () =>
+                        app.sessionCurrent && _manager.apps.contains(app),
+                    isInteractiveCurrent: () =>
+                        _manager.isInteractiveVisible(app),
                   ),
                   roomId: app.room.id,
                   appType: app.appType,

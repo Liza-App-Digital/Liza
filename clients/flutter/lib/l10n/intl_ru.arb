@@ -4154,7 +4154,7 @@
   "@shareLogFile": {},
   "openLogViewer": "Открыть просмотр логов",
   "@openLogViewer": {},
-  "testPushNotification": "Тестовое уведомление",
+  "testPushNotification": "Локальное тестовое уведомление",
   "@testPushNotification": {},
   "transcriptionNetworkFailed": "Ошибка сети. Проверьте подключение и попробуйте снова.",
   "@transcriptionNetworkFailed": {},
@@ -4873,7 +4873,7 @@
   "@dialerHangup": {},
   "dialerAnswer": "Ответить",
   "@dialerAnswer": {},
-  "testNotificationSent": "Тестовое уведомление отправлено",
+  "testNotificationSent": "Запрошен показ локального уведомления. Его отображение не подтверждено.",
   "@testNotificationSent": {},
   "testNotificationError": "Ошибка: {error}",
   "@testNotificationError": {
@@ -5387,5 +5387,92 @@
   "newRequestPreset2": "Хочу горячий кофе! Привези поскорее",
   "@newRequestPreset2": {"description": "Плашка-пресет под полем пустой правой панели: тап сразу отправляет этот запрос Лизе"},
   "newRequestPreset3": "Купи молоко, яйца и хлеб",
-  "@newRequestPreset3": {"description": "Плашка-пресет под полем пустой правой панели: тап сразу отправляет этот запрос Лизе"}
+  "@newRequestPreset3": {"description": "Плашка-пресет под полем пустой правой панели: тап сразу отправляет этот запрос Лизе"},
+  "notificationHealthDenied": "Система не разрешает Лизе показывать уведомления",
+  "notificationHealthAllowed": "Разрешение ОС на уведомления получено",
+  "notificationHealthUnknown": "Разрешение ОС на уведомления неизвестно",
+  "notificationHealthNotDetermined": "Решение о разрешении ОС на уведомления ещё не принято",
+  "notificationHealthProvisional": "Тихие уведомления предварительно разрешены",
+  "notificationHealthNeverObserved": "Нет доступного наблюдения настроек ОС",
+  "notificationHealthObservedAt": "Настройки ОС проверены: {time}",
+  "notificationHealthDeliveryUnknown": "Разрешение и регистрация не подтверждают доставку или показ пуша. На уведомления могут влиять фокусирование, расписание и другие ограничения ОС.",
+  "notificationRegistrationObserved": "Текущий аккаунт на этом устройстве: регистрация наблюдалась локально.",
+  "notificationRegistrationMissing": "Текущий аккаунт на этом устройстве: локальная регистрация не подтверждена.",
+  "notificationRegistrationUnknown": "Текущий аккаунт на этом устройстве: состояние регистрации неизвестно.",
+  "notificationReportIdle": "В этой сессии диагностика ещё не отправлялась.",
+  "notificationReportPending": "Диагностика ожидает отправки. Для повтора приложение должно работать.",
+  "notificationReportAccepted": "Сервис диагностики принял отчёт по HTTP. Сохранение отчёта и доставка пушей не подтверждены.",
+  "notificationReportError": "Диагностику отправить не удалось. Обновите состояние и повторите попытку.",
+  "notificationReportDisabled": "В этой сборке отправка диагностики недоступна.",
+  "notificationHealthOpenSettings": "Настройки ОС",
+  "notificationHealthSend": "Отправить диагностику",
+  "notificationHealthRefresh": "Обновить состояние",
+  "notificationHealthSettingsFailed": "Не удалось открыть настройки ОС. Откройте настройки устройства и найдите уведомления Liza.",
+  "notificationHealthActionFailed": "Не удалось выполнить действие. Повторите попытку.",
+  "notificationLocalTestExplanation": "Только локальное уведомление. Доставка через APNs/FCM не проверяется.",
+  "@notificationHealthObservedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "botShareContact": "Поделиться номером телефона",
+  "botContactRecipient": "Выберите номер для передачи {recipient}. Он будет виден участникам этого чата.",
+  "@botContactRecipient": {
+    "placeholders": {
+      "recipient": {
+        "type": "String"
+      }
+    }
+  },
+  "botContactUnavailable": "К аккаунту не привязан подтверждённый номер телефона.",
+  "botShareLocation": "Поделиться местоположением",
+  "botLocationRecipient": "Отправить текущее местоположение {recipient}? Оно будет видно участникам этого чата.",
+  "@botLocationRecipient": {
+    "placeholders": {
+      "recipient": {
+        "type": "String"
+      }
+    }
+  },
+  "botInlineResults": "Результаты бота",
+  "botInteractiveFailed": "Не удалось выполнить действие. Попробуйте ещё раз.",
+  "botChooseBot": "Выберите бота",
+  "botChooseUsers": "Выберите пользователей для передачи боту",
+  "botChooseChat": "Выберите группу для передачи боту",
+  "botRequestUnavailable": "Этот запрос больше недоступен.",
+  "botReplyKeyboard": "Клавиатура бота",
+  "botStartTitle": "Запуск бота",
+  "botStartButton": "Запустить",
+  "botStartPayload": "Параметр запуска: {parameter}",
+  "@botStartPayload": {
+    "placeholders": {
+      "parameter": {
+        "type": "String"
+      }
+    }
+  },
+  "botUnavailable": "Бот недоступен",
+  "botStartFailed": "Не удалось запустить бота. Повторите попытку.",
+  "botStartApp": "Открыть мини-приложение",
+  "botContact": "Контакт",
+  "botPhoneNumber": "Телефон",
+  "botVideoNote": "Видеосообщение",
+  "botLivePhoto": "Живое фото",
+  "botDraft": "Черновик",
+  "botInvitePermissions": "Выберите права для {bot}. Права не выдаются автоматически.",
+  "@botInvitePermissions": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "botJoinRequestTitle": "Заявка на вступление",
+  "botJoinRequestWaiting": "Заявка отправлена. Дождитесь решения администратора или пройдите проверку бота.",
+  "botJoinRequestCheck": "Пройти проверку бота",
+  "botJoinRequestJoin": "Вступить в чат",
+  "botJoinRequestDeclined": "Заявка на вступление отклонена.",
+  "botRequestsPermissions": "Бот запрашивает права управления чатом."
 }

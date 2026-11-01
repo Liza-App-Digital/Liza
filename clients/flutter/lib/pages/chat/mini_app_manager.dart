@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/themes.dart';
+import 'package:liza/pages/chat/mini_app_interactive.dart';
 
 /// Сколько ширины боковая панель оставляет приложению при ПОЛНОМ списке чатов:
 /// порог двух колонок.
@@ -32,6 +33,13 @@ class MiniAppInstance {
   /// Deep-link на конкретную страницу mini App (`#!/tproduct/123`). Пусто —
   /// открываем главную.
   final String appStartPath;
+  final String startParam;
+  final String? botMxid;
+  final String? joinRequestQueryId;
+  final String interactiveSessionId;
+  final MiniAppInteractiveState interactiveState;
+  final String? accountUserId;
+  final String? accountToken;
 
   /// Поколение инстанса: растёт, когда уже открытый app переоткрывают с другим
   /// deep-link. Входит в ключ контента — WebView пересоздаётся на новом пути.
@@ -47,25 +55,42 @@ class MiniAppInstance {
     required this.room,
     this.appType = 'first_party',
     this.appStartPath = '',
+    this.startParam = '',
+    this.botMxid,
+    this.joinRequestQueryId,
+    String? interactiveSessionId,
     this.generation = 0,
     this.detached = false,
-  });
+  }) : interactiveSessionId = interactiveSessionId ?? miniAppCapability(),
+       interactiveState = MiniAppInteractiveState()..setVisible(!detached),
+       accountUserId = room.client.userID,
+       accountToken = room.client.accessToken;
 
   String get contentKey => '$appId#$generation';
 
+  bool get sessionCurrent =>
+      interactiveState.active &&
+      accountUserId == room.client.userID &&
+      accountToken == room.client.accessToken;
+
   /// Тот же app на новом месте или пути — с новым поколением: контент
   /// пересоздаётся (другой движок или новый deep-link).
-  MiniAppInstance moved({String? appStartPath, bool? detached}) =>
-      MiniAppInstance(
-        appUrl: appUrl,
-        appId: appId,
-        appName: appName,
-        room: room,
-        appType: appType,
-        appStartPath: appStartPath ?? this.appStartPath,
-        generation: generation + 1,
-        detached: detached ?? this.detached,
-      );
+  MiniAppInstance moved({String? appStartPath, bool? detached}) {
+    interactiveState.invalidate();
+    return MiniAppInstance(
+      appUrl: appUrl,
+      appId: appId,
+      appName: appName,
+      room: room,
+      appType: appType,
+      appStartPath: appStartPath ?? this.appStartPath,
+      startParam: startParam,
+      botMxid: botMxid,
+      joinRequestQueryId: joinRequestQueryId,
+      generation: generation + 1,
+      detached: detached ?? this.detached,
+    );
+  }
 }
 
 /// Глобальный менеджер открытых MiniApp.
@@ -80,6 +105,22 @@ class MiniAppInstance {
 class MiniAppManager extends ChangeNotifier {
   MiniAppManager._();
   static final MiniAppManager instance = MiniAppManager._();
+
+  /// Скрытый IndexedStack остаётся mounted; видимость отдельно от сессии.
+  bool isInteractiveVisible(MiniAppInstance app) =>
+      app.sessionCurrent &&
+      _apps.contains(app) &&
+      (app.detached
+          ? app.interactiveState.visible
+          : _isExpanded && _activeAppId == app.appId);
+
+  @override
+  void notifyListeners() {
+    for (final app in _apps.where((app) => !app.detached)) {
+      app.interactiveState.setVisible(_isExpanded && _activeAppId == app.appId);
+    }
+    super.notifyListeners();
+  }
 
   final List<MiniAppInstance> _apps = [];
   String? _activeAppId;
@@ -179,19 +220,36 @@ class MiniAppManager extends ChangeNotifier {
     required Room room,
     String appType = 'first_party',
     String appStartPath = '',
+    String startParam = '',
+    String? botMxid,
+    String? joinRequestQueryId,
     bool allowDetach = true,
   }) {
     final index = _apps.indexWhere((a) => a.appId == appId);
     if (index >= 0) {
       final existing = _apps[index];
-      if (appStartPath.isNotEmpty && appStartPath != existing.appStartPath) {
+      if ((appStartPath.isNotEmpty && appStartPath != existing.appStartPath) ||
+          startParam != existing.startParam ||
+          botMxid != existing.botMxid ||
+          joinRequestQueryId != existing.joinRequestQueryId ||
+          !existing.sessionCurrent ||
+          appType != existing.appType ||
+          !identical(room.client, existing.room.client) ||
+          room.id != existing.room.id ||
+          appUrl != existing.appUrl) {
+        existing.interactiveState.invalidate();
         _apps[index] = MiniAppInstance(
           appUrl: appUrl,
           appId: appId,
           appName: appName,
           room: room,
           appType: appType,
-          appStartPath: appStartPath,
+          appStartPath: appStartPath.isEmpty
+              ? existing.appStartPath
+              : appStartPath,
+          startParam: startParam,
+          botMxid: botMxid,
+          joinRequestQueryId: joinRequestQueryId,
           generation: existing.generation + 1,
           detached: existing.detached,
         );
@@ -216,6 +274,9 @@ class MiniAppManager extends ChangeNotifier {
         room: room,
         appType: appType,
         appStartPath: appStartPath,
+        startParam: startParam,
+        botMxid: botMxid,
+        joinRequestQueryId: joinRequestQueryId,
         detached: detached,
       ),
     );
@@ -272,6 +333,9 @@ class MiniAppManager extends ChangeNotifier {
 
   /// Закрывает конкретный miniApp.
   void close(String appId) {
+    for (final app in _apps.where((a) => a.appId == appId)) {
+      app.interactiveState.invalidate();
+    }
     _apps.removeWhere((a) => a.appId == appId);
     _pickDockedActive();
     notifyListeners();
@@ -287,6 +351,9 @@ class MiniAppManager extends ChangeNotifier {
 
   /// Закрывает всё, что в окне Лизы (крестик плашки); окна ОС не трогает.
   void closeDocked() {
+    for (final app in _apps.where((a) => !a.detached)) {
+      app.interactiveState.invalidate();
+    }
     _apps.removeWhere((a) => !a.detached);
     _activeAppId = null;
     _isExpanded = false;
@@ -295,6 +362,9 @@ class MiniAppManager extends ChangeNotifier {
 
   /// Закрывает все miniApp.
   void closeAll() {
+    for (final app in _apps) {
+      app.interactiveState.invalidate();
+    }
     _apps.clear();
     _activeAppId = null;
     _isExpanded = false;

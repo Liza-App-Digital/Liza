@@ -113,7 +113,7 @@ void main() {
       final start = src.indexOf(opener);
       expect(start, isNot(-1), reason: opener);
       final next = src.indexOf(
-        RegExp(r'\n  [A-Za-z_<>?, ]+\(.*\) (async )?\{'),
+        RegExp(r'\n  [A-Za-z_][A-Za-z_<>?, ]*\(.*\) (async )?\{'),
         start + 1,
       );
       return src.substring(start, next < 0 ? src.length : next);

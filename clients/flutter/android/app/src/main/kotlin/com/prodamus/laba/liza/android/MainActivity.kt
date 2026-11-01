@@ -17,6 +17,7 @@ class MainActivity : FlutterActivity() {
 
     /** Канал буфера обмена: материализация `content://`-URI в байты. */
     private var clipboardChannel: MethodChannel? = null
+    private var pushHealthChannel: MethodChannel? = null
 
     /** Чтение содержимого URI — блокирующий I/O, уводим с главного потока. */
     private val clipboardExecutor = Executors.newSingleThreadExecutor()
@@ -99,6 +100,28 @@ class MainActivity : FlutterActivity() {
             }
         }
         clipboardChannel = clipboard
+        pushHealthChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
+            "com.prodamus.laba.liza/push_health").also { health ->
+            health.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getNotificationSettings" -> {
+                        try { result.success(NativePushDiagnostics.settings(applicationContext)) }
+                        catch (_: Exception) { result.error("settings_unavailable", null, null) }
+                    }
+                    "readDiagnosticJournal" -> clipboardExecutor.execute {
+                        val entries = NativePushDiagnostics.read(applicationContext)
+                        runOnUiThread { result.success(entries) }
+                    }
+                    "openNotificationSettings" -> {
+                        try {
+                            startActivity(NativePushDiagnostics.settingsIntent(this))
+                            result.success(true)
+                        } catch (_: Exception) { result.success(false) }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+        }
     }
 
     /** Имя файла из `OpenableColumns.DISPLAY_NAME`; null → Dart-fallback. */
@@ -125,6 +148,8 @@ class MainActivity : FlutterActivity() {
         secureScreenChannel = null
         clipboardChannel?.setMethodCallHandler(null)
         clipboardChannel = null
+        pushHealthChannel?.setMethodCallHandler(null)
+        pushHealthChannel = null
         // Страховка от «залипшего» флага: android:configChanges в манифесте
         // покрывает поворот/смену темы/плотности — ЭТА Activity из-за них не
         // пересоздаётся. Но она умирает при возврате из фона после kill

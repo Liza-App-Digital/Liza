@@ -22,6 +22,7 @@ import 'package:liza/pages/chat/events/xl_buttons_content.dart';
 import 'package:liza/pages/chat/external_link_web_view.dart';
 import 'package:liza/widgets/matrix.dart';
 import '../../utils/test_client.dart';
+import '../../utils/registered_bot_test_transport.dart';
 
 /// Фейк url_launcher: перехватывает внешний запуск, чтобы (а) утверждать
 /// fallback-путь и (б) не бить платформенный канал в тесте.
@@ -65,8 +66,7 @@ class _FakeInAppWebViewPlatform extends InAppWebViewPlatform
   @override
   PlatformInAppWebViewWidget createPlatformInAppWebViewWidget(
     PlatformInAppWebViewWidgetCreationParams params,
-  ) =>
-      _FakeInAppWebViewWidget(params);
+  ) => _FakeInAppWebViewWidget(params);
 }
 
 class _FakeInAppWebViewWidget extends PlatformInAppWebViewWidget
@@ -82,17 +82,17 @@ class _FakeInAppWebViewWidget extends PlatformInAppWebViewWidget
 
 // Хост без L10n — для прямой проверки навигации `openXlButtonUrl`.
 Widget _hostFor(void Function(BuildContext) onTap) => MaterialApp(
-      home: Scaffold(
-        body: Builder(
-          builder: (ctx) => ElevatedButton(
-            onPressed: () => onTap(ctx),
-            child: const Text('go'),
-          ),
-        ),
-      ),
-    );
+  home: Scaffold(
+    body: Builder(
+      builder: (ctx) =>
+          ElevatedButton(onPressed: () => onTap(ctx), child: const Text('go')),
+    ),
+  ),
+);
 
 void main() {
+  setUp(installRegisteredBotTestTransport);
+  tearDown(resetRegisteredBotTestTransport);
   late _FakeUrlLauncher fakeLauncher;
 
   setUp(() {
@@ -148,8 +148,11 @@ void main() {
         await tester.pump();
         await tester.tap(find.text('go'));
         await tester.pumpAndSettle();
-        expect(find.byType(ExternalLinkWebView), findsOneWidget,
-            reason: 'in-app ожидается для $url');
+        expect(
+          find.byType(ExternalLinkWebView),
+          findsOneWidget,
+          reason: 'in-app ожидается для $url',
+        );
         tester.state<NavigatorState>(find.byType(Navigator)).pop();
         await tester.pumpAndSettle();
       }
@@ -159,63 +162,121 @@ void main() {
 
   group('полный виджет XlButtonsContent', () {
     Widget wrap(Widget child, MatrixState m) => MaterialApp(
-          locale: const Locale('ru'),
-          localizationsDelegates: L10n.localizationsDelegates,
-          supportedLocales: L10n.supportedLocales,
-          home: Provider<MatrixState>.value(
-            value: m,
-            child: Scaffold(body: child),
+      locale: const Locale('ru'),
+      localizationsDelegates: L10n.localizationsDelegates,
+      supportedLocales: L10n.supportedLocales,
+      home: Provider<MatrixState>.value(
+        value: m,
+        child: Scaffold(body: child),
+      ),
+    );
+
+    Event card(
+      Room room,
+      String senderId,
+      List<Map<String, Object?>> buttons,
+    ) => Event(
+      type: EventTypes.Message,
+      content: {
+        'msgtype': 'm.text',
+        'body': 'Оплатить заказ',
+        'com.liza.xl_buttons': buttons,
+        'com.liza.xl_text_html': 'Оплатить заказ',
+      },
+      eventId: '\$xl1',
+      senderId: senderId,
+      originServerTs: DateTime.now(),
+      room: room,
+    );
+
+    testWidgets(
+      'точный системный MXID сохраняет legacy XL; чужой домен и новый web_app не доверены',
+      (tester) async {
+        // AC:RL-bot-api-interactive-client/10
+        late Client client;
+        await tester.runAsync(() async {
+          client = await prepareTestClient(loggedIn: true);
+        });
+        addTearDown(client.dispose);
+        final room = Room(id: '!legacy:hs', client: client);
+        Future<void> show(String sender) async {
+          final event = card(room, sender, [
+            {'index': '1', 'title': 'Legacy', 'callback': true},
+          ]);
+          event.content['com.liza.bot_markup'] = {
+            'inline_keyboard': [
+              [
+                {
+                  'text': 'Private app',
+                  'web_app': {'url': 'https://app.example'},
+                },
+              ],
+            ],
+          };
+          await tester.pumpWidget(
+            wrap(
+              XlButtonsContent(
+                event: event,
+                textColor: Colors.black,
+                linkColor: Colors.blue,
+              ),
+              MatrixState(),
+            ),
+          );
+          await tester.pump(const Duration(milliseconds: 500));
+          await tester.pump();
+        }
+
+        await show('@liza:bots.liza.ru');
+        expect(find.widgetWithText(OutlinedButton, 'Legacy'), findsOneWidget);
+        expect(
+          find.widgetWithText(OutlinedButton, 'Private app'),
+          findsNothing,
+        );
+        await show('@liza:evil.example');
+        expect(find.widgetWithText(OutlinedButton, 'Legacy'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'AC-4: не-ai отправитель → кнопки НЕ рисуются (плоский текст)',
+      (tester) async {
+        // AC:RL-xl-button-url-inapp-webview/4
+        late final Client client;
+        await tester.runAsync(() async {
+          client = await prepareTestClient(loggedIn: true);
+        });
+        addTearDown(client.dispose);
+        final room = Room(id: '!r:liza.local', client: client);
+
+        await tester.pumpWidget(
+          wrap(
+            XlButtonsContent(
+              event: card(room, '@human:liza.local', [
+                {
+                  'index': 'pay',
+                  'title': 'Оплатить',
+                  'url': 'https://x.payform.ru/p',
+                },
+              ]),
+              textColor: const Color(0xFF000000),
+              linkColor: const Color(0xFF0000FF),
+            ),
+            MatrixState(),
           ),
         );
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump(const Duration(milliseconds: 500));
 
-    Event card(Room room, String senderId, List<Map<String, Object?>> buttons) =>
-        Event(
-          type: EventTypes.Message,
-          content: {
-            'msgtype': 'm.text',
-            'body': 'Оплатить заказ',
-            'com.liza.xl_buttons': buttons,
-            'com.liza.xl_text_html': 'Оплатить заказ',
-          },
-          eventId: '\$xl1',
-          senderId: senderId,
-          originServerTs: DateTime.now(),
-          room: room,
-        );
-
-    testWidgets('AC-4: не-ai отправитель → кнопки НЕ рисуются (плоский текст)',
-        (tester) async {
-      // AC:RL-xl-button-url-inapp-webview/4
-      late final Client client;
-      await tester.runAsync(() async {
-        client = await prepareTestClient();
-      });
-      addTearDown(client.dispose);
-      final room = Room(id: '!r:liza.local', client: client);
-
-      await tester.pumpWidget(
-        wrap(
-          XlButtonsContent(
-            event: card(room, '@human:liza.local', [
-              {'index': 'pay', 'title': 'Оплатить', 'url': 'https://x.payform.ru/p'},
-            ]),
-            textColor: const Color(0xFF000000),
-            linkColor: const Color(0xFF0000FF),
-          ),
-          MatrixState(),
-        ),
-      );
-      await tester.pump(const Duration(milliseconds: 500));
-      await tester.pump(const Duration(milliseconds: 500));
-
-      expect(find.widgetWithText(OutlinedButton, 'Оплатить'), findsNothing);
-    });
+        expect(find.widgetWithText(OutlinedButton, 'Оплатить'), findsNothing);
+      },
+    );
 
     testWidgets('AC-4: ai-бот → кнопка «Оплатить» рисуется', (tester) async {
       // AC:RL-xl-button-url-inapp-webview/4
       late final Client client;
       await tester.runAsync(() async {
-        client = await prepareTestClient();
+        client = await prepareTestClient(loggedIn: true);
       });
       addTearDown(client.dispose);
       final room = Room(id: '!r:liza.local', client: client);
@@ -224,7 +285,11 @@ void main() {
         wrap(
           XlButtonsContent(
             event: card(room, '@bot_father:liza.local', [
-              {'index': 'pay', 'title': 'Оплатить', 'url': 'https://x.payform.ru/p'},
+              {
+                'index': 'pay',
+                'title': 'Оплатить',
+                'url': 'https://x.payform.ru/p',
+              },
             ]),
             textColor: const Color(0xFF000000),
             linkColor: const Color(0xFF0000FF),
@@ -239,56 +304,60 @@ void main() {
     });
 
     testWidgets(
-        'AC-3: action-кнопка без url → шлёт index текстом (webview не открыт)',
-        (tester) async {
-      // AC:RL-xl-button-url-inapp-webview/3
-      late final Client client;
-      await tester.runAsync(() async {
-        client = await prepareTestClient(loggedIn: true);
-      });
-      addTearDown(client.dispose);
-      final room = Room(id: '!r:liza.local', client: client);
-      // Регистрируем комнату в клиенте, иначе sendTextEvent не долетает до
-      // fake-transport (client.rooms пуст без sync).
-      client.rooms.add(room);
+      'AC-3: action-кнопка без url → шлёт index текстом (webview не открыт)',
+      (tester) async {
+        // AC:RL-xl-button-url-inapp-webview/3
+        late final Client client;
+        await tester.runAsync(() async {
+          client = await prepareTestClient(loggedIn: true);
+        });
+        addTearDown(client.dispose);
+        final room = Room(id: '!r:liza.local', client: client);
+        // Регистрируем комнату в клиенте, иначе sendTextEvent не долетает до
+        // fake-transport (client.rooms пуст без sync).
+        client.rooms.add(room);
 
-      await tester.pumpWidget(
-        wrap(
-          XlButtonsContent(
-            event: card(room, '@bot_father:liza.local', [
-              {'index': 'bofood_checkout', 'title': 'Оформить'},
-            ]),
-            textColor: const Color(0xFF000000),
-            linkColor: const Color(0xFF0000FF),
+        await tester.pumpWidget(
+          wrap(
+            XlButtonsContent(
+              event: card(room, '@bot_father:liza.local', [
+                {'index': 'bofood_checkout', 'title': 'Оформить'},
+              ]),
+              textColor: const Color(0xFF000000),
+              linkColor: const Color(0xFF0000FF),
+            ),
+            MatrixState(),
           ),
-          MatrixState(),
-        ),
-      );
-      await tester.pump(const Duration(milliseconds: 500));
-      await tester.pump(const Duration(milliseconds: 500));
+        );
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump(const Duration(milliseconds: 500));
 
-      final btn = find.widgetWithText(OutlinedButton, 'Оформить');
-      expect(btn, findsOneWidget);
-      await tester.runAsync(() async {
-        await tester.tap(btn);
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        await tester.pump();
-      });
+        final btn = find.widgetWithText(OutlinedButton, 'Оформить');
+        expect(btn, findsOneWidget);
+        await tester.runAsync(() async {
+          await tester.tap(btn);
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          await tester.pump();
+        });
 
-      // ПОЗИТИВНО: callback-суррогат реально отправил index текстом (PUT в
-      // /send/m.room.message с телом, содержащим index) — не только «не открыл
-      // webview». Без этого страж зелен и при удалении sendTextEvent.
-      final sent = FakeMatrixApi.calledEndpoints.entries
-          .where((e) => e.key.contains('/send/m.room.message/'))
-          .expand((e) => e.value)
-          .map((b) => b.toString())
-          .toList();
-      expect(sent.any((b) => b.contains('bofood_checkout')), isTrue,
-          reason: 'action-кнопка должна слать index текстом');
-      // И не открывает webview / не дёргает браузер.
-      expect(find.byType(ExternalLinkWebView), findsNothing);
-      expect(fakeLauncher.launched, isEmpty);
-    });
+        // ПОЗИТИВНО: callback-суррогат реально отправил index текстом (PUT в
+        // /send/m.room.message с телом, содержащим index) — не только «не открыл
+        // webview». Без этого страж зелен и при удалении sendTextEvent.
+        final sent = FakeMatrixApi.calledEndpoints.entries
+            .where((e) => e.key.contains('/send/m.room.message/'))
+            .expand((e) => e.value)
+            .map((b) => b.toString())
+            .toList();
+        expect(
+          sent.any((b) => b.contains('bofood_checkout')),
+          isTrue,
+          reason: 'action-кнопка должна слать index текстом',
+        );
+        // И не открывает webview / не дёргает браузер.
+        expect(find.byType(ExternalLinkWebView), findsNothing);
+        expect(fakeLauncher.launched, isEmpty);
+      },
+    );
 
     // AC-6 (debounce двойного тапа) — MANUAL: детерминированный widget-тест
     // невозможен (после первого тапа webview накрывает кнопку → второй тап

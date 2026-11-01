@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 
@@ -11,6 +12,8 @@ import 'package:url_launcher/url_launcher.dart' as url_launcher;
 import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_host_api.dart';
+import 'package:liza/pages/chat/mini_app_interactive.dart';
+import 'package:liza/pages/chat/mini_app_contact.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_window.dart';
 import 'package:liza/utils/bot_miniapp_registry.dart';
@@ -52,8 +55,7 @@ Uri miniAppPaymentResolve({
 bool thirdPartyPaymentAllowed({
   required bool isThirdParty,
   required bool shellHostEnabled,
-}) =>
-    isThirdParty && shellHostEnabled;
+}) => isThirdParty && shellHostEnabled;
 
 /// Фактический платёжный хост Prodamus (форма оплаты / 3DS-шлюз). Намеренно НЕ
 /// включает `.prodamus.tech`/`.prodamus.ru` (наш периметр) — иначе third_party
@@ -80,6 +82,9 @@ class MiniAppWebView {
     required Room room,
     String appType = 'first_party',
     String appStartPath = '',
+    String startParam = '',
+    String? botMxid,
+    String? joinRequestQueryId,
   }) async {
     if (!context.mounted) return;
 
@@ -98,6 +103,9 @@ class MiniAppWebView {
       room: room,
       appType: appType,
       appStartPath: appStartPath,
+      startParam: startParam,
+      botMxid: botMxid,
+      joinRequestQueryId: joinRequestQueryId,
       allowDetach: miniAppDetachAllowed(context),
     );
   }
@@ -255,26 +263,232 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
 })();
 ''';
 
-  static const _bridgePolyfill = '''
-(function() {
-  var queue = [];
-  var handler = null;
-  window.__lizaBridge = {
-    postEvent: function(type, data) {
-      var msg = JSON.stringify({eventType: type, eventData: data || {}});
-      if (handler) { handler(msg); }
-      else { queue.push(msg); }
-    },
-    _activate: function() {
-      handler = function(msg) {
-        window.flutter_inappwebview.callHandler('LizaWebAppHandler', msg);
-      };
-      for (var i = 0; i < queue.length; i++) { handler(queue[i]); }
-      queue = [];
+  bool get _usesShell => _isThirdParty && AppConfig.shellHostEnabled;
+  String? get _sensitiveOrigin => miniAppInteractiveOrigin(
+    appUrl: widget.appUrl,
+    shellUrl: _usesShell ? AppConfig.shellHostBaseUrl : null,
+  );
+  String get _bridgePolyfill => miniAppBridgeScript(_sensitiveOrigin);
+  MiniAppInteractiveHostApi? get _interactiveHost =>
+      widget.host is MiniAppInteractiveHostApi
+      ? widget.host as MiniAppInteractiveHostApi
+      : null;
+  String? _documentNonce;
+  int _documentGeneration = 0;
+  int _requestEpoch = 0;
+  bool _refreshInitData = false;
+  bool _interactiveBusy = false;
+  final _pendingInteractive = <String>{};
+  final _seenInteractive = <String>{};
+  Timer? _queryPoll;
+  bool _queryPolling = false;
+
+  void _invalidateDocument() {
+    final nonce = _documentNonce;
+    _documentNonce = null;
+    _loadedUrl = null;
+    _documentGeneration++;
+    _requestEpoch++;
+    _queryPoll?.cancel();
+    _seenInteractive.clear();
+    if (nonce != null && widget.host is MiniAppInteractiveHostApi) {
+      _refreshInitData = true;
+      unawaited(
+        (widget.host as MiniAppInteractiveHostApi)
+            .interactiveRequest('cancelDocument', {'document_id': nonce})
+            .then<void>((_) {})
+            .catchError((Object _) {}),
+      );
     }
-  };
-})();
-''';
+  }
+
+  void _cancelPendingInteractions() {
+    _requestEpoch++;
+    final host = _interactiveHost;
+    final nonce = _documentNonce;
+    if (host == null || nonce == null) return;
+    for (final id in _pendingInteractive.toList()) {
+      unawaited(
+        host
+            .interactiveRequest('cancelRequest', {
+              'document_id': nonce,
+              'request_id': id,
+            })
+            .then<void>((_) {})
+            .catchError((Object _) {}),
+      );
+    }
+  }
+
+  Future<void> _activateDocument(
+    InAppWebViewController controller,
+    WebUri? url,
+  ) async {
+    final generation = _documentGeneration;
+    final currentUrl = url?.toString();
+    if (!miniAppSensitiveOriginAllowed(
+      allowedOrigin: _sensitiveOrigin,
+      currentUrl: currentUrl,
+      loadedUrl: currentUrl,
+    )) {
+      return;
+    }
+    final host = _interactiveHost;
+    if (host == null || _signedInitData == null) return;
+    try {
+      if (_refreshInitData) {
+        final signed = await widget.host.fetchInitData();
+        if (!mounted || generation != _documentGeneration) return;
+        _signedInitData = signed;
+        _refreshInitData = false;
+      }
+      final nonce = miniAppCapability();
+      await host.interactiveRequest('activateDocument', {'document_id': nonce});
+      if (!mounted || generation != _documentGeneration) return;
+      _documentNonce = nonce;
+      await controller.evaluateJavascript(
+        source:
+            'if(window.__lizaBridge) window.__lizaBridge._activate(${jsonEncode(nonce)});',
+      );
+      await _provideInitDataToApp();
+      if (!mounted || generation != _documentGeneration) return;
+      _queryPoll?.cancel();
+      _queryPoll = Timer.periodic(
+        const Duration(seconds: 2),
+        (_) => _pollQuery(generation, nonce),
+      );
+    } catch (e) {
+      Logs().w('[MiniApp] interactive activation failed: ${e.runtimeType}');
+    }
+  }
+
+  Future<void> _pollQuery(int generation, String nonce) async {
+    if (!mounted ||
+        generation != _documentGeneration ||
+        _queryPolling ||
+        _interactiveBusy ||
+        _interactiveHost == null) {
+      return;
+    }
+    _queryPolling = true;
+    final requestId = miniAppCapability();
+    _pendingInteractive.add(requestId);
+    try {
+      final result = await (widget.host as MiniAppInteractiveHostApi)
+          .interactiveRequest('queryResult', {
+            'document_id': nonce,
+            'request_id': requestId,
+          });
+      if (!mounted || generation != _documentGeneration) return;
+      if (!const ['pending', 'busy', 'selected'].contains(result['status'])) {
+        _queryPoll?.cancel();
+        _sendInteractiveReply('webAppQueryResult', result);
+      }
+    } catch (_) {
+      _queryPoll?.cancel();
+    } finally {
+      _queryPolling = false;
+      _pendingInteractive.remove(requestId);
+    }
+  }
+
+  void _sendInteractiveReply(String event, Map<String, dynamic> result) {
+    if (!mounted || _documentNonce == null) return;
+    _controller?.evaluateJavascript(
+      source:
+          'if(window.Liza&&Liza.WebApp)Liza.WebApp._receiveEvent(${jsonEncode(event)},${jsonEncode(result)});',
+    );
+  }
+
+  Future<void> _handleSensitiveEvent(Map<String, dynamic> msg) async {
+    final nonce = _documentNonce;
+    final generation = _documentGeneration;
+    final epoch = _requestEpoch;
+    final host = _interactiveHost;
+    if (nonce == null ||
+        msg['capability'] != nonce ||
+        host == null ||
+        _signedInitData == null) {
+      return;
+    }
+    final data = msg['eventData'];
+    if (data is! Map<String, dynamic>) return;
+    final id = data['request_id'];
+    if (id is! String || !RegExp(r'^[A-Za-z0-9_-]{16,128}$').hasMatch(id)) {
+      return;
+    }
+    final currentUrl = (await _controller?.getUrl())?.toString();
+    bool current() =>
+        mounted &&
+        generation == _documentGeneration &&
+        epoch == _requestEpoch &&
+        nonce == _documentNonce;
+    if (!current() ||
+        !miniAppSensitiveOriginAllowed(
+          allowedOrigin: _sensitiveOrigin,
+          currentUrl: currentUrl,
+          loadedUrl: _loadedUrl,
+        )) {
+      return;
+    }
+    if (msg['eventType'] == 'web_app_cancel_interactive') {
+      if (_pendingInteractive.remove(id)) {
+        await host.interactiveRequest('cancelRequest', {
+          'document_id': nonce,
+          'request_id': id,
+        });
+      }
+      return;
+    }
+    if (_seenInteractive.contains(id) || _seenInteractive.length >= 512) return;
+    _seenInteractive.add(id);
+    if (_interactiveBusy) {
+      _sendInteractiveReply('interactiveResult', {
+        'request_id': id,
+        'status': 'busy',
+      });
+      return;
+    }
+    _interactiveBusy = true;
+    _pendingInteractive.add(id);
+    bool requestCurrent() => current() && _pendingInteractive.contains(id);
+    try {
+      Map<String, dynamic> result;
+      if (msg['eventType'] == 'web_app_request_contact') {
+        result = await requestMiniAppContact(
+          context: context,
+          host: host,
+          recipient: '${widget.appName} (${Uri.parse(widget.appUrl).origin})',
+          documentId: nonce,
+          requestId: id,
+          isCurrent: requestCurrent,
+        );
+      } else {
+        result = await host.interactiveRequest(
+          msg['eventType'] == 'web_app_query_result'
+              ? 'queryResult'
+              : 'prepared',
+          {'document_id': nonce, 'request_id': id, 'id': data['id']},
+        );
+      }
+      if (requestCurrent()) {
+        _sendInteractiveReply('interactiveResult', {
+          ...result,
+          'request_id': id,
+        });
+      }
+    } catch (_) {
+      if (requestCurrent()) {
+        _sendInteractiveReply('interactiveResult', {
+          'request_id': id,
+          'status': 'unavailable',
+        });
+      }
+    } finally {
+      _pendingInteractive.remove(id);
+      _interactiveBusy = false;
+    }
+  }
 
   /// Сообщает Flutter актуальный location.href при КАЖДОЙ навигации внутри
   /// страницы. WKWebView на macOS не всегда шлёт onUpdateVisitedHistory на
@@ -311,6 +525,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
 
   @override
   void dispose() {
+    _invalidateDocument();
     _controller = null;
     super.dispose();
   }
@@ -350,8 +565,9 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   Future<String?> currentStartPath() async {
     var current = _currentUrl;
     try {
-      final raw =
-          await _controller?.evaluateJavascript(source: 'window.location.href');
+      final raw = await _controller?.evaluateJavascript(
+        source: 'window.location.href',
+      );
       // evaluateJavascript на macOS может вернуть строку в кавычках или не-String —
       // нормализуем, иначе упадём на устаревший _currentUrl и потеряем товар.
       final asStr = raw is String ? raw : raw?.toString();
@@ -421,8 +637,10 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
       'theme_params': jsonEncode(_buildThemeParams()),
     };
     final extraFragment = extraParams.entries
-        .map((e) =>
-            '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+        .map(
+          (e) =>
+              '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}',
+        )
         .join('&');
 
     final fullFragment = '$initData&$extraFragment';
@@ -476,16 +694,53 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   /// iframe уйдёт пустая initData (ложно-зелёный). Раньше слалась строка-фрагмент.
   void _provideInitDataToShell() {
     final initData = _signedInitData;
-    if (initData == null || _controller == null) return;
+    if (!_usesShell ||
+        initData == null ||
+        _controller == null ||
+        !miniAppSensitiveOriginAllowed(
+          allowedOrigin: _sensitiveOrigin,
+          currentUrl: _loadedUrl,
+          loadedUrl: _loadedUrl,
+        )) {
+      return;
+    }
     final payload = jsonEncode({
       'init_data': initData,
       'theme_params': _buildThemeParams(),
       'platform': _detectPlatform(),
     });
     _controller!.evaluateJavascript(
-      source: 'if(window.__shell&&window.__shell.provideInitData)'
+      source:
+          'if(window.__shell&&window.__shell.provideInitData)'
           'window.__shell.provideInitData($payload);',
     );
+  }
+
+  /// Direct SDK может загрузиться уже после onLoadStop: повторный pull
+  /// разрешён лишь активированному документу на проверенном origin.
+  Future<void> _provideInitDataToApp() async {
+    final controller = _controller;
+    final nonce = _documentNonce;
+    if (controller == null || nonce == null || _signedInitData == null) return;
+    final currentUrl = (await controller.getUrl())?.toString();
+    if (!mounted ||
+        nonce != _documentNonce ||
+        !miniAppSensitiveOriginAllowed(
+          allowedOrigin: _sensitiveOrigin,
+          currentUrl: currentUrl,
+          loadedUrl: _loadedUrl,
+        )) {
+      return;
+    }
+    if (_usesShell) {
+      _provideInitDataToShell();
+    } else {
+      await controller.evaluateJavascript(
+        source:
+            'if(window.Liza&&Liza.WebApp)Liza.WebApp._receiveEvent("set_init_data",'
+            '${jsonEncode({'init_data': _signedInitData})});',
+      );
+    }
   }
 
   bool _isPaymentHost(String? host) => isProdamusPaymentHost(host);
@@ -493,10 +748,10 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   /// База для вызовов НАШЕГО платёжного модуля (`create-invoice`/`status`).
   /// Делегирует в top-level [miniAppPaymentResolve] (тестируемо, RL-страж).
   Uri _paymentResolve(String path) => miniAppPaymentResolve(
-        isThirdParty: _isThirdParty,
-        appUrl: widget.appUrl,
-        path: path,
-      );
+    isThirdParty: _isThirdParty,
+    appUrl: widget.appUrl,
+    path: path,
+  );
 
   /// Хосты, на которые служебному first_party-порталу (кабинет разработчика)
   /// разрешено навигировать: сам портал, auth-proxy и OIDC-провайдеры — на
@@ -545,6 +800,19 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
       final eventData = msg['eventData'] as Map<String, dynamic>? ?? {};
 
       switch (eventType) {
+        case 'web_app_request_contact':
+        case 'web_app_share_message':
+        case 'web_app_choose_prepared_keyboard_button':
+        case 'web_app_query_result':
+        case 'web_app_cancel_interactive':
+          unawaited(
+            _handleSensitiveEvent(msg).catchError((Object error) {
+              Logs().w(
+                '[MiniApp] interactive request failed: ${error.runtimeType}',
+              );
+            }),
+          );
+
         case 'web_app_ready':
           setState(() {
             _isReady = true;
@@ -553,8 +821,13 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
 
         case 'web_app_request_init':
         case 'web_app_request_init_data':
-          // Запрос подписанной initData от доверенной shell-страницы (third_party).
-          _provideInitDataToShell();
+          unawaited(
+            _provideInitDataToApp().catchError((Object error) {
+              Logs().w(
+                '[MiniApp] init data delivery failed: ${error.runtimeType}',
+              );
+            }),
+          );
 
         case 'web_app_close':
           _closeMiniApp();
@@ -613,8 +886,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
           break;
 
         case 'web_app_setup_closing_behavior':
-          _needClosingConfirmation =
-              eventData['need_confirmation'] == true;
+          _needClosingConfirmation = eventData['need_confirmation'] == true;
 
         case 'web_app_trigger_haptic_feedback':
           _triggerHaptic(eventData);
@@ -694,7 +966,9 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
       try {
         initData = await widget.host.fetchInitData();
       } catch (e) {
-        Logs().e('[MiniAppWebView] openInvoice: не удалось получить initData: $e');
+        Logs().e(
+          '[MiniAppWebView] openInvoice: не удалось получить initData: $e',
+        );
         _sendInvoiceResult('failed', l10n.miniAppAuthError);
         return;
       }
@@ -722,12 +996,15 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
       );
 
       if (invoiceResponse.statusCode != 200) {
-        Logs().e('[MiniAppWebView] create-invoice failed: ${invoiceResponse.statusCode} ${invoiceResponse.body}');
+        Logs().e(
+          '[MiniAppWebView] create-invoice failed: ${invoiceResponse.statusCode} ${invoiceResponse.body}',
+        );
         _sendInvoiceResult('failed', l10n.miniAppInvoiceFailed);
         return;
       }
 
-      final invoiceData = jsonDecode(invoiceResponse.body) as Map<String, dynamic>;
+      final invoiceData =
+          jsonDecode(invoiceResponse.body) as Map<String, dynamic>;
       final paymentUrl = invoiceData['payment_url'] as String?;
       final invoiceId = invoiceData['invoice_id'] as int?;
 
@@ -752,9 +1029,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
       }
 
       // Навигация WebView на платёжную страницу Prodamus
-      _controller?.loadUrl(
-        urlRequest: URLRequest(url: WebUri(paymentUrl)),
-      );
+      _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(paymentUrl)));
 
       // Ждём возвращения на success/error URL или закрытия
       // Результат придёт через _checkPaymentNavigation + polling
@@ -777,7 +1052,9 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   Future<bool> _showPaymentConfirmSheet(int totalMinor, String currency) async {
     if (!mounted) return false;
     final l10n = L10n.of(context);
-    final symbol = currency.toUpperCase() == 'RUB' ? '₽' : currency.toUpperCase();
+    final symbol = currency.toUpperCase() == 'RUB'
+        ? '₽'
+        : currency.toUpperCase();
     final amount = '${(totalMinor / 100).toStringAsFixed(2)} $symbol';
     final result = await showModalBottomSheet<bool>(
       context: context,
@@ -807,9 +1084,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
                 Text(
                   amount,
                   textAlign: TextAlign.center,
-                  style: Theme.of(sheetContext)
-                      .textTheme
-                      .headlineSmall
+                  style: Theme.of(sheetContext).textTheme.headlineSmall
                       ?.copyWith(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 20),
@@ -850,8 +1125,8 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   Future<void> _handleGetInvoice(Map<String, dynamic> eventData) async {
     final invoiceId = eventData['invoice_id'];
     void reply(String body) => _controller?.evaluateJavascript(
-          source: "Liza.WebApp._receiveEvent('invoiceResult', $body);",
-        );
+      source: "Liza.WebApp._receiveEvent('invoiceResult', $body);",
+    );
     if (invoiceId == null) {
       reply('null');
       return;
@@ -873,7 +1148,9 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   }
 
   Future<void> _pollInvoiceStatus(int invoiceId, String initData) async {
-    final backendUrl = _paymentResolve('/api/payment/invoice/$invoiceId/status');
+    final backendUrl = _paymentResolve(
+      '/api/payment/invoice/$invoiceId/status',
+    );
 
     // 180 × 3с = 540с (9 мин). Раньше было 60 × 3с = 180с — по истечении мы
     // уводили WebView с midget на appUrl, и QR/форма СБП «пропадали» через 3 мин,
@@ -953,7 +1230,8 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
     // jsonEncode → корректное экранирование (имена позиций/чек со спецсимволами)
     // вместо ручной сборки строки.
     _controller?.evaluateJavascript(
-      source: "Liza.WebApp._receiveEvent('invoiceClosed', ${jsonEncode(payload)});",
+      source:
+          "Liza.WebApp._receiveEvent('invoiceClosed', ${jsonEncode(payload)});",
     );
   }
 
@@ -978,13 +1256,12 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
     // перезагрузки, чтобы не тащить ПДн чека в URL/историю).
     final base = _resolvedUrl ?? widget.appUrl;
     final invId =
-        (result != null ? result['invoice_id'] as int? : null) ?? _currentInvoiceId;
+        (result != null ? result['invoice_id'] as int? : null) ??
+        _currentInvoiceId;
     final invFrag = invId != null ? '&liza_invoice_id=$invId' : '';
     final sep = base.contains('#') ? '&' : '#';
     final returnUrl = '$base${sep}payment_result=$status$invFrag';
-    _controller?.loadUrl(
-      urlRequest: URLRequest(url: WebUri(returnUrl)),
-    );
+    _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(returnUrl)));
     _sendInvoiceResult(
       status,
       status == 'paid' ? null : L10n.of(context).miniAppReturnWithoutPayment,
@@ -1023,7 +1300,11 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   Future<void> _showNativePopup(Map<String, dynamic> params) async {
     final title = params['title'] as String? ?? '';
     final message = params['message'] as String? ?? '';
-    final buttons = params['buttons'] as List? ?? [{'type': 'ok'}];
+    final buttons =
+        params['buttons'] as List? ??
+        [
+          {'type': 'ok'},
+        ];
     final l10n = L10n.of(context);
 
     final result = await showDialog<String>(
@@ -1140,9 +1421,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
         // него просвечивал тёмный surface диалога (near-black в тёмной теме) —
         // отсюда «почти чёрный» фон. Белый совпадает с фоном страниц магазина.
         Positioned.fill(
-          bottom: _mainButtonVisible
-              ? 56 + bottomPadding + viewInsets + 16
-              : 0,
+          bottom: _mainButtonVisible ? 56 + bottomPadding + viewInsets + 16 : 0,
           child: _hasError
               ? _buildErrorState(colorScheme)
               : ColoredBox(color: Colors.white, child: _buildWebView()),
@@ -1157,9 +1436,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    CircularProgressIndicator(
-                      color: colorScheme.primary,
-                    ),
+                    CircularProgressIndicator(color: colorScheme.primary),
                     const SizedBox(height: 16),
                     Text(
                       widget.appName,
@@ -1191,13 +1468,10 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
                     }
                   : null,
               style: FilledButton.styleFrom(
-                backgroundColor:
-                    _mainButtonColor ?? colorScheme.primary,
+                backgroundColor: _mainButtonColor ?? colorScheme.primary,
                 foregroundColor: colorScheme.onPrimary,
                 shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(
-                    AppConfig.borderRadius,
-                  ),
+                  borderRadius: BorderRadius.circular(AppConfig.borderRadius),
                 ),
               ),
               child: _mainButtonProgress
@@ -1316,12 +1590,11 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
       return const Center(child: CircularProgressIndicator());
     }
     return InAppWebView(
-      initialUrlRequest: URLRequest(
-        url: WebUri(_resolvedUrl!),
-      ),
+      initialUrlRequest: URLRequest(url: WebUri(_resolvedUrl!)),
       initialUserScripts: UnmodifiableListView([
         UserScript(
           source: _bridgePolyfill,
+          forMainFrameOnly: true,
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
         ),
         // Трекер URL: держит _currentUrl свежим на hash-навигации (Tilda-товар).
@@ -1380,16 +1653,26 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
           },
         );
       },
+      onLoadStart: (controller, url) {
+        _invalidateDocument();
+        _currentUrl = url?.toString();
+      },
       onUpdateVisitedHistory: (controller, url, isReload) {
         // Tilda меняет только #-фрагмент при выборе товара — onLoadStop на это
         // НЕ срабатывает, а этот колбэк да. Держим _currentUrl свежим для
         // захвата deep-link при «Скопировать ссылку».
-        if (url != null) _currentUrl = url.toString();
+        if (url != null) {
+          if (_currentUrl != null && _currentUrl != url.toString()) {
+            _cancelPendingInteractions();
+          }
+          _currentUrl = url.toString();
+        }
       },
-      onLoadStop: (controller, url) {
+      onLoadStop: (controller, url) async {
         _loadedUrl = url?.toString();
         controller.evaluateJavascript(
-          source: 'if(window.__lizaBridge) window.__lizaBridge._activate();',
+          source:
+              'if(window.__lizaBridge) window.__lizaBridge._activate(null);',
         );
         if (url != null) _currentUrl = url.toString();
         // Надёжно снимаем загрузочный спиннер, когда страница загрузилась — не
@@ -1401,10 +1684,8 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
             _isReady = true;
           });
         }
-        // third_party: как только shell загрузилась — отдаём ей initData.
-        if (_isThirdParty) {
-          _provideInitDataToShell();
-        }
+        await _activateDocument(controller, url);
+        if (!mounted) return;
         // На странице оплаты Prodamus — прячем NPS-опрос и ловим инлайн-успех,
         // а также включаем нативную панель «Вернуться в магазин».
         if (_isPaymentInProgress && _isPaymentHost(url?.host)) {
@@ -1496,7 +1777,9 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
         // third_party: НЕ пишем тело чужого console в liza.log — чужой код мог
         // бы слить туда PII/токены или использовать наш лог как канал утечки.
         if (_isThirdParty) {
-          Logs().d('[MiniApp:${widget.appId}] console (${message.message.length} символов)');
+          Logs().d(
+            '[MiniApp:${widget.appId}] console (${message.message.length} символов)',
+          );
         } else {
           Logs().d('[MiniApp:${widget.appId}] ${message.message}');
         }
@@ -1512,18 +1795,11 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.error_outline,
-              size: 48,
-              color: colorScheme.error,
-            ),
+            Icon(Icons.error_outline, size: 48, color: colorScheme.error),
             const SizedBox(height: 16),
             Text(
               _errorMessage ?? l10n.miniAppLoadFailed,
-              style: TextStyle(
-                fontSize: 16,
-                color: colorScheme.onSurface,
-              ),
+              style: TextStyle(fontSize: 16, color: colorScheme.onSurface),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 24),
@@ -1535,10 +1811,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
                   child: Text(l10n.close),
                 ),
                 const SizedBox(width: 12),
-                FilledButton(
-                  onPressed: _retry,
-                  child: Text(l10n.retry),
-                ),
+                FilledButton(onPressed: _retry, child: Text(l10n.retry)),
               ],
             ),
           ],

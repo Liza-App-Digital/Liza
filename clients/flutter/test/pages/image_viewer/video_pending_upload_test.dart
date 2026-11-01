@@ -130,7 +130,9 @@ void main() {
       final source = File(
         'lib/pages/image_viewer/video_player.dart',
       ).readAsStringSync();
-      final startAt = source.indexOf('Future<void> _start() async {');
+      final startAt = source.indexOf(
+        'Future<void> _start(_VideoAttempt a) async {',
+      );
       expect(startAt, isNot(-1), reason: 'не найден _start — тест устарел');
       final body = source.substring(startAt);
       final guard = body.indexOf('event.isPendingMediaWithoutBytes');
@@ -159,7 +161,10 @@ void main() {
     final source = File(
       'lib/pages/image_viewer/video_player.dart',
     ).readAsStringSync();
-    final startAt = source.indexOf('Future<void> _start() async {');
+    final startAt = source.indexOf(
+      'Future<void> _start(_VideoAttempt a) async {',
+    );
+    expect(startAt, isNot(-1), reason: 'не найден _start — тест устарел');
     final body = source.substring(startAt);
     final branch = body.substring(
       body.indexOf('event.isPendingMediaWithoutBytes'),

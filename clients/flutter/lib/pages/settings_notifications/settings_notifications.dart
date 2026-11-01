@@ -12,7 +12,6 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/settings_notifications/push_rule_extensions.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
 import 'package:liza/utils/push_rule_defaults.dart';
-import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/adaptive_dialogs/adaptive_dialog_action.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_modal_action_popup.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
@@ -230,14 +229,6 @@ class SettingsNotificationsController extends State<SettingsNotifications> {
         throw Exception('Push plugin not initialized');
       }
 
-      final platform = PlatformInfos.isMacOS
-          ? 'macOS'
-          : PlatformInfos.isIOS
-          ? 'iOS'
-          : PlatformInfos.isAndroid
-          ? 'Android'
-          : 'Unknown';
-
       DarwinNotificationDetails? darwinDetails;
       if (!kIsWeb && (Platform.isIOS || Platform.isMacOS)) {
         darwinDetails = const DarwinNotificationDetails(
@@ -252,14 +243,14 @@ class SettingsNotificationsController extends State<SettingsNotifications> {
 
       await plugin.show(
         0,
-        'Liza — Test Push',
-        'Push notifications work on $platform!',
+        L10n.of(context).testPushNotification,
+        L10n.of(context).notificationLocalTestExplanation,
         NotificationDetails(
           iOS: darwinDetails,
           macOS: darwinDetails,
           android: AndroidNotificationDetails(
             AppConfig.pushNotificationsChannelId,
-            'Test',
+            L10n.of(context).notifications,
             importance: Importance.high,
             priority: Priority.max,
           ),

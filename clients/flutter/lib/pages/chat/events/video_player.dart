@@ -9,6 +9,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import 'package:liza/config/app_config.dart';
+import 'package:liza/config/setting_keys.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/matrix_sdk_extensions/event_extension.dart';
 import 'package:liza/utils/monitoring.dart';
@@ -19,6 +20,7 @@ import 'package:liza/widgets/blur_hash.dart';
 import 'package:liza/widgets/mxc_image.dart';
 import '../../image_viewer/image_viewer.dart';
 import 'upload_overlays.dart';
+import 'inline_bot_video.dart';
 
 /// Inline-превью видео в ленте без серверного thumbnail-а
 /// (`info.thumbnail_url` отсутствует — типично для отправок с desktop/Web,
@@ -69,6 +71,7 @@ class _VideoPosterImageState extends State<_VideoPosterImage> {
     _posterPlayerDisposed = true;
     await p.dispose();
   }
+
   bool _bootstrapStarted = false;
 
   /// Экстракция постера упала терминально (таймаут/ошибка/чёрный кадр) — вместо
@@ -395,6 +398,33 @@ class EventVideoPlayer extends StatelessWidget {
     final duration = durationInt == null
         ? null
         : Duration(milliseconds: durationInt);
+
+    if (supportsVideoPlayer &&
+        (infoMap?['fi.mau.loop'] == true ||
+            infoMap?['fi.mau.autoplay'] == true)) {
+      return InlineBotVideo(
+        event: event,
+        autoplay:
+            infoMap?['fi.mau.autoplay'] == true &&
+            AppSettings.autoplayImages.value,
+        loop: infoMap?['fi.mau.loop'] == true,
+        label: 'GIF',
+        timeOverlay: timeOverlay,
+        poster: event.hasThumbnail
+            ? MxcImage(
+                event: event,
+                width: width,
+                height: height,
+                fit: BoxFit.cover,
+              )
+            : BlurHash(
+                blurhash: blurHash,
+                width: width,
+                height: height,
+                fit: BoxFit.cover,
+              ),
+      );
+    }
 
     return Material(
       color: Colors.black,

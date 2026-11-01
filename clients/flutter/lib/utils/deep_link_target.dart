@@ -5,7 +5,7 @@ import 'package:liza/utils/miniapp_invite_redeem.dart';
 import 'package:liza/utils/wait_for_room_in_sync.dart';
 
 /// Тип цели, на которую ведёт короткая ссылка `me.liza.ru`.
-enum DeepLinkKind { invite, story, channel, user }
+enum DeepLinkKind { invite, story, channel, user, bot }
 
 /// Результат резолва ссылки — куда именно вести пользователя.
 ///
@@ -28,6 +28,11 @@ class DeepLinkRoom extends DeepLinkTarget {
 /// Пространство — открыть список пространства, а НЕ ChatPage.
 class DeepLinkSpace extends DeepLinkTarget {
   const DeepLinkSpace(this.roomId);
+  final String roomId;
+}
+
+class DeepLinkJoinRequest extends DeepLinkTarget {
+  const DeepLinkJoinRequest(this.roomId);
   final String roomId;
 }
 
@@ -70,18 +75,22 @@ class DeepLinkFailure extends DeepLinkTarget {
 
 /// Путь роутера для цели.
 String deepLinkRoutePath(DeepLinkTarget target) => switch (target) {
-      DeepLinkRoom(:final roomId) => '/rooms/${Uri.encodeComponent(roomId)}',
-      DeepLinkSpace(:final roomId) =>
-        '/rooms?spaceId=${Uri.encodeComponent(roomId)}',
-      DeepLinkStory() => '/rooms',
-      DeepLinkMiniApp(:final dmRoomId, :final opened) =>
-        (opened || dmRoomId == null || dmRoomId.isEmpty)
-            ? '/rooms'
-            : '/rooms/${Uri.encodeComponent(dmRoomId)}',
-      DeepLinkUser() => '/rooms',
-      DeepLinkNeutral() => '/rooms',
-      DeepLinkFailure(:final routePath) => routePath,
-    };
+  DeepLinkJoinRequest(:final roomId) => Uri(
+    path: '/join-request',
+    queryParameters: {'room_id': roomId},
+  ).toString(),
+  DeepLinkRoom(:final roomId) => '/rooms/${Uri.encodeComponent(roomId)}',
+  DeepLinkSpace(:final roomId) =>
+    '/rooms?spaceId=${Uri.encodeComponent(roomId)}',
+  DeepLinkStory() => '/rooms',
+  DeepLinkMiniApp(:final dmRoomId, :final opened) =>
+    (opened || dmRoomId == null || dmRoomId.isEmpty)
+        ? '/rooms'
+        : '/rooms/${Uri.encodeComponent(dmRoomId)}',
+  DeepLinkUser() => '/rooms',
+  DeepLinkNeutral() => '/rooms',
+  DeepLinkFailure(:final routePath) => routePath,
+};
 
 /// Побочный эффект, который нужно выполнить ПОСЛЕ навигации на
 /// [deepLinkRoutePath] — там, где есть BuildContext (роутер).
@@ -103,20 +112,18 @@ DeepLinkSideEffect? deepLinkSideEffect(DeepLinkTarget target) =>
     switch (target) {
       DeepLinkUser(:final userId) => OpenUserProfile(userId),
       DeepLinkRoom() ||
+      DeepLinkJoinRequest() ||
       DeepLinkSpace() ||
       DeepLinkStory() ||
       DeepLinkMiniApp() ||
       DeepLinkNeutral() ||
-      DeepLinkFailure() =>
-        null,
+      DeepLinkFailure() => null,
     };
 
 /// Ждёт появления комнаты в sync. Вынесено в параметр, чтобы резолв можно было
 /// тестировать без живого Client.
-typedef AwaitRoom = Future<bool> Function(
-  String roomId, {
-  required bool expectSpace,
-});
+typedef AwaitRoom =
+    Future<bool> Function(String roomId, {required bool expectSpace});
 
 /// Возвращает isSpace комнаты, либо null если комнаты нет локально.
 typedef LookupRoomIsSpace = bool? Function(String roomId);
@@ -132,6 +139,11 @@ Future<DeepLinkTarget> resolveInviteTargetFromResult({
   required LookupRoomIsSpace lookupRoomIsSpace,
 }) async {
   switch (result.status) {
+    case 'join_requested':
+      final roomId = result.roomId;
+      return roomId == null || roomId.isEmpty
+          ? const DeepLinkNeutral()
+          : DeepLinkJoinRequest(roomId);
     case 'user_invite':
       // Бэк для user-инвайта только резолвит цель (handler.py: «DM создаёт
       // клиент»). DM здесь НЕ создаём: чат рождается с первым сообщением из

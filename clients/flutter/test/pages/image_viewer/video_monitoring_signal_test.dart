@@ -59,7 +59,10 @@ void main() {
       // после reset снова можно набрать порог и получить сигнал
       agg.observe(t0.add(const Duration(minutes: 5)));
       agg.observe(t0.add(const Duration(minutes: 5, seconds: 1)));
-      expect(agg.observe(t0.add(const Duration(minutes: 5, seconds: 2))), isTrue);
+      expect(
+        agg.observe(t0.add(const Duration(minutes: 5, seconds: 2))),
+        isTrue,
+      );
     });
   });
 
@@ -149,11 +152,19 @@ void main() {
       // _reportVideoSwap: `if (!isMmrBackedHost(host)) return;` — сигнал только
       // когда медиа обслуживает MMR (там свап аномалия). На не-MMR свап штатен.
       expect(
-        EventVideoPlayerState.isMmrBackedHost('synapse.liza.laba.prodamus.tech'),
+        EventVideoPlayerState.isMmrBackedHost(
+          'synapse.liza.laba.prodamus.tech',
+        ),
         isTrue,
       );
-      expect(EventVideoPlayerState.isMmrBackedHost('liza.cyber-agro.ru'), isFalse);
-      expect(EventVideoPlayerState.isMmrBackedHost('nadezhda.liza.ru'), isFalse);
+      expect(
+        EventVideoPlayerState.isMmrBackedHost('liza.cyber-agro.ru'),
+        isFalse,
+      );
+      expect(
+        EventVideoPlayerState.isMmrBackedHost('nadezhda.liza.ru'),
+        isFalse,
+      );
       expect(EventVideoPlayerState.isMmrBackedHost(null), isFalse);
     });
 
@@ -185,32 +196,35 @@ void main() {
 
   group('Monitoring.videoIssueTitle — маркер + reason + host, БЕЗ секретов (AC-4)', () {
     // AC:RL-video-playback-monitoring-signal/4  AC:RL-mediadiag-no-secret/video-fail
-    test('AC-4: title несёт префикс+reason+host и НЕ несёт ключ/iv/токен/eventId', () {
-      final title = Monitoring.videoIssueTitle(
-        Monitoring.videoSwapPrefix,
-        'swap-to-local',
-        'synapse.liza.laba.prodamus.tech',
-      );
-      expect(title, contains('[video-swap]'));
-      expect(title, contains('reason=swap-to-local'));
-      // host — короткой формой (бюджет 99 символов GlitchTip, см.
-      // `Monitoring.shortHost`); инстанс по ней по-прежнему однозначен.
-      expect(title, contains('host=synapse.liza'));
-      expect(title.length, lessThanOrEqualTo(Monitoring.maxAlertTitleLength));
-      // Ни один секрет-маркер не присутствует (red-proof: добавление eventId/
-      // token/key в title краснит этот ассерт).
-      for (final forbidden in const [
-        'key=',
-        'iv=',
-        'Bearer',
-        'token',
-        'authorization',
-        r'$event',
-        'access_token',
-      ]) {
-        expect(title.toLowerCase(), isNot(contains(forbidden.toLowerCase())));
-      }
-    });
+    test(
+      'AC-4: title несёт префикс+reason+host и НЕ несёт ключ/iv/токен/eventId',
+      () {
+        final title = Monitoring.videoIssueTitle(
+          Monitoring.videoSwapPrefix,
+          'swap-to-local',
+          'synapse.liza.laba.prodamus.tech',
+        );
+        expect(title, contains('[video-swap]'));
+        expect(title, contains('reason=swap-to-local'));
+        // host — короткой формой (бюджет 99 символов GlitchTip, см.
+        // `Monitoring.shortHost`); инстанс по ней по-прежнему однозначен.
+        expect(title, contains('host=synapse.liza'));
+        expect(title.length, lessThanOrEqualTo(Monitoring.maxAlertTitleLength));
+        // Ни один секрет-маркер не присутствует (red-proof: добавление eventId/
+        // token/key в title краснит этот ассерт).
+        for (final forbidden in const [
+          'key=',
+          'iv=',
+          'Bearer',
+          'token',
+          'authorization',
+          r'$event',
+          'access_token',
+        ]) {
+          expect(title.toLowerCase(), isNot(contains(forbidden.toLowerCase())));
+        }
+      },
+    );
 
     // AC:RL-video-playback-monitoring-signal/10 — терминальный провал видео идёт
     // в GlitchTip как ИСКЛЮЧЕНИЕ, и его title = `toString()` с добавленным
@@ -227,10 +241,15 @@ void main() {
       ).toString();
       // Имя класса в теле НЕ повторяем — Sentry ставит его сам.
       expect(value, isNot(contains('VideoPlaybackException')));
-      expect(value, startsWith('[video-fail] reason=stalled-reconnect host=synapse.liza'));
+      expect(
+        value,
+        startsWith('[video-fail] reason=stalled-reconnect host=synapse.liza'),
+      );
       // Триаж-критичная голова доезжает целой ДАЖЕ после обреза на 100.
       final asTitle = '$sentryPrefix$value';
-      final delivered = asTitle.length <= 100 ? asTitle : asTitle.substring(0, 99);
+      final delivered = asTitle.length <= 100
+          ? asTitle
+          : asTitle.substring(0, 99);
       expect(delivered, contains('[video-fail]'));
       expect(delivered, contains('reason=stalled-reconnect'));
       expect(delivered, contains('host=synapse.liza'));
@@ -264,7 +283,8 @@ void main() {
           reason: reason,
           host: 'synapse.liza.laba.prodamus.tech',
         ).toString();
-        final head = '$sentryPrefix[video-fail] reason=$reason host=synapse.liza';
+        final head =
+            '$sentryPrefix[video-fail] reason=$reason host=synapse.liza';
         expect(
           head.length,
           lessThanOrEqualTo(99),
@@ -293,21 +313,25 @@ void main() {
 
   group('alertHostFor — origin-приоритет (AC-8, фикс федеративной слепоты)', () {
     // AC:RL-video-playback-monitoring-signal/8
-    test('AC-8: origin ≠ homeserver → в алёрт идёт ORIGIN, не homeserver читателя',
-        () {
-      // Федеративное видео: origin=user.liza.ru, читатель на synapse.liza.laba…
-      // Red-proof: при возврате к homeserver-приоритету (homeserver ?? origin)
-      // этот ассерт краснеет — origin бы не попал в алёрт.
-      expect(
-        alertHostFor('user.liza.ru', 'synapse.liza.laba.prodamus.tech'),
-        'user.liza.ru',
-      );
-    });
+    test(
+      'AC-8: origin ≠ homeserver → в алёрт идёт ORIGIN, не homeserver читателя',
+      () {
+        // Федеративное видео: origin=user.liza.ru, читатель на synapse.liza.laba…
+        // Red-proof: при возврате к homeserver-приоритету (homeserver ?? origin)
+        // этот ассерт краснеет — origin бы не попал в алёрт.
+        expect(
+          alertHostFor('user.liza.ru', 'synapse.liza.laba.prodamus.tech'),
+          'user.liza.ru',
+        );
+      },
+    );
 
     // AC:RL-video-playback-monitoring-signal/8
     test('AC-8: origin пуст (не-медиа/битый mxc) → фолбэк на homeserver', () {
-      expect(alertHostFor(null, 'synapse.liza.laba.prodamus.tech'),
-          'synapse.liza.laba.prodamus.tech');
+      expect(
+        alertHostFor(null, 'synapse.liza.laba.prodamus.tech'),
+        'synapse.liza.laba.prodamus.tech',
+      );
     });
 
     // AC:RL-video-playback-monitoring-signal/8
@@ -316,17 +340,29 @@ void main() {
     });
   });
 
+  test('AC-16: E2EE loopback rate никогда не объявляет slow-network', () {
+    // AC:RL-video-playback-monitoring-signal/16
+    for (final rate in <int?>[null, -1, 0, 10, 100000000]) {
+      expect(
+        videoRebufferReason(encrypted: true, inputBytesPerSec: rate),
+        'rate-unknown',
+      );
+    }
+  });
+
   group('buildSentryUser — личность в scope, НЕ в title (AC-9)', () {
     // AC:RL-video-playback-monitoring-signal/9
-    test('AC-9: mxid → id полный, username = localpart (без :server), name = null',
-        () {
-      final u = Monitoring.buildSentryUser(
-        '@dmitrii.luba:synapse.liza.laba.prodamus.tech',
-      );
-      expect(u.id, '@dmitrii.luba:synapse.liza.laba.prodamus.tech');
-      expect(u.username, 'dmitrii.luba'); // localpart, без :server
-      expect(u.name, isNull);
-    });
+    test(
+      'AC-9: mxid → id полный, username = localpart (без :server), name = null',
+      () {
+        final u = Monitoring.buildSentryUser(
+          '@dmitrii.luba:synapse.liza.laba.prodamus.tech',
+        );
+        expect(u.id, '@dmitrii.luba:synapse.liza.laba.prodamus.tech');
+        expect(u.username, 'dmitrii.luba'); // localpart, без :server
+        expect(u.name, isNull);
+      },
+    );
 
     // AC:RL-video-playback-monitoring-signal/9
     test('AC-9: display name (best-effort) прокидывается в name', () {
@@ -343,8 +379,7 @@ void main() {
     });
 
     // AC:RL-video-playback-monitoring-signal/9
-    test(
-        'AC-9 red-proof: title-билдеры (то, что доезжает в чат) НЕ несут '
+    test('AC-9 red-proof: title-билдеры (то, что доезжает в чат) НЕ несут '
         'личность — только prefix/reason/host', () {
       // Личность живёт в SentryUser (scope), а title строится из (prefix,reason,
       // host). Red-proof: если билдер начнёт подмешивать mxid/localpart —
@@ -368,7 +403,6 @@ void main() {
     });
   });
 
-
   // AC:RL-video-playback-monitoring-signal/11 — `[video-swap]` несёт ТРИГГЕР свапа.
   // #2063 (2026-09-24): константный `reason=swap-to-local` не говорил, какой
   // детектор сорвал живой, но медленный стрим — корень не разбирался.
@@ -382,13 +416,16 @@ void main() {
       final calls = RegExp(
         r'(?:await |unawaited\()_swapToLocal\(([^)]*)\)',
       ).allMatches(src).toList();
-      // watchdog + _handlePlaybackError — обе известные точки входа.
-      expect(calls.length, greaterThanOrEqualTo(2));
+      // Watchdog объединён с progress-monitor; все ошибки идут через
+      // единственный _handlePlaybackError с обязательным trigger.
+      expect(calls.length, 1);
+      expect(calls.single.group(1), contains('trigger: reason'));
       for (final c in calls) {
         expect(
           c.group(1),
           contains('trigger:'),
-          reason: 'вызов без триггера вернёт безликий [video-swap]: ${c.group(0)}',
+          reason:
+              'вызов без триггера вернёт безликий [video-swap]: ${c.group(0)}',
         );
       }
       expect(src, isNot(contains("reason: 'swap-to-local'")));

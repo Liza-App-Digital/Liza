@@ -23,6 +23,7 @@ import 'package:liza/pages/chat/external_link_web_view.dart';
 import 'package:liza/utils/bot_callback.dart';
 import 'package:liza/widgets/matrix.dart';
 import '../../utils/test_client.dart';
+import '../../utils/registered_bot_test_transport.dart';
 
 const _bot = '@bot_father:liza.local';
 const _roomId = '!1234:fakeServer.notExisting';
@@ -86,6 +87,8 @@ const _buttons = [
 ];
 
 void main() {
+  setUp(installRegisteredBotTestTransport);
+  tearDown(resetRegisteredBotTestTransport);
   setUp(() {
     InAppWebViewPlatform.instance = _FakeInAppWebViewPlatform();
   });
@@ -133,6 +136,8 @@ void main() {
       ),
     );
     await tester.pump(const Duration(milliseconds: 500));
+    // Сначала реестр подтверждает бота, затем StatefulWidget перестраивается.
+    await tester.pump();
   }
 
   Finder button(String title) => find.widgetWithText(OutlinedButton, title);

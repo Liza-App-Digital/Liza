@@ -7,6 +7,8 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/invitation_selection/invitation_selection_view.dart';
 import 'package:liza/utils/federated_user_search_service.dart';
+import 'package:liza/utils/bot_interactive_api.dart';
+import 'package:liza/widgets/interactive_bot_permissions.dart';
 import 'package:liza/utils/user_handle_service.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/matrix.dart';
@@ -25,6 +27,7 @@ class InvitationSelectionController extends State<InvitationSelection> {
   TextEditingController controller = TextEditingController();
   late String currentSearchTerm;
   bool loading = false;
+
   /// Выдача поиска, разбитая на «Люди» / «Боты и ИИ»
   /// (RL-search-people-vs-bots-sections).
   PeopleAndBots foundProfiles = const PeopleAndBots();
@@ -71,19 +74,49 @@ class InvitationSelectionController extends State<InvitationSelection> {
       contacts.insertAll(0, aiContacts);
     }
     // Префетч ролей для шильдиков (актуально для пользователей вне общих комнат).
-    unawaited(
-      matrix.userRoleService.fetchRoles(contacts.map((u) => u.id)),
-    );
+    unawaited(matrix.userRoleService.fetchRoles(contacts.map((u) => u.id)));
     return contacts;
   }
 
   void inviteAction(BuildContext context, String id, String displayname) async {
     final room = Matrix.of(context).client.getRoomById(roomId!)!;
 
+    final api = BotInteractiveApi(room.client);
+    RegisteredBot? bot;
+    try {
+      bot = await api.resolve(mxid: id, force: true);
+    } catch (_) {
+      /* Обычное приглашение без новых прав. */
+    }
+    if (!mounted || !context.mounted || !api.isCurrent) {
+      api.dispose();
+      return;
+    }
+    int? selectedLevel;
+    if (bot != null) {
+      selectedLevel = await chooseBotInvitePermissions(
+        context: context,
+        room: room,
+        botMxid: id,
+        bot: bot,
+        isCurrent: () => mounted && context.mounted && api.isCurrent,
+      );
+      if (selectedLevel == null ||
+          !mounted ||
+          !context.mounted ||
+          !api.isCurrent) {
+        api.dispose();
+        return;
+      }
+    }
+    api.dispose();
     final success = await showFutureLoadingDialog(
       context: context,
-      future: () => room.invite(id),
+      future: () => bot == null
+          ? room.invite(id)
+          : inviteBotWithPermissions(room, id, selectedLevel!),
     );
+    if (!mounted || !context.mounted) return;
     if (success.error == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

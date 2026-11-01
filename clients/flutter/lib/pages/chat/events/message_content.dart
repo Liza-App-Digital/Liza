@@ -17,11 +17,14 @@ import 'package:liza/utils/message_link.dart';
 import 'package:liza/utils/stories/story_model.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/matrix.dart';
+import 'package:liza/widgets/mxc_image.dart';
 import '../../../config/app_config.dart';
 import '../../../utils/event_checkbox_extension.dart';
 import '../../../utils/platform_infos.dart';
 import '../../../utils/url_launcher.dart';
 import 'audio_player.dart';
+import 'bot_interactive_content.dart';
+import 'inline_bot_video.dart';
 import 'bot_invoice_content.dart';
 import 'cute_events.dart';
 import 'gallery.dart';
@@ -202,6 +205,20 @@ class MessageContent extends StatelessWidget {
     final fontSize =
         AppConfig.messageFontSize * AppSettings.fontSizeFactor.value;
     final buttonTextColor = textColor;
+    if (event.type == EventTypes.Message &&
+        !event.redacted &&
+        event.messageType == MessageTypes.Text) {
+      final contact = BotContact.parse(event.content['com.liza.contact']);
+      if (contact != null) {
+        return _withBelowTime(
+          BotContactContent(contact: contact, color: textColor),
+        );
+      }
+      final dice = BotDice.parse(event.content['com.liza.dice']);
+      if (dice != null) {
+        return _withBelowTime(BotDiceContent(dice: dice, color: textColor));
+      }
+    }
     switch (event.type) {
       case EventTypes.Message:
       case EventTypes.Encrypted:
@@ -291,6 +308,36 @@ class MessageContent extends StatelessWidget {
               trailing: trailingTime,
             );
           case MessageTypes.Video:
+            if (event.redacted) continue textmessage;
+            if (event.content.containsKey('com.liza.video_note') &&
+                event.content.containsKey('com.liza.live_photo')) {
+              continue textmessage;
+            }
+            final note = BotVideoNote.parse(event);
+            if (note != null) {
+              return InlineBotVideo(
+                event: event,
+                round: true,
+                muted: false,
+                label: L10n.of(context).botVideoNote,
+                timeOverlay: trailingTime,
+                poster: event.hasThumbnail
+                    ? MxcImage(event: event, fit: BoxFit.cover)
+                    : const ColoredBox(color: Colors.black),
+              );
+            }
+            final livePhoto = BotLivePhoto.parse(event);
+            if (livePhoto != null) {
+              return BotLivePhotoContent(
+                event: event,
+                photo: livePhoto,
+                timeOverlay: trailingTime,
+              );
+            }
+            if (event.content.containsKey('com.liza.video_note') ||
+                event.content.containsKey('com.liza.live_photo')) {
+              continue textmessage;
+            }
             if (event.galleryId != null) {
               return GalleryBubble(
                 event,

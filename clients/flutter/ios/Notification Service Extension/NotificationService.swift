@@ -13,8 +13,18 @@ class NotificationService: UNNotificationServiceExtension {
 
     var contentHandler: ((UNNotificationContent) -> Void)?
     var bestAttemptContent: UNMutableNotificationContent?
+    var diagnosticJournal: NativePushJournal? = NativePushJournal.shared
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
+        let eventId = request.content.userInfo["event_id"] as? String
+        let journal = diagnosticJournal
+        journal?.append(.nseReceived, eventId: eventId)
+        // Обёртка наблюдает прежние вызовы, не меняет payload/число callback.
+        let originalHandler = contentHandler
+        let contentHandler: (UNNotificationContent) -> Void = { content in
+            journal?.append(.nseCompleted, eventId: eventId)
+            originalHandler(content)
+        }
         self.contentHandler = contentHandler
         bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
 
@@ -24,6 +34,7 @@ class NotificationService: UNNotificationServiceExtension {
             guard let roomId = bestAttemptContent.userInfo["room_id"] as? String,
                   let _ = bestAttemptContent.userInfo["event_id"] as? String else {
                 os_log("[LizaPushHelper] Room ID or Event ID is missing!")
+                journal?.append(.nseError, eventId: eventId)
                 let emptyContent = UNMutableNotificationContent()
                 contentHandler(emptyContent)
                 return
@@ -192,6 +203,7 @@ class NotificationService: UNNotificationServiceExtension {
     }
 
     override func serviceExtensionTimeWillExpire() {
+        diagnosticJournal?.append(.nseExpired, eventId: bestAttemptContent?.userInfo["event_id"] as? String)
         // Deliver whatever we have so far (possibly without avatar).
         if let contentHandler = contentHandler, let bestAttemptContent = bestAttemptContent {
             contentHandler(bestAttemptContent)

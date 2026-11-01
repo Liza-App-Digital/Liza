@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 from urllib.parse import quote
 
 # Константа-«соль» исторической схемы (один ключ на все app). Сохраняется как
@@ -27,6 +28,15 @@ _LEGACY_HMAC_LABEL = b"LizaWebAppData"
 # Метка вывода per-app ключа. Отличается от legacy-метки намеренно, чтобы
 # per-app и legacy ключи нельзя было спутать.
 _PER_APP_LABEL = b"LizaMiniAppKey"
+
+
+def validate_start_param(value: object) -> str | None:
+    """Контекст запуска, а не URL-путь или разрешение на доступ к данным."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,512}", value) is None:
+        raise ValueError("start_param must contain 1–512 ASCII letters, digits, '_' or '-'")
+    return value
 
 
 def compute_master_key(master_secret: str) -> bytes:

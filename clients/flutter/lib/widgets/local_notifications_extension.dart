@@ -302,7 +302,7 @@ extension LocalNotificationsExtension on MatrixState {
             event.eventId,
           ).toString(),
         );
-        Logs().v('[Push] Local notification shown', event.eventId);
+        Logs().v('[Push] Local notification submitted to OS', event.eventId);
         _journalLocal(PushReason.shown, event);
       } catch (e, s) {
         Logs().w('[Push] Local notification failed', e, s);

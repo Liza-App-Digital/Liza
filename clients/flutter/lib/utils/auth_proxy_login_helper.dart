@@ -50,7 +50,8 @@ Future<void> completeAuthProxyLogin({
 
       // Token rejected — try to get a fresh one from auth proxy
       if (e is MatrixException &&
-          (e.errcode == 'M_UNKNOWN_TOKEN' || e.error == MatrixError.M_FORBIDDEN) &&
+          (e.errcode == 'M_UNKNOWN_TOKEN' ||
+              e.error == MatrixError.M_FORBIDDEN) &&
           sessionState != null &&
           authProxyService != null) {
         Logs().w(
@@ -72,9 +73,8 @@ Future<void> completeAuthProxyLogin({
         }
       }
 
-      final isTransient = e is http.ClientException ||
-          e is SocketException ||
-          e is IOException;
+      final isTransient =
+          e is http.ClientException || e is SocketException || e is IOException;
       if (isLastAttempt || !isTransient) rethrow;
       Logs().w(
         '[AuthProxy] login attempt ${attempt + 1} failed, '
@@ -103,8 +103,8 @@ Future<void> completeAuthProxyLogin({
 /// OpeningPage (через resolveInviteTarget) — здесь только маршрутизация по
 /// типу pending-ссылки.
 Future<bool> redeemPendingInviteAfterLogin() async {
-  final pending = PendingDeepLinkStore.current ??
-      await PendingDeepLinkStore.restore();
+  final pending =
+      PendingDeepLinkStore.current ?? await PendingDeepLinkStore.restore();
   if (pending == null) {
     Logs().i('[InviteRedeem] no pending deep link, skipping');
     return false;
@@ -123,6 +123,8 @@ Future<bool> redeemPendingInviteAfterLogin() async {
       router.go('/c/${pending.code}');
     case DeepLinkKind.user:
       router.go('/u/${pending.code}');
+    case DeepLinkKind.bot:
+      router.go(pending.code);
   }
   return true;
 }

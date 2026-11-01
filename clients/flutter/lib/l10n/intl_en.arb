@@ -4228,7 +4228,7 @@
   "@lizaDescription": {},
   "back": "Back",
   "@back": {},
-  "testPushNotification": "Test push notification",
+  "testPushNotification": "Local test notification",
   "@testPushNotification": {},
   "videoDownloadingEncrypted": "Downloading encrypted video…\nKeep the app open",
   "@videoDownloadingEncrypted": {},
@@ -4819,7 +4819,7 @@
   "@dialerHangup": {},
   "dialerAnswer": "Answer",
   "@dialerAnswer": {},
-  "testNotificationSent": "Test notification sent",
+  "testNotificationSent": "Local notification requested. Its display is not confirmed.",
   "@testNotificationSent": {},
   "testNotificationError": "Error: {error}",
   "@testNotificationError": {
@@ -5417,5 +5417,92 @@
   "newRequestPreset2": "I want hot coffee! Bring it fast",
   "@newRequestPreset2": {"description": "Плашка-пресет под полем пустой правой панели: тап сразу отправляет этот запрос Лизе"},
   "newRequestPreset3": "Buy milk, eggs and bread",
-  "@newRequestPreset3": {"description": "Плашка-пресет под полем пустой правой панели: тап сразу отправляет этот запрос Лизе"}
+  "@newRequestPreset3": {"description": "Плашка-пресет под полем пустой правой панели: тап сразу отправляет этот запрос Лизе"},
+  "notificationHealthDenied": "The system does not allow Liza to show notifications",
+  "notificationHealthAllowed": "System notification permission is granted",
+  "notificationHealthUnknown": "System notification permission is unknown",
+  "notificationHealthNotDetermined": "System notification permission has not been decided",
+  "notificationHealthProvisional": "Quiet notifications are provisionally allowed",
+  "notificationHealthNeverObserved": "No system observation is available",
+  "notificationHealthObservedAt": "System settings checked: {time}",
+  "notificationHealthDeliveryUnknown": "Permission and registration do not confirm push delivery or display. Focus, schedules and other system restrictions may affect notifications.",
+  "notificationRegistrationObserved": "Current account on this device: registration was observed locally.",
+  "notificationRegistrationMissing": "Current account on this device: local registration is not confirmed.",
+  "notificationRegistrationUnknown": "Current account on this device: registration is unknown.",
+  "notificationReportIdle": "No diagnostic report has been sent in this session.",
+  "notificationReportPending": "Diagnostics are pending delivery. A retry requires the app to be running.",
+  "notificationReportAccepted": "The diagnostic endpoint accepted the report over HTTP. Storage and push delivery are not confirmed.",
+  "notificationReportError": "Diagnostics could not be sent. Refresh and try again.",
+  "notificationReportDisabled": "Diagnostics are unavailable in this build.",
+  "notificationHealthOpenSettings": "System settings",
+  "notificationHealthSend": "Send diagnostics",
+  "notificationHealthRefresh": "Refresh status",
+  "notificationHealthSettingsFailed": "Could not open system settings. Open your device settings and find notification settings for Liza.",
+  "notificationHealthActionFailed": "The action could not be completed. Please try again.",
+  "notificationLocalTestExplanation": "Local notification only. This does not test APNs/FCM delivery.",
+  "@notificationHealthObservedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "botShareContact": "Share phone number",
+  "botContactRecipient": "Choose the number to send to {recipient}. It will be visible in this chat.",
+  "@botContactRecipient": {
+    "placeholders": {
+      "recipient": {
+        "type": "String"
+      }
+    }
+  },
+  "botContactUnavailable": "No verified phone number is linked to this account.",
+  "botShareLocation": "Share location",
+  "botLocationRecipient": "Send your current location to {recipient}? It will be visible in this chat.",
+  "@botLocationRecipient": {
+    "placeholders": {
+      "recipient": {
+        "type": "String"
+      }
+    }
+  },
+  "botInlineResults": "Bot results",
+  "botInteractiveFailed": "The action could not be completed. Try again.",
+  "botChooseBot": "Choose a bot",
+  "botChooseUsers": "Choose users to share with the bot",
+  "botChooseChat": "Choose a group to share with the bot",
+  "botRequestUnavailable": "This request is no longer available.",
+  "botReplyKeyboard": "Bot keyboard",
+  "botStartTitle": "Start bot",
+  "botStartButton": "Start",
+  "botStartPayload": "Launch parameter: {parameter}",
+  "@botStartPayload": {
+    "placeholders": {
+      "parameter": {
+        "type": "String"
+      }
+    }
+  },
+  "botUnavailable": "This bot is unavailable",
+  "botStartFailed": "Could not start the bot. Try again.",
+  "botStartApp": "Open Mini App",
+  "botContact": "Contact",
+  "botPhoneNumber": "Phone number",
+  "botVideoNote": "Video message",
+  "botLivePhoto": "Live photo",
+  "botDraft": "Draft",
+  "botInvitePermissions": "Choose permissions for {bot}. No permissions are granted automatically.",
+  "@botInvitePermissions": {
+    "placeholders": {
+      "bot": {
+        "type": "String"
+      }
+    }
+  },
+  "botJoinRequestTitle": "Join request",
+  "botJoinRequestWaiting": "Your request was sent. Wait for an administrator or complete the bot check.",
+  "botJoinRequestCheck": "Complete bot check",
+  "botJoinRequestJoin": "Join chat",
+  "botJoinRequestDeclined": "Your join request was declined.",
+  "botRequestsPermissions": "The bot requests chat management permissions."
 }

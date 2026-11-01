@@ -32,6 +32,7 @@ import 'package:liza/utils/init_with_restore.dart';
 import 'package:liza/utils/liza_dm.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_file_extension.dart';
 import 'package:liza/utils/monitoring.dart';
+import 'package:liza/utils/notification_health.dart';
 import 'package:liza/utils/network_recovery_trigger.dart';
 import 'package:liza/utils/failed_send_retry_service.dart';
 import 'package:liza/utils/ghost_room_prune.dart';
@@ -969,11 +970,15 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     // атрибуцию ставим здесь явно.
     _syncMonitoringIdentity();
     _pushReportTimer?.cancel();
-    _pushReportTimer = Timer.periodic(const Duration(hours: 1), (_) {
+    _pushReportTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       unawaited(_maybeReportPushHealth());
       // Смена статуса разрешения, пока окно не выходит на передний план
-      // (resume её не увидит) — сужает окно смены до часа.
-      unawaited(backgroundPush?.apns?.authorizationStatus());
+      // (resume её не увидит) — проверяем при активном lifecycle.
+      if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.paused &&
+          WidgetsBinding.instance.lifecycleState !=
+              AppLifecycleState.detached) {
+        unawaited(backgroundPush?.apns?.authorizationStatus());
+      }
     });
     unawaited(_maybeReportPushHealth());
 
@@ -1246,44 +1251,64 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
   Timer? _pushReportTimer;
   bool _pushReportInFlight = false;
 
-  /// Суточный `[health] push-report` (спека 2026-10-16-push-telemetry-cohorts):
-  /// теги когорты + счётчики и хвост журнала пушей. Проверка «пора ли» — до
-  /// нативных проб, чтобы не дёргать их на каждом resume.
+  /// Один сборщик для startup/resume/tick и ручного действия.
   Future<void> _maybeReportPushHealth() async {
-    // Старт, часовой таймер и resume зовут независимо; «пора ли» проверяется до
-    // await-проб, а метка ставится только после отправки — без флага два вызова
-    // подряд отправили бы отчёт дважды.
-    if (_pushReportInFlight) return;
-    _pushReportInFlight = true;
-    try {
-      await _reportPushHealthIfDue();
-    } finally {
-      _pushReportInFlight = false;
-    }
+    await _collectPushHealth();
   }
 
-  Future<void> _reportPushHealthIfDue() async {
-    if (!await Monitoring.pushReportIsDue()) return;
+  Future<bool> sendPushDiagnostics() => _collectPushHealth(manual: true);
+
+  Future<bool> _collectPushHealth({bool manual = false}) async {
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    if (!mounted ||
+        _pushReportInFlight ||
+        lifecycle == AppLifecycleState.paused ||
+        lifecycle == AppLifecycleState.detached) {
+      return false;
+    }
+    _pushReportInFlight = true;
     try {
+      final retried = await Monitoring.retryPushReports(canSend: () => mounted);
+      if (!await Monitoring.pushReportIsDue(manual: manual)) return retried;
+      if (!mounted) return false;
+      // Identity копируется до первого native await: switch/logout не меняют
+      // принадлежность уже собираемого installation snapshot.
+      final accounts = Monitoring.collectPushAccounts(
+        widget.clients,
+        registrations: backgroundPush?.pusherRegisteredByClient ?? const {},
+      );
       final info = await PackageInfo.fromPlatform();
-      final logged = widget.clients.where((c) => c.isLogged()).toList();
+      final health = await NotificationHealth.instance.refresh();
+      final nativeJournal = await NativePushDiagnostics.readJournal();
+      if (!mounted) return false;
       final tags = <String, String>{
         'liza.env': AppConfig.monitoringEnv,
         'liza.build': info.buildNumber,
         'liza.bundle': info.packageName,
-        'liza.accounts': '${logged.length}',
-        if (logged.firstOrNull?.deviceID != null)
-          'liza.device_id': logged.first.deviceID!,
-        if (!kIsWeb) 'liza.os_version': osMajorMinor(Platform.operatingSystemVersion),
-        'liza.lifecycle': WidgetsBinding.instance.lifecycleState?.name ?? 'unknown',
-        ...?await backgroundPush?.apns?.environmentTags(),
+        'liza.accounts': '${accounts.length}',
+        if (accounts.firstOrNull?['device_id'] case final String deviceId)
+          'liza.device_id': deviceId,
+        if (!kIsWeb)
+          'liza.os_version': osMajorMinor(Platform.operatingSystemVersion),
+        'liza.lifecycle':
+            WidgetsBinding.instance.lifecycleState?.name ?? 'unknown',
+        ...?await backgroundPush?.apns?.environmentTags(snapshot: health),
+        ...health.tags,
       };
+      if (!mounted) return false;
       final journal = PushJournal.instance;
       journal.flush();
       final entries = journal.entries;
-      await Monitoring.reportPushHealth(
+      return await Monitoring.reportPushHealth(
         platform: pushReportPlatform(),
         tags: tags,
+        accounts: accounts,
+        nativeJournal: nativeJournal,
+        nativeJournalStatus: NativePushDiagnostics.lastReadStatus,
+        settingsObservedAt: health.observedAt,
+        release: '${info.packageName}@${info.version}+${info.buildNumber}',
+        force: manual,
+        canSend: () => mounted,
         counters: PushJournalStats.compute(
           entries,
           since: DateTime.now().subtract(const Duration(hours: 24)),
@@ -1291,7 +1316,11 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
         journalTail: PushJournal.tail(entries, Monitoring.pushReportTailBytes),
       );
     } catch (e, s) {
+      Monitoring.pushReportStatus.value = PushReportStatus.error;
       Logs().w('[Push] push-report failed', e, s);
+      return false;
+    } finally {
+      _pushReportInFlight = false;
     }
   }
 

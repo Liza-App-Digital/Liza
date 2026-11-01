@@ -1,4 +1,5 @@
 import 'package:liza/utils/channel_handle.dart';
+import 'package:liza/utils/bot_deep_link.dart';
 
 /// Распознаёт invite-URI и извлекает invite code, иначе null.
 ///
@@ -34,6 +35,7 @@ String? parseInviteCode(Uri uri) {
         first != 's' &&
         first != 'c' &&
         first != 'u' &&
+        first != 'b' &&
         _looksLikeInviteCode(code)) {
       return code;
     }
@@ -156,6 +158,8 @@ String? parseChannelHandle(Uri uri) {
 /// ([[RL-channel-link-open-internal]]). Порядок проверок — как в `_processIncomingUris`
 /// (сторис → инвайт → канал → пользователь), чтобы обе точки резолвили одинаково.
 String? resolveInternalRoute(Uri uri) {
+  final botLink = parseBotLink(uri);
+  if (botLink != null) return botLink.route;
   final storyCode = parseStoryLinkCode(uri);
   if (storyCode != null) return '/s/$storyCode';
   final inviteCode = parseInviteCode(uri);
@@ -220,6 +224,8 @@ String? parseWebUserHandle(Uri uri) {
 /// Порядок — как в [resolveInternalRoute] (сторис → инвайт → канал →
 /// пользователь). Query/fragment не учитываются: маршрут — только path.
 String? webInitialLocation(Uri base) {
+  final botLink = parseWebBotLink(base);
+  if (botLink != null) return botLink.route;
   final storyCode = parseWebStoryCode(base);
   if (storyCode != null) return '/s/$storyCode';
   final inviteCode = parseWebInviteCode(base);

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import base64
 
 import pytest
 
@@ -23,9 +24,39 @@ from _crypto import (
     hmac_sign,
     hmac_verify,
     signing_key,
+    validate_start_param,
 )
 
 MASTER = "test-master-secret"
+
+
+# ledger:RL-miniapp-initdata-signature
+# AC:RL-miniapp-initdata-signature/1
+@pytest.mark.parametrize("value", [None, "", "order_123-Abc", "x" * 512])
+def test_start_param_validated_without_conflating_url_path(value):
+    assert validate_start_param(value) == (value or None)
+
+
+# AC:RL-miniapp-initdata-signature/1
+@pytest.mark.parametrize("value", [True, 123, {}, [], "/order/123", "a b", "я", "x" * 513, "a\nb"])
+def test_start_param_rejects_invalid_values(value):
+    with pytest.raises(ValueError):
+        validate_start_param(value)
+
+
+# AC:RL-miniapp-initdata-signature/2
+def test_start_param_is_covered_by_both_signatures():
+    params = {"app_id": "test-app", "auth_date": "1700000000", "start_param": "order_123"}
+    original = build_data_check_string(params)
+    key = derive_app_key(MASTER, params["app_id"])
+    seed = bytes(range(32))
+    signature = ed25519_sign_b64url(seed, original)
+    digest = hmac_sign(key, original)
+    params["start_param"] = "order_456"
+    changed = build_data_check_string(params)
+    assert not hmac_verify(key, changed, digest)
+    public_key = ed25519_public_key_b64url(seed)
+    assert not ed25519_verify_b64url(base64.urlsafe_b64decode(public_key + "="), changed, signature)
 
 
 def test_legacy_key_matches_historical_formula():

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:liza/config/setting_keys.dart';
+import 'package:liza/l10n/l10n.dart';
 
 /// Футер сообщения в Liza-стиле: HH:MM у КАЖДОГО сообщения, а у своих —
 /// рядом со временем индикатор доставки/прочтения (часики → ✓ → ✓✓). Раньше
@@ -30,6 +31,7 @@ class MessageTime extends StatelessWidget {
   final bool isSendingFile;
   final bool isSending;
   final bool isRead;
+  final bool isDraft;
 
   /// Плашка-оверлей поверх медиа (тёмный фон, белый текст) вместо inline-строки.
   final bool overlay;
@@ -46,6 +48,7 @@ class MessageTime extends StatelessWidget {
     this.isSendingFile = false,
     this.isSending = false,
     this.isRead = false,
+    this.isDraft = false,
     this.overlay = false,
     super.key,
   });
@@ -78,6 +81,13 @@ class MessageTime extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
+        if (isDraft) ...[
+          Text(
+            L10n.of(context).botDraft,
+            style: TextStyle(fontSize: 11, color: glyphColor),
+          ),
+          const SizedBox(width: 4),
+        ],
         Text(
           time,
           style: TextStyle(
@@ -86,10 +96,7 @@ class MessageTime extends StatelessWidget {
             fontWeight: FontWeight.w500,
           ),
         ),
-        if (showStatus) ...[
-          const SizedBox(width: 3),
-          _status(glyphColor),
-        ],
+        if (showStatus) ...[const SizedBox(width: 3), _status(glyphColor)],
       ],
     );
 

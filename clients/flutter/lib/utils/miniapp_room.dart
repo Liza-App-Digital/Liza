@@ -15,6 +15,9 @@ class MiniAppLaunch {
   /// Deep-link на конкретную страницу mini App (`#!/tproduct/123`) — приложение
   /// открывается сразу на ней. Пусто у обычных подключений (главная).
   final String appStartPath;
+  final String startParam;
+  final String? botMxid;
+  final String? joinRequestQueryId;
 
   /// Настройки кнопок быстрого доступа (задаются владельцем через BotFather,
   /// едут из `/liza/mybots`). `*Enabled=false` — кнопка скрыта; непустой `*Label`
@@ -31,6 +34,9 @@ class MiniAppLaunch {
     required this.appName,
     required this.appType,
     this.appStartPath = '',
+    this.startParam = '',
+    this.botMxid,
+    this.joinRequestQueryId,
     this.composerButtonEnabled = true,
     this.composerButtonLabel,
     this.listButtonEnabled = true,

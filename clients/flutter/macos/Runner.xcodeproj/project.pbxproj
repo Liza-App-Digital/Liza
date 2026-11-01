@@ -21,6 +21,8 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
+		AA1030301030301030300003 /* NativePushJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1030301030301030300001 /* NativePushJournal.swift */; };
+		AA1030301030301030300002 /* NativePushJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1030301030301030300001 /* NativePushJournal.swift */; };
 		335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335BBD1A22A9A15E00E9071D /* GeneratedPluginRegistrant.swift */; };
 		33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC10F02044A3C60003C045 /* AppDelegate.swift */; };
 		33CC10F32044A3C60003C045 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 33CC10F22044A3C60003C045 /* Assets.xcassets */; };
@@ -73,6 +75,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AA1030301030301030300001 /* NativePushJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NativePushJournal.swift; path = "../../ios/Notification Service Extension/NativePushJournal.swift"; sourceTree = "<group>"; };
 		2769E1768F5DB54A501E84F2 /* NSE-Common.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "NSE-Common.xcconfig"; sourceTree = "<group>"; };
 		333000ED22D3DE5D00554162 /* Warnings.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Warnings.xcconfig; sourceTree = "<group>"; };
 		335BBD1A22A9A15E00E9071D /* GeneratedPluginRegistrant.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = GeneratedPluginRegistrant.swift; sourceTree = "<group>"; };
@@ -207,6 +210,7 @@
 				CC7A00002F4A000000000001 /* notification.caf */,
 				CC7B00042F4B000000000003 /* liza_ding.aiff */,
 				CC7A00022F4A000000000002 /* MacApnsPushPlugin.swift */,
+				AA1030301030301030300001 /* NativePushJournal.swift */,
 				CC7A00022F4A0000000000B1 /* SecureScreenPlugin.swift */,
 				CC7A00022F4A0000000000C1 /* ClipboardImagesPlugin.swift */,
 				33CC11242044D66E0003C045 /* Resources */,
@@ -451,6 +455,7 @@
 				33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,
 				CC7A00032F4A000000000002 /* MacApnsPushPlugin.swift in Sources */,
+				AA1030301030301030300002 /* NativePushJournal.swift in Sources */,
 				CC7A00032F4A0000000000B2 /* SecureScreenPlugin.swift in Sources */,
 				CC7A00032F4A0000000000C2 /* ClipboardImagesPlugin.swift in Sources */,
 			);
@@ -461,6 +466,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				54CC7F1BBA1B856291A68182 /* NotificationService.swift in Sources */,
+				AA1030301030301030300003 /* NativePushJournal.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
