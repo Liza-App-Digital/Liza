@@ -9,10 +9,12 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/themes.dart';
 import 'package:liza/utils/client_download_content_extension.dart';
+import 'package:liza/utils/foreground_witness.dart';
 import 'package:liza/utils/heic_converter.dart';
 import 'package:liza/utils/matrix_sdk_extensions/event_extension.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_file_extension.dart';
 import 'package:liza/utils/monitoring.dart';
+import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/matrix.dart';
 
 class MxcImage extends StatefulWidget {
@@ -227,6 +229,13 @@ class _MxcImageState extends State<MxcImage> {
   static const int _maxRetries = 5;
   static const Duration _maxBackoff = Duration(seconds: 30);
 
+  // Один свидетель на процесс (не на каждую картинку ленты). Создаётся при
+  // первом смонтированном MxcImage — приложение тогда на экране, окно
+  // `resumeGrace` после возврата из сна не пропущено. Только мобильные: там
+  // процесс замораживают; на десктопе witness не нужен.
+  static final ForegroundWitness? _witness =
+      PlatformInfos.isMobile ? ForegroundWitness.attach() : null;
+
   // Агрегатор сигнала «застрявшего» медиа — общий на все MxcImage сессии.
   static final MediaStuckAggregator _stuckAggregator = MediaStuckAggregator();
 
@@ -252,6 +261,10 @@ class _MxcImageState extends State<MxcImage> {
   // true после исчерпания ретраев: рендерим tap-to-retry вместо вечного
   // спиннера/блюра. Сбрасывается при ручном повторе.
   bool _failed = false;
+
+  // Сколько сбоев не засчитано как ретрай из-за сна процесса (см.
+  // [holdRetryForSuspension]).
+  int _suspensionPasses = 0;
 
   Uint8List? get _imageData {
     final cacheKey = widget.cacheKey;
@@ -503,6 +516,13 @@ class _MxcImageState extends State<MxcImage> {
       await _load();
     } catch (e, s) {
       if (!mounted) return;
+      if (holdRetryForSuspension(e, _witness, _suspensionPasses)) {
+        _suspensionPasses++;
+        await _witness!.untilForeground();
+        if (!mounted) return;
+        _tryLoad(attempt);
+        return;
+      }
       if (attempt >= _maxRetries) {
         Logs().w(
           'MxcImage: giving up after ${attempt + 1} attempts for '

@@ -83,6 +83,11 @@ abstract class AppRoutes {
   /// в общем `ShellRoute` списка чатов рядом с `apps`, до `:roomid`.
   static const String mcp = '/rooms/mcp';
 
+  /// Окно ввода нового запроса к Лизе на узком экране (на компьютере то же
+  /// окно — пустая правая панель `/rooms`). Раньше «Новый запрос» сразу
+  /// создавал пустой чат; теперь сначала окно (заявка Надежды 02.11).
+  static const String newRequest = '/rooms/newrequest';
+
   static FutureOr<String?> loggedInRedirect(
     BuildContext context,
     GoRouterState state,
@@ -360,6 +365,15 @@ abstract class AppRoutes {
                 context,
                 state,
                 const MiniAppCatalogPage(),
+              ),
+              redirect: loggedOutRedirect,
+            ),
+            GoRoute(
+              path: 'newrequest',
+              pageBuilder: (context, state) => defaultPageBuilder(
+                context,
+                state,
+                const NewRequestEmptyPage(showBackButton: true),
               ),
               redirect: loggedOutRedirect,
             ),

@@ -5,6 +5,7 @@ import 'package:collection/collection.dart' show IterableExtension;
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/app_config.dart';
+import 'package:liza/pages/chat/events/bubble_under_row.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/utils/update_policy.dart';
@@ -13,16 +14,8 @@ import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/matrix.dart';
 import 'package:liza/widgets/mxc_image.dart';
 
-/// Куда прижимать ряд реакций.
-///
-/// В канале — всегда влево: пост канала не считается «своим сообщением»
-/// (`message.dart:164` считает так же), и у автора реакции уезжали вправо,
-/// отрываясь от поста.
-WrapAlignment reactionAlignment({
-  required bool ownMessage,
-  required bool isChannel,
-}) =>
-    ownMessage && !isChannel ? WrapAlignment.end : WrapAlignment.start;
+/// До скольких реагировавших одним эмодзи показываем аватарками, дальше число.
+const int kReactionAvatarsMax = 3;
 
 class MessageReactions extends StatelessWidget {
   final Event event;
@@ -40,26 +33,25 @@ class MessageReactions extends StatelessWidget {
     Timeline timeline,
   ) => _buildChips(context, event, timeline);
 
+  /// Одна строка без переноса: ширину и выход за край пузыря решает
+  /// [BubbleWithUnderRow], здесь только чипы подряд.
   @override
   Widget build(BuildContext context) {
-    final ownMessage = event.senderId == event.room.client.userID;
-    return Wrap(
-      spacing: 4.0,
-      runSpacing: 4.0,
-      alignment: reactionAlignment(
-        ownMessage: ownMessage,
-        isChannel: event.room.isChannel,
-      ),
-      children: _buildChips(context, event, timeline),
+    final chips = _buildChips(context, event, timeline);
+    if (chips.isEmpty) return const SizedBox.shrink();
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < chips.length; i++) ...[
+          if (i > 0) const SizedBox(width: 4),
+          chips[i],
+        ],
+      ],
     );
   }
 }
 
-List<Widget> _buildChips(
-  BuildContext context,
-  Event event,
-  Timeline timeline,
-) {
+List<Widget> _buildChips(BuildContext context, Event event, Timeline timeline) {
   final allReactionEvents = event.aggregatedEvents(
     timeline,
     RelationshipTypes.reaction,
@@ -102,6 +94,8 @@ List<Widget> _buildChips(
         reactionKey: r.key,
         count: r.count,
         reacted: r.reacted,
+        reactors: r.reactors ?? const [],
+        client: client,
         onTap: !canInteract || (r.reacted && !canRedactOwnReaction)
             ? null
             : () {
@@ -147,6 +141,8 @@ class _Reaction extends StatelessWidget {
   final String reactionKey;
   final int count;
   final bool? reacted;
+  final List<User> reactors;
+  final Client client;
   final void Function()? onTap;
   final void Function()? onLongPress;
 
@@ -154,9 +150,46 @@ class _Reaction extends StatelessWidget {
     required this.reactionKey,
     required this.count,
     required this.reacted,
+    required this.reactors,
+    required this.client,
     required this.onTap,
     required this.onLongPress,
   });
+
+  /// 2–3 реагировавших одним эмодзи — их аватарками (как в Telegram), от
+  /// [kReactionAvatarsMax]+1 — числом.
+  Widget _reactorsTail(BuildContext context, ThemeData theme) {
+    if (count > kReactionAvatarsMax || reactors.length != count) {
+      return Text(
+        count.toString(),
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          color: theme.colorScheme.onSurface,
+          fontSize: DefaultTextStyle.of(context).style.fontSize,
+        ),
+      );
+    }
+    return SizedBox(
+      width: kSeenAvatarSize + (count - 1) * kSeenAvatarStep,
+      height: kSeenAvatarSize,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          for (var i = 0; i < reactors.length; i++)
+            Positioned(
+              left: i * kSeenAvatarStep.toDouble(),
+              child: Avatar(
+                mxContent: reactors[i].avatarUrl,
+                name: reactors[i].calcDisplayname(),
+                size: kSeenAvatarSize,
+                client: client,
+                isHexagonal: Matrix.of(context).isAiUser(reactors[i].id),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -174,17 +207,8 @@ class _Reaction extends StatelessWidget {
             animated: false,
             isThumbnail: false,
           ),
-          if (count > 1) ...[
-            const SizedBox(width: 4),
-            Text(
-              count.toString(),
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: theme.colorScheme.onSurface,
-                fontSize: DefaultTextStyle.of(context).style.fontSize,
-              ),
-            ),
-          ],
+          const SizedBox(width: 4),
+          _reactorsTail(context, theme),
         ],
       );
     } else {
@@ -192,12 +216,19 @@ class _Reaction extends StatelessWidget {
       if (renderKey.length > 10) {
         renderKey = renderKey.getRange(0, 9) + Characters('…');
       }
-      content = Text(
-        renderKey.toString() + (count > 1 ? ' $count' : ''),
-        style: TextStyle(
-          color: theme.colorScheme.onSurface,
-          fontSize: DefaultTextStyle.of(context).style.fontSize,
-        ),
+      content = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            renderKey.toString(),
+            style: TextStyle(
+              color: theme.colorScheme.onSurface,
+              fontSize: DefaultTextStyle.of(context).style.fontSize,
+            ),
+          ),
+          const SizedBox(width: 4),
+          _reactorsTail(context, theme),
+        ],
       );
     }
     return InkWell(
@@ -272,8 +303,9 @@ class _AdaptableReactorsDialog extends StatelessWidget {
                 name: reactor.displayName,
                 client: client,
                 presenceUserId: reactor.stateKey,
-                isHexagonal: Matrix.of(context)
-                    .isAiUser(reactor.stateKey ?? ''),
+                isHexagonal: Matrix.of(
+                  context,
+                ).isAiUser(reactor.stateKey ?? ''),
               ),
               label: Text(reactor.displayName!),
             ),

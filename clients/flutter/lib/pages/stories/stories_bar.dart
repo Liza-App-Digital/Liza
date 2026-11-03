@@ -13,6 +13,7 @@ import '../../utils/stories/stories_extension.dart';
 import '../../utils/stories/stories_seen_store.dart';
 import '../../utils/stories/story_media_picker.dart';
 import '../../widgets/avatar.dart';
+import '../../widgets/horizontal_mouse_wheel.dart';
 import '../../widgets/matrix.dart';
 import '../../widgets/story_avatar_ring.dart';
 import 'story_viewer.dart';
@@ -22,9 +23,12 @@ import 'story_viewer.dart';
 class StoriesBar extends StatefulWidget {
   const StoriesBar({super.key});
 
-  /// Высота виджета: аватарка 76px + ring ~4px + ListView padding vertical:8 = ~92px.
-  /// Было 116 когда под аватарками были подписи; подписи убраны, зазор уменьшен.
-  static const double height = 96;
+  /// Размер аватарки в ленте. Было 76; уменьшено на 15% по просьбе владельца
+  /// (02.11.2026), высота ленты — те же -15% (96 → 82).
+  static const double avatarSize = 65;
+
+  /// Высота виджета: аватарка 65px + ListView padding vertical:8 = 81px.
+  static const double height = 82;
 
   @override
   State<StoriesBar> createState() => _StoriesBarState();
@@ -47,6 +51,12 @@ class _StoriesBarState extends State<StoriesBar> {
         Matrix.of(context).store,
         scope: Matrix.of(context).client.userID,
       );
+
+  /// Контроллер ленты нужен [HorizontalMouseWheel]: без него вертикальное
+  /// колесо мыши (Windows/Linux) над аватарками уходит родительскому списку
+  /// чатов и лента «залипает» (остальные горизонтальные ряды списка чатов
+  /// обёрнуты с LABA-2240, этот был пропущен).
+  final ScrollController _scrollController = ScrollController();
 
   /// Подписка на Matrix-синхронизацию: лента обновляется сама при новых
   /// сторисах/протухании, без захода в чат и обратно.
@@ -82,6 +92,7 @@ class _StoriesBarState extends State<StoriesBar> {
   void dispose() {
     _syncSub?.cancel();
     _reloadDebounce?.cancel();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -190,79 +201,84 @@ class _StoriesBarState extends State<StoriesBar> {
 
     return SizedBox(
       height: StoriesBar.height,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        children: [
-          _StoryTile(
-            // Создание сторис доступно на ВСЕХ платформах, включая desktop и
-            // web (прежний запрет "только смотреть" снят). Редактор режет
-            // кадр под 9:16 на широком окне - см. storyFrameRect(maxAspect).
-            showAdd: true,
-            // Аватарка из синхронизированного стейта, без сетевого профиля:
-            // не мерцает на авто-reload ленты и не обнуляется при сбое сети.
-            // Кольцо рисует сам Avatar (storyRing) - та же модель, что везде,
-            // концентрично и без рассинхрона размеров (бокс всегда 76).
-            avatar: Avatar(
-              mxContent: client.myAvatarFromState(),
-              name: client.userID?.localpart ?? client.userID,
-              size: 76,
-              storyRing: myRing == StoryRingState.none ? null : myRing,
+      child: HorizontalMouseWheel(
+        controller: _scrollController,
+        child: ListView(
+          controller: _scrollController,
+          scrollDirection: Axis.horizontal,
+          physics: const ClampingScrollPhysics(),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          children: [
+            _StoryTile(
+              // Создание сторис доступно на ВСЕХ платформах, включая desktop и
+              // web (прежний запрет "только смотреть" снят). Редактор режет
+              // кадр под 9:16 на широком окне - см. storyFrameRect(maxAspect).
+              showAdd: true,
+              // Аватарка из синхронизированного стейта, без сетевого профиля:
+              // не мерцает на авто-reload ленты и не обнуляется при сбое сети.
+              // Кольцо рисует сам Avatar (storyRing) - та же модель, что везде,
+              // концентрично и без рассинхрона размеров (бокс всегда avatarSize).
+              avatar: Avatar(
+                mxContent: client.myAvatarFromState(),
+                name: client.userID?.localpart ?? client.userID,
+                size: StoriesBar.avatarSize,
+                storyRing: myRing == StoryRingState.none ? null : myRing,
+              ),
+              // Баг №3: тап по аватарке-кольцу открывает просмотр если есть
+              // сторисы, иначе добавление (на всех платформах).
+              onTap: hasMyActiveStories && myRoom != null
+                  ? () => _openViewer(myRoom.id)
+                  : _addStory,
+              // Кнопка-плюс ВСЕГДА открывает добавление.
+              onAddPressed: _addStory,
             ),
-            // Баг №3: тап по аватарке-кольцу открывает просмотр если есть
-            // сторисы, иначе добавление (на всех платформах).
-            onTap: hasMyActiveStories && myRoom != null
-                ? () => _openViewer(myRoom.id)
-                : _addStory,
-            // Кнопка-плюс ВСЕГДА открывает добавление.
-            onAddPressed: _addStory,
-          ),
-          for (final room in otherRooms)
-            Builder(
-              builder: (context) {
-                final events = _activeByRoom[room.id] ?? const <Event>[];
-                // Баг №1: показываем аватарку/имя автора, а не имя комнаты
-                // "Stories". Источник — синхронизированный стейт (m.room.member
-                // автора → room.avatar), БЕЗ сетевого getProfileFromUserId,
-                // который падал M_INVALID_PARAM/таймаутом и обнулял аватарку
-                // в букву → «пропали все аватарки кроме моей».
-                //
-                // Истории канала (маркер com.liza.channel.stories_of в
-                // creation_content) — исключение: тайл должен показывать
-                // аватар/имя КАНАЛА, а не создателя служебной stories-комнаты
-                // (создатель — бот/сервисный аккаунт, не сам канал).
-                final channelId = room.channelIdOfStoriesRoom;
-                final channelRoom = channelId == null
-                    ? null
-                    : client.getRoomById(channelId);
-                final owner = client.storyOwnerOf(room);
-                final ring = client.ringStateFromActive(
-                  room,
-                  events,
-                  seenStore,
-                );
-                return _StoryTile(
-                  showAdd: false,
-                  avatar: Avatar(
-                    mxContent: channelRoom != null
-                        ? channelRoom.avatar
-                        : client.storyOwnerAvatar(room, owner),
-                    name: channelRoom != null
-                        ? channelRoom.getLocalizedDisplayname()
-                        : client.storyOwnerName(room, owner),
-                    size: 76,
-                    storyRing: ring == StoryRingState.none ? null : ring,
-                  ),
-                  onTap: () => _openViewer(room.id),
-                );
-              },
-            ),
-          for (final contact in frequent)
-            _FrequentContactTile(
-              key: ValueKey('frequentContact:${contact.userId}'),
-              contact: contact,
-            ),
-        ],
+            for (final room in otherRooms)
+              Builder(
+                builder: (context) {
+                  final events = _activeByRoom[room.id] ?? const <Event>[];
+                  // Баг №1: показываем аватарку/имя автора, а не имя комнаты
+                  // "Stories". Источник — синхронизированный стейт (m.room.member
+                  // автора → room.avatar), БЕЗ сетевого getProfileFromUserId,
+                  // который падал M_INVALID_PARAM/таймаутом и обнулял аватарку
+                  // в букву → «пропали все аватарки кроме моей».
+                  //
+                  // Истории канала (маркер com.liza.channel.stories_of в
+                  // creation_content) — исключение: тайл должен показывать
+                  // аватар/имя КАНАЛА, а не создателя служебной stories-комнаты
+                  // (создатель — бот/сервисный аккаунт, не сам канал).
+                  final channelId = room.channelIdOfStoriesRoom;
+                  final channelRoom = channelId == null
+                      ? null
+                      : client.getRoomById(channelId);
+                  final owner = client.storyOwnerOf(room);
+                  final ring = client.ringStateFromActive(
+                    room,
+                    events,
+                    seenStore,
+                  );
+                  return _StoryTile(
+                    showAdd: false,
+                    avatar: Avatar(
+                      mxContent: channelRoom != null
+                          ? channelRoom.avatar
+                          : client.storyOwnerAvatar(room, owner),
+                      name: channelRoom != null
+                          ? channelRoom.getLocalizedDisplayname()
+                          : client.storyOwnerName(room, owner),
+                      size: StoriesBar.avatarSize,
+                      storyRing: ring == StoryRingState.none ? null : ring,
+                    ),
+                    onTap: () => _openViewer(room.id),
+                  );
+                },
+              ),
+            for (final contact in frequent)
+              _FrequentContactTile(
+                key: ValueKey('frequentContact:${contact.userId}'),
+                contact: contact,
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -295,7 +311,7 @@ class _FrequentContactTile extends StatelessWidget {
               ? null
               : client.storyOwnerAvatar(room, contact.userId),
           name: name,
-          size: 76,
+          size: StoriesBar.avatarSize,
         ),
         onTap: () => context.go('/rooms/${contact.roomId}'),
       ),
@@ -311,7 +327,7 @@ class _StoryTile extends StatelessWidget {
     this.onAddPressed,
   });
 
-  /// Аватарка уже с кольцом (Avatar.storyRing) - концентрично, бокс 76.
+  /// Аватарка уже с кольцом (Avatar.storyRing) - концентрично, бокс avatarSize.
   final Widget avatar;
 
   /// Null - тайл неактивен (сейчас не используется: создание доступно на всех

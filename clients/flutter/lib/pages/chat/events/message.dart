@@ -31,7 +31,7 @@ import 'message_reactions.dart';
 import 'message_time.dart';
 import 'forwarded_content.dart';
 import 'reply_content.dart';
-import 'bubble_receipts_side.dart';
+import 'bubble_under_row.dart';
 import 'seen_by_receipts_sheet.dart';
 import 'state_message.dart';
 import 'bot_interactive_content.dart';
@@ -593,6 +593,16 @@ class Message extends StatelessWidget {
       RelationshipTypes.reaction,
     );
 
+    // Реакции и аватарки прочтения — одна строка под пузырём. В канале
+    // реакции и просмотры живут ВНУТРИ пузыря (ChannelPostFooter), поэтому
+    // снаружи их не дублируем.
+    final underReactions = !isChannelPost(event) && showReceiptsRow
+        ? MessageReactions(event, timeline)
+        : null;
+    final underReceipts = seenByUsers.isNotEmpty && showSeenSlot
+        ? SeenByAvatars(receipts: seenByUsers)
+        : null;
+
     final threadChildren = event.aggregatedEvents(
       timeline,
       RelationshipTypes.thread,
@@ -901,22 +911,19 @@ class Message extends StatelessWidget {
                                       // RepaintBoundary вокруг ВИДИМОГО пузыря
                                       // (за паддингом) — снимок и якорь меню
                                       // совпадают с левой границей сообщения.
-                                      // Аватарки прочтения — сбоку от пузыря,
-                                      // вне bubbleKey (снимок/якорь меню —
-                                      // только сам пузырь), см.
-                                      // BubbleReceiptsSide.
-                                      child: BubbleReceiptsSide(
+                                      // Реакции и аватарки прочтения — одной
+                                      // строкой под пузырём, вне bubbleKey
+                                      // (снимок/якорь меню — только сам
+                                      // пузырь), см. BubbleWithUnderRow.
+                                      child: BubbleWithUnderRow(
                                         ownMessage: ownMessage,
-                                        reserve: showSeenSlot,
-                                        cluster:
-                                            seenByUsers.isNotEmpty &&
-                                                mediaCaption == null
-                                            ? (maxWidth) => SeenByAvatars(
-                                                receipts: seenByUsers,
-                                                maxWidth: maxWidth,
-                                              )
+                                        reactions: mediaCaption == null
+                                            ? underReactions
                                             : null,
-                                        child: RepaintBoundary(
+                                        receipts: mediaCaption == null
+                                            ? underReceipts
+                                            : null,
+                                        bubble: RepaintBoundary(
                                           key: bubbleKey,
                                           child: AnimatedOpacity(
                                             opacity: animateIn
@@ -1154,16 +1161,11 @@ class Message extends StatelessWidget {
                                           left: 8,
                                           top: 4,
                                         ),
-                                        child: BubbleReceiptsSide(
+                                        child: BubbleWithUnderRow(
                                           ownMessage: ownMessage,
-                                          reserve: showSeenSlot,
-                                          cluster: seenByUsers.isNotEmpty
-                                              ? (maxWidth) => SeenByAvatars(
-                                                  receipts: seenByUsers,
-                                                  maxWidth: maxWidth,
-                                                )
-                                              : null,
-                                          child: Container(
+                                          reactions: underReactions,
+                                          receipts: underReceipts,
+                                          bubble: Container(
                                             constraints: const BoxConstraints(
                                               maxWidth:
                                                   LizaThemes.columnWidth * 1.5,
@@ -1226,24 +1228,6 @@ class Message extends StatelessWidget {
                   );
                 },
               ),
-              // В канале реакции и просмотры живут ВНУТРИ пузыря
-              // (ChannelPostStatsRow выше), поэтому снаружи их не дублируем.
-              if (!isChannelPost(event))
-                AnimatedSize(
-                  duration: LizaThemes.animationDuration,
-                  curve: LizaThemes.animationCurve,
-                  alignment: Alignment.bottomCenter,
-                  child: !showReceiptsRow
-                      ? const SizedBox.shrink()
-                      : Padding(
-                          padding: EdgeInsets.only(
-                            top: 4.0,
-                            left: (ownMessage ? 0 : Avatar.defaultSize) + 12.0,
-                            right: ownMessage ? 0 : 12.0,
-                          ),
-                          child: MessageReactions(event, timeline),
-                        ),
-                ),
               if (enterThread != null)
                 AnimatedSize(
                   duration: LizaThemes.animationDuration,
@@ -1332,17 +1316,10 @@ class Message extends StatelessWidget {
 /// окно «кто и когда прочитал» (полный список, не обрезанный до 10).
 class SeenByAvatars extends StatelessWidget {
   final List<MessageReadReceipt> receipts;
-
-  /// Сколько места сбоку от пузыря (BubbleReceiptsSide): не влезает — шаг
-  /// перекрытия сжимается, пузырь не трогаем (заявка №60).
-  final double maxWidth;
-  const SeenByAvatars({
-    required this.receipts,
-    this.maxWidth = double.infinity,
-    super.key,
-  });
+  const SeenByAvatars({required this.receipts, super.key});
 
   static const double _size = kSeenAvatarSize;
+  static const double _step = kSeenAvatarStep;
   // До 10 аватарок выводим по тому же принципу, что и первые (overlap-стек),
   // дальше — бейдж «+N» с числом остальных прочитавших (ТЗ заказчика).
   static const int _maxShown = 10;
@@ -1350,19 +1327,12 @@ class SeenByAvatars extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final fit = fitSeenAvatars(
-      total: receipts.length,
-      maxShown: receipts.length > _maxShown ? _maxShown : receipts.length,
-      maxWidth: maxWidth,
-    );
-    final shown = receipts.length > _maxShown
+    final visible = receipts.length > _maxShown
         ? receipts.sublist(0, _maxShown)
         : receipts;
-    final visible = shown.sublist(0, fit.shown);
-    final step = fit.step;
     final extra = receipts.length - visible.length;
     final slots = visible.length + (extra > 0 ? 1 : 0);
-    final width = _size + (slots - 1) * step;
+    final width = _size + (slots - 1) * _step;
     return GestureDetector(
       onTap: () => showReadReceiptsSheet(context, receipts),
       behavior: HitTestBehavior.opaque,
@@ -1374,7 +1344,7 @@ class SeenByAvatars extends StatelessWidget {
           children: [
             for (var i = 0; i < visible.length; i++)
               Positioned(
-                left: i * step,
+                left: i * _step,
                 child: Avatar(
                   mxContent: visible[i].user.avatarUrl,
                   name: visible[i].user.calcDisplayname(),
@@ -1384,7 +1354,7 @@ class SeenByAvatars extends StatelessWidget {
               ),
             if (extra > 0)
               Positioned(
-                left: visible.length * step,
+                left: visible.length * _step,
                 child: SizedBox(
                   width: _size,
                   height: _size,

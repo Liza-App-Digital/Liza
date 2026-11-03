@@ -127,3 +127,25 @@ Future<T> retryOnceAfterSuspension<T>(
     return await attempt();
   }
 }
+
+/// Сколько раз один виджет может «не засчитать» сбой, объяснённый сном процесса.
+/// Конечный потолок: без него мёртвая сеть, совпавшая с серией
+/// пробуждений, крутила бы ретраи вечно.
+const int maxSuspensionPasses = 2;
+
+/// true — транспортный сбой ([mediaFailureKind] timeout/network) объясняется
+/// заморозкой процесса и бюджет пропусков [passesUsed] не исчерпан: ретрай не
+/// должен сгорать. Цикл ретраев `MxcImage` (2+4+8+16+30 с) во сне не живёт:
+/// просроченные таймеры выстреливают скопом при пробуждении, сокеты мёртвые,
+/// все 5 попыток падают за секунды → `[media-stuck] give-up kind=network`
+/// (GlitchTip #2166, iOS 3789: `resumed` в 09:42:04, give-up в 09:42:11, при
+/// том что сервер/MMR в окне чисты).
+bool holdRetryForSuspension(
+  Object error,
+  ForegroundWitness? witness,
+  int passesUsed,
+) {
+  if (witness == null || passesUsed >= maxSuspensionPasses) return false;
+  if (!witness.failureExplainedBySuspension) return false;
+  return const {'timeout', 'network'}.contains(mediaFailureKind(error));
+}

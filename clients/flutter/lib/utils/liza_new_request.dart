@@ -3,37 +3,25 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/config/routes.dart';
+import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/composer_draft.dart';
 import 'package:liza/utils/liza_dm.dart';
 import 'package:liza/utils/new_request_transition.dart';
-import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/matrix.dart';
 
-/// «Новый запрос»: отдельный чат с Лизой (P1 встречи 05.10). Название
-/// «Liza: <суть>» ставит бот после первого сообщения; до того — «Новый
-/// запрос». Двойной тап: барьер диалога + single-flight `forceNew`.
-///
-/// Вход для пункта «+» в шапке и строки внизу списка чатов: пустой чат, в
-/// который Лиза пришлёт приглашение к задаче. `true` — чат открыт.
-Future<bool> openNewLizaRequest(BuildContext context) async {
-  final client = Matrix.of(context).client;
-  final title = L10n.of(context).newLizaRequest;
-  final created = await showFutureLoadingDialog(
-    context: context,
-    future: () async {
-      final (id, _) = await startLizaRequestChat(
-        client,
-        MatrixState.lizaMxid,
-        title: title,
-      );
-      return id;
-    },
-  );
-  final roomId = created.result;
-  if (roomId == null || !context.mounted) return false;
-  context.go('/rooms/$roomId');
-  return true;
+/// «Новый запрос»: открывает окно ввода запроса («Какую задачу решим?»), чат
+/// создаётся уже при отправке (`sendNewLizaRequest`). Заявка Надежды 02.11:
+/// и «+ Новый запрос» в меню шапки, и строка внизу списка чатов вели сразу в
+/// пустой чат. Компьютер — пустая правая панель `/rooms`; узкий экран —
+/// отдельный маршрут с кнопкой «назад».
+void openNewLizaRequest(BuildContext context) {
+  if (LizaThemes.isColumnMode(context)) {
+    context.go('/rooms');
+  } else {
+    context.push(AppRoutes.newRequest);
+  }
 }
 
 /// Вопрос, набранный в пустой правой панели: чат открывается сразу, вопрос в

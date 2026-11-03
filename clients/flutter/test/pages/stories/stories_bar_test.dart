@@ -3,7 +3,7 @@ import 'package:liza/pages/stories/stories_bar.dart';
 
 void main() {
   testWidgets('StoriesBar имеет фиксированную высоту 96', (tester) async {
-    expect(StoriesBar.height, 96);
+    expect(StoriesBar.height, 82);
   });
 
   // Полноценный рендер StoriesBar требует Matrix.of(context) с живым Client.

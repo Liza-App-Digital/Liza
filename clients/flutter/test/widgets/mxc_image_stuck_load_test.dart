@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'dart:ui' show AppLifecycleState;
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:liza/utils/foreground_witness.dart';
 import 'package:liza/utils/monitoring.dart';
 import 'package:liza/widgets/mxc_image.dart';
 
@@ -178,6 +181,57 @@ void main() {
       final a = MxcImage(uri: Uri.parse('mxc://s/aaa'), cacheKey: 'k1');
       final b = MxcImage(uri: Uri.parse('mxc://s/aaa'), cacheKey: 'k1');
       expect(MxcImage.attachmentIdentityChanged(a, b), isFalse);
+    });
+  });
+
+  group('holdRetryForSuspension — сон не сжигает ретраи (AC-11)', () {
+    // GlitchTip #2166 (iOS 3789): `resumed` 09:42:04 → give-up kind=network
+    // 09:42:11, сервер чист. Просроченные во сне таймеры backoff выстреливают
+    // скопом, сокеты мёртвые — все 5 попыток падают за секунды.
+    ForegroundWitness fresh(AppLifecycleState s) =>
+        ForegroundWitness.manual(initial: s);
+
+    test('сбой в первые секунды после пробуждения → ретрай придержан', () {
+      // AC:RL-media-stuck-load-watchdog/11
+      final w = fresh(AppLifecycleState.paused)
+        ..onStateChange(AppLifecycleState.resumed);
+      expect(holdRetryForSuspension(const SocketException('x'), w, 0), isTrue);
+      expect(holdRetryForSuspension(TimeoutException('x'), w, 1), isTrue);
+    });
+
+    test('потолок: после maxSuspensionPasses пропусков — обычный ретрай', () {
+      // AC:RL-media-stuck-load-watchdog/11
+      final w = fresh(AppLifecycleState.paused);
+      expect(
+        holdRetryForSuspension(
+          const SocketException('x'),
+          w,
+          maxSuspensionPasses,
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'процесс на экране и не в окне после сна → честный сбой, не придержан',
+      () {
+        // AC:RL-media-stuck-load-watchdog/11
+        final w = fresh(AppLifecycleState.resumed);
+        expect(
+          holdRetryForSuspension(const SocketException('x'), w, 0),
+          isFalse,
+        );
+      },
+    );
+
+    test('не транспорт (HTTP/decrypt/other) и нет witness → не придержан', () {
+      // AC:RL-media-stuck-load-watchdog/11
+      final w = fresh(AppLifecycleState.paused);
+      expect(holdRetryForSuspension(StateError('x'), w, 0), isFalse);
+      expect(
+        holdRetryForSuspension(const SocketException('x'), null, 0),
+        isFalse,
+      );
     });
   });
 }

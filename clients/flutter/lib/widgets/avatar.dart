@@ -88,7 +88,7 @@ class Avatar extends StatelessWidget {
     final name = this.name;
     final fallbackLetters = name == null || name.isEmpty
         ? '@'
-        : name.substring(0, 1);
+        : name.characters.first.toUpperCase();
 
     final fallbackBackground =
         backgroundColor ?? fallbackBackgrounds[fallbackShade(name)];

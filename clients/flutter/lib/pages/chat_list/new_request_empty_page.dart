@@ -17,7 +17,10 @@ import 'package:liza/widgets/update_read_only_bar.dart';
 /// «Какую задачу решим, Надежда?»). Отправка = «Новый запрос» с этим текстом
 /// первым сообщением (`sendNewLizaRequest`).
 class NewRequestEmptyPage extends StatefulWidget {
-  const NewRequestEmptyPage({super.key});
+  const NewRequestEmptyPage({super.key, this.showBackButton = false});
+
+  /// Узкий экран: окно открыто отдельным маршрутом и нуждается в «назад».
+  final bool showBackButton;
 
   @override
   State<NewRequestEmptyPage> createState() => _NewRequestEmptyPageState();
@@ -172,7 +175,7 @@ class _NewRequestEmptyPageState extends State<NewRequestEmptyPage> {
     return Scaffold(
       // Невидимый appbar, как у EmptyPage: светлый статус-бар на Android-планшетах.
       appBar: AppBar(
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: widget.showBackButton,
         elevation: 0,
         backgroundColor: Colors.transparent,
       ),

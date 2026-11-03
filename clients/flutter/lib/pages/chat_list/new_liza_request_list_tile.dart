@@ -21,27 +21,8 @@ bool shouldShowNewRequestRow(
     synced &&
     (filter == ActiveFilter.allChats || filter == ActiveFilter.agents);
 
-class NewLizaRequestListTile extends StatefulWidget {
+class NewLizaRequestListTile extends StatelessWidget {
   const NewLizaRequestListTile({super.key});
-
-  @override
-  State<NewLizaRequestListTile> createState() => _NewLizaRequestListTileState();
-}
-
-class _NewLizaRequestListTileState extends State<NewLizaRequestListTile> {
-  // Гейт от двойного тапа до появления барьера диалога загрузки: два тапа
-  // подряд создали бы два чата-запроса.
-  bool _opening = false;
-
-  Future<void> _onTap() async {
-    if (_opening) return;
-    setState(() => _opening = true);
-    try {
-      await openNewLizaRequest(context);
-    } finally {
-      if (mounted) setState(() => _opening = false);
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -70,7 +51,7 @@ class _NewLizaRequestListTileState extends State<NewLizaRequestListTile> {
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontWeight: FontWeight.bold),
       ),
-      onTap: _onTap,
+      onTap: () => openNewLizaRequest(context),
     );
   }
 }

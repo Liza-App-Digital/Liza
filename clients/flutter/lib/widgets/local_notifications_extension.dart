@@ -80,8 +80,15 @@ extension LocalNotificationsExtension on MatrixState {
     // Скрытую комнату (stories/обсуждение канала) нельзя открыть и «прочитать» —
     // её баннер завис бы неснимаемым, как фантомный бейдж. Тот же инвариант, что
     // у бейджа и у clearing-ветки push_helper.
-    if (!event.room.countsTowardAppBadge &&
-        event.room.membership != Membership.invite) {
+    // Инвайт в скрытую комнату (сторис зрителю, в том числе федеративный) тоже
+    // молчит: клиент примет его сам через `autoJoinStoryInvites`, а сервер пуш
+    // по нему не шлёт — баннер из /sync был единственным источником (Саша,
+    // 2026-11-02: «пригласили куда-то», в списке пусто).
+    if (skipsLocalBannerForHiddenRoom(
+      isHiddenChat: event.room.isHiddenChat,
+      countsTowardAppBadge: event.room.countsTowardAppBadge,
+      isInvite: event.room.membership == Membership.invite,
+    )) {
       return skip(PushReason.hiddenRoom);
     }
     // Догоняющий /sync после простоя эмитит onNotification по КАЖДОМУ
@@ -334,3 +341,15 @@ extension LocalNotificationsExtension on MatrixState {
 }
 
 enum DesktopNotificationActions { seen, openChat }
+
+/// Скрытая комната не даёт локального баннера. Исключение — обычный инвайт:
+/// у него `countsTowardAppBadge` может быть ложным до догрузки состояния, но
+/// скрытым (`isHiddenChat`) он не является. Скрытый инвайт глушится всегда.
+bool skipsLocalBannerForHiddenRoom({
+  required bool isHiddenChat,
+  required bool countsTowardAppBadge,
+  required bool isInvite,
+}) {
+  if (isHiddenChat) return true;
+  return !countsTowardAppBadge && !isInvite;
+}

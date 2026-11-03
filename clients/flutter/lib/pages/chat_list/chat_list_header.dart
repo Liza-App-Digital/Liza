@@ -207,7 +207,7 @@ class ChatListHeader extends StatelessWidget implements PreferredSizeWidget {
   ) async {
     switch (action) {
       case CreateMenuAction.newRequest:
-        await openNewLizaRequest(context);
+        openNewLizaRequest(context);
         return;
       case CreateMenuAction.group:
         context.go('/rooms/newgroup');

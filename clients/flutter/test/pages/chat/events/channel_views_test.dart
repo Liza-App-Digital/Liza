@@ -87,8 +87,8 @@ void main() {
         isTrue,
         reason: 'счётчик просмотров по-прежнему считает границы прочтения',
       );
-      // С заявки №60 кластер стоит СБОКУ от пузыря (BubbleReceiptsSide), а
-      // гейт канала / Liza News вынесен в showSeenSlot — слота там нет вовсе.
+      // С заявки №60 кластер стоит в строке ПОД пузырём (BubbleWithUnderRow), а
+      // гейт канала / Liza News вынесен в showSeenSlot — иконок там нет вовсе.
       expect(
         compact.contains(
           'final showSeenSlot = !isChannelPost(event) && '
@@ -98,14 +98,14 @@ void main() {
         reason: 'в обычных чатах обязан остаться кластер SeenByAvatars',
       );
       expect(
-        compact.contains('reserve: showSeenSlot,'),
+        compact.contains(
+          'final underReceipts = seenByUsers.isNotEmpty && showSeenSlot ?',
+        ),
         isTrue,
-        reason: 'боковой слот аватарок подчиняется гейту канала',
+        reason: 'иконки прочтения подчиняются гейту канала / Liza News',
       );
       expect(
-        compact.contains(
-          'SeenByAvatars( receipts: seenByUsers, maxWidth: maxWidth, )',
-        ),
+        compact.contains('SeenByAvatars(receipts: seenByUsers)'),
         isTrue,
         reason: 'кластер аватарок никуда не делся из обычных чатов',
       );
@@ -119,20 +119,18 @@ void main() {
       // границы пузыря.
       final compact = source.replaceAll(RegExp(r'\s+'), ' ');
       final gateIndex = compact.indexOf(
-        'if (!isChannelPost(event)) AnimatedSize(',
+        'final underReactions = !isChannelPost(event) && showReceiptsRow ?',
       );
       expect(
         gateIndex,
         isNot(-1),
         reason:
-            'внешний AnimatedSize с реакциями обязан стоять под гейтом '
-            '!isChannelPost — иначе у поста канала реакции рисуются дважды',
+            'реакции под пузырём обязаны стоять под гейтом !isChannelPost — '
+            'иначе у поста канала они рисуются дважды',
       );
-      // Гейт должен накрывать именно блок с MessageReactions, а не какой-то
-      // другой AnimatedSize (ниже по файлу есть блок тредов).
       expect(
         compact
-            .substring(gateIndex, gateIndex + 400)
+            .substring(gateIndex, gateIndex + 200)
             .contains('MessageReactions(event, timeline)'),
         isTrue,
         reason: 'под гейтом должен быть именно блок реакций',
@@ -147,7 +145,7 @@ void main() {
         ).allMatches(compact).length,
         2,
         reason:
-            'реакции строятся ровно в двух местах: внешний блок для обычных '
+            'реакции строятся ровно в двух местах: строка под пузырём для обычных '
             'чатов и ChannelPostFooter для канала',
       );
     });
