@@ -1,18 +1,18 @@
 // ledger:RL-search-people-vs-bots-sections
 //
 // Экран «Новый личный чат» на РЕАЛЬНОМ виджете (NewPrivateChat →
-// NewPrivateChatView): выдача поиска разбита на «Люди» / «Агенты и боты».
+// NewPrivateChatView): выдача поиска разбита на «Люди» / «Агенты».
 // Сеть подменена: каталог пользователей — FakeMatrixApi, роли — управляемый
 // двойник (может «тормозить»), ник и федерация — пустые.
 //
 // Покрываемые AC (tests/registry/RL-search-people-vs-bots-sections.md):
 //   AC-1 два раздела в одном списке на этом экране.
 //   AC-2 человек / федеративный человек — под «Люди»; бот liza-bot-api,
-//        бот по роли ai, ИИ liza/gpt — под «Агенты и боты», Лиза первая.
-//   AC-3 только люди → заголовка «Агенты и боты» нет.
-//   AC-4 роли пришли позже 1,5 с → бот переезжает в «Агенты и боты»; ответ
+//        бот по роли ai, ИИ liza/gpt — под «Агенты», Лиза первая.
+//   AC-3 только люди → заголовка «Агенты» нет.
+//   AC-4 роли пришли позже 1,5 с → бот переезжает в «Агенты»; ответ
 //        ролей устаревшего запроса выдачу нового не затирает.
-//   AC-5 заголовки — из L10n, в ru «Люди» и «Агенты и боты».
+//   AC-5 заголовки — из L10n, в ru «Люди» и «Агенты».
 //
 // Red-proof AC-4 (устаревший запрос): убрать `seq != _searchSeq` из onLate в
 // new_private_chat.dart → поздние роли старого запроса возвращают на экран
@@ -75,7 +75,7 @@ void main() {
   }
 
   /// Элемент [name] стоит в разделе [section]: ниже его заголовка и, если
-  /// раздел «Люди», выше заголовка «Агенты и боты».
+  /// раздел «Люди», выше заголовка «Агенты».
   void expectInSection(WidgetTester tester, String name, Key section) {
     final y = topOfText(tester, name);
     expect(y, greaterThan(topOf(tester, find.byKey(section))),
@@ -83,7 +83,7 @@ void main() {
     final bots = find.byKey(botsAndAiSectionKey);
     if (section == peopleSectionKey && bots.evaluate().isNotEmpty) {
       expect(y, lessThan(topOf(tester, bots)),
-          reason: '«$name» — человек, он выше раздела «Агенты и боты»');
+          reason: '«$name» — человек, он выше раздела «Агенты»');
     }
   }
 
@@ -91,7 +91,7 @@ void main() {
       // AC:RL-search-people-vs-bots-sections/1
       // AC:RL-search-people-vs-bots-sections/2
       // AC:RL-search-people-vs-bots-sections/5
-      'выдача разбита на «Люди» и «Агенты и боты», Лиза первая среди ботов',
+      'выдача разбита на «Люди» и «Агенты», Лиза первая среди ботов',
       (tester) async {
     final roles = StubRoleService(
       client,
@@ -105,7 +105,7 @@ void main() {
     });
 
     expect(find.text('Люди'), findsOneWidget);
-    expect(find.text('Агенты и боты'), findsOneWidget);
+    expect(find.text('Агенты'), findsOneWidget);
     expect(
       topOf(tester, find.byKey(peopleSectionKey)),
       lessThan(topOf(tester, find.byKey(botsAndAiSectionKey))),
@@ -120,13 +120,13 @@ void main() {
     final lizaY = topOfText(tester, 'Лиза kot');
     for (final bot in ['Магазин kot', 'Кубок kot', 'GPT kot']) {
       expect(lizaY, lessThan(topOfText(tester, bot)),
-          reason: 'Лиза — первая в «Агенты и боты»');
+          reason: 'Лиза — первая в «Агенты»');
     }
   });
 
   testWidgets(
       // AC:RL-search-people-vs-bots-sections/3
-      'только люди → раздела «Агенты и боты» нет вместе с заголовком',
+      'только люди → раздела «Агенты» нет вместе с заголовком',
       (tester) async {
     final roles = StubRoleService(client);
     await tester.runAsync(() async {
@@ -139,12 +139,12 @@ void main() {
     expect(find.text('Зед zed'), findsOneWidget);
     expect(find.byKey(peopleSectionKey), findsOneWidget);
     expect(find.byKey(botsAndAiSectionKey), findsNothing);
-    expect(find.text('Агенты и боты'), findsNothing);
+    expect(find.text('Агенты'), findsNothing);
   });
 
   testWidgets(
       // AC:RL-search-people-vs-bots-sections/4
-      'роли пришли позже таймаута → бот переезжает в «Агенты и боты»',
+      'роли пришли позже таймаута → бот переезжает в «Агенты»',
       (tester) async {
     final roles = StubRoleService(
       client,

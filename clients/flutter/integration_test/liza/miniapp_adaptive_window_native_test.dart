@@ -26,8 +26,9 @@ import '../../test/utils/test_client.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('macOS: настоящий WebView переживает смену раскладки и ресайз',
-      (tester) async {
+  testWidgets('macOS: настоящий WebView переживает смену раскладки и ресайз', (
+    tester,
+  ) async {
     late Client client;
     await tester.runAsync(() async => client = await prepareTestClient());
     final room = Room(id: '!shop:example.invalid', client: client);
@@ -36,10 +37,10 @@ void main() {
     var loads = 0;
     var webViewCreated = 0;
     MiniAppOverlay.debugContentBuilder = (context, app) => InAppWebView(
-          initialUrlRequest: URLRequest(url: WebUri('https://example.com/')),
-          onWebViewCreated: (_) => webViewCreated++,
-          onLoadStop: (_, _) => loads++,
-        );
+      initialUrlRequest: URLRequest(url: WebUri('https://example.com/')),
+      onWebViewCreated: (_) => webViewCreated++,
+      onLoadStop: (_, _) => loads++,
+    );
     addTearDown(() {
       manager.closeAll();
       MiniAppOverlay.debugContentBuilder = null;
@@ -64,7 +65,6 @@ void main() {
           ),
         ),
         home: const TwoColumnLayout(
-          compactable: true,
           mainView: Center(child: Text('chats')),
           sideView: Center(child: Text('chat')),
         ),
@@ -91,30 +91,26 @@ void main() {
     expect(loads, 1, reason: 'example.com загрузилась');
     expect(webViewCreated, 1);
 
-    await tester.tap(find.byKey(const ValueKey('miniapp-fullscreen')));
-    await settle();
-    await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
-    await settle();
     await tester.drag(
       find.byKey(const ValueKey('miniapp-host-divider')),
       const Offset(-300, 0),
     );
     await settle();
-    await tester.tap(find.byKey(const ValueKey('miniapp-minimize')));
-    await settle();
-    manager.expand();
-    await settle(2);
 
-    // Свёртка списка чатов до аватарок: панель тянется до W−514.
-    manager.chatListCompactable.value = true;
-    await settle();
+    // AC:RL-miniapp-adaptive-window/37
+    // Панель на всё окно (бегунок за середину) и обратно.
     await tester.drag(
       find.byKey(const ValueKey('miniapp-host-divider')),
       const Offset(-1500, 0),
     );
     await settle();
-    manager.expandChatList();
+    expect(manager.panelFilled.value, isTrue);
+    await tester.drag(
+      find.byKey(const ValueKey('miniapp-host-divider')),
+      const Offset(1500, 0),
+    );
     await settle();
+    expect(manager.panelFilled.value, isFalse);
 
     expect(tester.takeException(), isNull);
     expect(webViewCreated, 1, reason: 'нативный WebView не пересоздавался');

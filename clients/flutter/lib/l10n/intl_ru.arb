@@ -2652,7 +2652,7 @@
   "@users": {},
   "searchSectionPeople": "Люди",
   "@searchSectionPeople": {"description": "Поиск людей: заголовок раздела с людьми (задача 12, RL-search-people-vs-bots-sections)"},
-  "agentsAndBots": "Агенты и боты",
+  "agentsAndBots": "Агенты",
   "@agentsAndBots": {"description": "Вкладка списка чатов и раздел поиска: DM с ботами и ИИ-агентами (RL-chat-list-agents-people-tabs)"},
   "unlockOldMessages": "Разблокировать старые сообщения",
   "@unlockOldMessages": {},
@@ -4120,6 +4120,28 @@
   "@callLinkSaved": {},
   "callLinkDeleted": "Ссылка на созвон удалена",
   "@callLinkDeleted": {},
+  "chatCapsules": "Капсулы созвонов",
+  "@chatCapsules": {},
+  "chatCapsulesEmpty": "Капсул в этом чате пока нет.",
+  "@chatCapsulesEmpty": {},
+  "chatCapsulesAll": "Все капсулы чата ({count})",
+  "@chatCapsulesAll": {
+    "type": "String",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "chatCapsuleMinutes": "{minutes} мин",
+  "@chatCapsuleMinutes": {
+    "type": "String",
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
   "noCallLinkYet": "Ссылка на созвон не задана.",
   "@noCallLinkYet": {},
   "accountNotFound": "Аккаунт не найден",
@@ -4596,22 +4618,8 @@
   "@miniAppAttach": {},
   "miniAppMoveDuringPayment": "Дождитесь окончания оплаты",
   "@miniAppMoveDuringPayment": {},
-  "chatListExpand": "Развернуть список чатов",
-  "@chatListExpand": {},
-  "miniAppSplitScreen": "Двойной экран",
-  "@miniAppSplitScreen": {},
-  "miniAppFullscreen": "На весь экран",
-  "@miniAppFullscreen": {},
-  "miniAppRestorePanel": "Вернуть панель",
-  "@miniAppRestorePanel": {},
-  "miniAppMinimize": "Свернуть",
-  "@miniAppMinimize": {},
   "miniAppResizePanel": "Потяните, чтобы изменить ширину",
   "@miniAppResizePanel": {},
-  "miniAppCopyLink": "Скопировать ссылку",
-  "@miniAppCopyLink": {},
-  "miniAppCreatingLink": "Создаём ссылку…",
-  "@miniAppCreatingLink": {},
   "miniAppLoadTimeout": "Превышено время загрузки",
   "@miniAppLoadTimeout": {},
   "miniAppLinkFailed": "Не удалось создать ссылку",
@@ -4797,17 +4805,6 @@
   },
   "miniAppDeveloperCabinet": "Кабинет разработчика",
   "@miniAppDeveloperCabinet": {},
-  "miniAppAndOthers": "{appName} и ещё {count, plural, one{{count} приложение} few{{count} приложения} many{{count} приложений} other{{count} приложения}}",
-  "@miniAppAndOthers": {
-    "placeholders": {
-      "appName": {
-        "type": "String"
-      },
-      "count": {
-        "type": "int"
-      }
-    }
-  },
   "chatInputOpen": "Открыть",
   "@chatInputOpen": {},
   "chatInputMenu": "Меню",

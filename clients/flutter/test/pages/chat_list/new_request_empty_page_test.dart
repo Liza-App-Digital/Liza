@@ -8,7 +8,9 @@
 // AC:RL-empty-panel-new-request/13 AC:RL-empty-panel-new-request/14
 // AC:RL-empty-panel-new-request/15 AC:RL-empty-panel-new-request/16
 // AC:RL-empty-panel-new-request/19 AC:RL-empty-panel-new-request/20
-// AC:RL-empty-panel-new-request/21
+// AC:RL-empty-panel-new-request/21 AC:RL-empty-panel-new-request/23
+// AC:RL-empty-panel-new-request/24 AC:RL-empty-panel-new-request/25
+// AC:RL-new-request-content-server/3
 // guard.render:real-widget
 //
 // Пустая правая панель на компьютере (задача 14): РЕАЛЬНЫЙ NewRequestEmptyPage
@@ -48,7 +50,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/l10n/l10n_en.dart';
 import 'package:liza/pages/chat_list/new_request_empty_page.dart';
+import 'package:liza/utils/new_request_texts.dart';
 import 'package:liza/utils/new_request_transition.dart';
 import 'package:liza/utils/update_policy.dart';
 import 'package:liza/widgets/matrix.dart';
@@ -70,6 +74,7 @@ void main() {
   tearDown(() {
     UpdatePolicyController.current.value = UpdatePolicy.none;
     NewRequestTransition.reset();
+    NewRequestTexts.instance.current = null;
   });
 
   Future<_PanelClient> pumpPanel(
@@ -674,6 +679,103 @@ void main() {
     expect(find.byKey(const Key('new_request_field')), findsNothing);
     expect(find.byKey(const Key('new_request_preset_0')), findsNothing);
     expect(client.calls, 0);
+  });
+
+  testWidgets(
+    'AC-23: серверные плашки заменяют ARB, число и порядок — как в ответе',
+    (tester) async {
+      NewRequestTexts.instance.current = const NewRequestContent(
+        presets: ['Первая', 'Вторая', 'Третья', 'Четвёртая'],
+        examples: ['Пример один', 'Пример два'],
+      );
+      await pumpPanel(tester, displayName: 'Иван');
+      for (final (i, t) in [
+        'Первая',
+        'Вторая',
+        'Третья',
+        'Четвёртая',
+      ].indexed) {
+        expect(
+          find.descendant(
+            of: find.byKey(Key('new_request_preset_$i')),
+            matching: find.text(t),
+          ),
+          findsOneWidget,
+        );
+      }
+      expect(find.byKey(const Key('new_request_preset_4')), findsNothing);
+      final typewriter = tester.widget<NewRequestTypewriter>(
+        find.byType(NewRequestTypewriter),
+      );
+      expect(typewriter.examples, ['Пример один', 'Пример два']);
+    },
+  );
+
+  testWidgets('AC-24: нет серверных текстов — плашки и примеры из ARB', (
+    tester,
+  ) async {
+    await pumpPanel(tester, displayName: 'Иван');
+    expect(find.byKey(const Key('new_request_preset_2')), findsOneWidget);
+    expect(find.byKey(const Key('new_request_preset_3')), findsNothing);
+    final typewriter = tester.widget<NewRequestTypewriter>(
+      find.byType(NewRequestTypewriter),
+    );
+    expect(typewriter.examples.length, 6);
+  });
+
+  test('AC-24: парсер — мусор, не-ru, пусто и клампы → null/обрезка', () {
+    expect(parseNewRequestContent(null), isNull);
+    expect(parseNewRequestContent('x'), isNull);
+    expect(
+      parseNewRequestContent({
+        'en': {
+          'presets': ['A'],
+        },
+      }),
+      isNull,
+    );
+    expect(
+      parseNewRequestContent({
+        'ru': {'presets': [], 'examples': []},
+      }),
+      isNull,
+    );
+    expect(
+      parseNewRequestContent({
+        'ru': {
+          'presets': [1, null, '  '],
+        },
+      }),
+      isNull,
+    );
+    final c = parseNewRequestContent({
+      'ru': {
+        'presets': ['а', 'А', 'б', 'в', 'г', 'д', 'е', 'x' * 81],
+        'examples': [for (var i = 0; i < 20; i++) 'пример $i', 'y' * 141],
+      },
+    })!;
+    expect(c.presets, ['а', 'б', 'в', 'г', 'д']);
+    expect(c.examples.length, 10);
+    expect(c.examples.every((e) => e.length <= 140), isTrue);
+  });
+
+  testWidgets('AC-25: en-локаль не показывает серверные русские тексты', (
+    tester,
+  ) async {
+    NewRequestTexts.instance.current = const NewRequestContent(
+      presets: ['Первая'],
+      examples: ['Пример'],
+    );
+    final l10n = L10nEn();
+    expect(newRequestPresets(l10n, NewRequestTexts.instance.current), [
+      l10n.newRequestPreset1,
+      l10n.newRequestPreset2,
+      l10n.newRequestPreset3,
+    ]);
+    expect(
+      newRequestExamples(l10n, NewRequestTexts.instance.current).first,
+      l10n.newRequestExample1,
+    );
   });
 }
 

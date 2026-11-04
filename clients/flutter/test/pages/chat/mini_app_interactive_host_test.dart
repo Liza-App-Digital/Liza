@@ -361,8 +361,23 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       await tester.pumpAndSettle();
-      manager.minimize();
-      manager.expand('shop'); // Возврат не должен оживить старое согласие.
+      // Приложение ушло из-под панели (открыли другое) и вернулось: старое
+      // согласие оживать не должно.
+      manager.open(
+        appUrl: 'https://cafe.example.invalid/',
+        appId: 'cafe',
+        appName: 'Кафе',
+        room: room,
+        allowDetach: false,
+      );
+      manager.open(
+        appUrl: appUrl,
+        appId: 'shop',
+        appName: 'Магазин',
+        room: room,
+        botMxid: botMxid,
+        allowDetach: false,
+      );
       await tester.pump(const Duration(milliseconds: 1250));
       await tester.pump(const Duration(milliseconds: 250));
       await tester.pumpAndSettle();

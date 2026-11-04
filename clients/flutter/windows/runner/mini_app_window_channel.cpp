@@ -5,6 +5,7 @@
 #include <flutter/standard_method_codec.h>
 #include <flutter_windows.h>
 #include <windows.h>
+#include <dwmapi.h>
 
 #include <algorithm>
 #include <memory>
@@ -30,6 +31,7 @@ struct VisibilityObserver {
   int64_t snapshot_sequence = 0;
   int64_t focus_epoch = 0;
   int64_t direct_main_focus_epoch = -1;
+  bool frameless = false;
 };
 std::map<HWND, VisibilityObserver> g_visibility;
 
@@ -79,6 +81,20 @@ LRESULT CALLBACK MiniAppVisibilityProc(HWND window, UINT message,
       (message == WM_SHOWWINDOW && !wparam) || message == WM_CLOSE ||
       (message == WM_ACTIVATEAPP && !wparam)) {
     found->second.visibility_epoch++;
+  }
+  // Безрамочное окно: клиентская область = всё окно (WS_THICKFRAME остаётся,
+  // поэтому ресайз за края и Aero Snap работают). До CallWindowProc.
+  if (found->second.frameless && message == WM_NCCALCSIZE && wparam == TRUE) {
+    return 0;
+  }
+  if (message == WM_GETMINMAXINFO) {
+    const auto result = ::CallWindowProc(found->second.original, window,
+                                         message, wparam, lparam);
+    const UINT dpi = ::GetDpiForWindow(window);
+    auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+    info->ptMinTrackSize.x = ::MulDiv(360, dpi, 96);
+    info->ptMinTrackSize.y = ::MulDiv(480, dpi, 96);
+    return result;
   }
   if (message == WM_ACTIVATE && LOWORD(wparam) == WA_INACTIVE) {
     found->second.focus_epoch++;
@@ -154,6 +170,15 @@ std::string TitleArg(const EncodableValue* arguments) {
   return title ? *title : std::string();
 }
 
+bool FramelessArg(const EncodableValue* arguments) {
+  const auto* map = arguments ? std::get_if<EncodableMap>(arguments) : nullptr;
+  if (!map) return false;
+  auto it = map->find(EncodableValue("frameless"));
+  if (it == map->end()) return false;
+  const auto* value = std::get_if<bool>(&it->second);
+  return value && *value;
+}
+
 // Большое окно по центру монитора, на котором стоит окно Лизы.
 RECT DefaultFrame(HWND window) {
   HWND main = ::FindWindow(L"FLUTTER_RUNNER_WIN32_WINDOW", nullptr);
@@ -204,10 +229,30 @@ void RegisterMiniAppWindowChannel(flutter::FlutterViewController* controller) {
                            Utf16FromUtf8(TitleArg(call.arguments())).c_str());
           const RECT frame =
               g_has_last_frame ? g_last_frame : DefaultFrame(window);
+          const bool frameless = FramelessArg(call.arguments());
+          UINT flags = SWP_NOZORDER | SWP_NOACTIVATE;
+          const auto observer = g_visibility.find(window);
+          if (frameless && observer != g_visibility.end() &&
+              !observer->second.frameless) {
+            // Снимаем заголовок и кнопки ОС до показа окна; WS_THICKFRAME
+            // оставляем ради ресайза и Snap. FRAMECHANGED — применить стиль.
+            observer->second.frameless = true;
+            LONG_PTR style = ::GetWindowLongPtr(window, GWL_STYLE);
+            style &= ~(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+            style |= WS_THICKFRAME;
+            ::SetWindowLongPtr(window, GWL_STYLE, style);
+            const MARGINS margins{0, 0, 1, 0};
+            ::DwmExtendFrameIntoClientArea(window, &margins);
+            flags |= SWP_FRAMECHANGED;
+          }
           ::SetWindowPos(window, nullptr, frame.left, frame.top,
                          frame.right - frame.left, frame.bottom - frame.top,
-                         SWP_NOZORDER | SWP_NOACTIVATE);
+                         flags);
           Focus(window);
+          result->Success();
+        } else if (method == "startDrag") {
+          ::ReleaseCapture();
+          ::SendMessage(window, WM_NCLBUTTONDOWN, HTCAPTION, 0);
           result->Success();
         } else if (method == "setTitle") {
           ::SetWindowTextW(window,

@@ -7,6 +7,7 @@ import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/composer_enter_key.dart';
 import 'package:liza/utils/liza_new_request.dart';
+import 'package:liza/utils/new_request_texts.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/update_policy.dart';
 import 'package:liza/widgets/matrix.dart';
@@ -35,22 +36,28 @@ String? greetingFirstName(String? displayName) {
   return first;
 }
 
-@visibleForTesting
-List<String> newRequestExamples(L10n l10n) => [
-  l10n.newRequestExample1,
-  l10n.newRequestExample2,
-  l10n.newRequestExample3,
-  l10n.newRequestExample4,
-  l10n.newRequestExample5,
-  l10n.newRequestExample6,
-];
+/// Серверные тексты — только русские: для остальных языков они не переведены.
+List<String>? _remoteOr(List<String>? remote, String locale) =>
+    (remote == null || remote.isEmpty || !locale.startsWith('ru'))
+    ? null
+    : remote;
 
 @visibleForTesting
-List<String> newRequestPresets(L10n l10n) => [
-  l10n.newRequestPreset1,
-  l10n.newRequestPreset2,
-  l10n.newRequestPreset3,
-];
+List<String> newRequestExamples(L10n l10n, [NewRequestContent? content]) =>
+    _remoteOr(content?.examples, l10n.localeName) ??
+    [
+      l10n.newRequestExample1,
+      l10n.newRequestExample2,
+      l10n.newRequestExample3,
+      l10n.newRequestExample4,
+      l10n.newRequestExample5,
+      l10n.newRequestExample6,
+    ];
+
+@visibleForTesting
+List<String> newRequestPresets(L10n l10n, [NewRequestContent? content]) =>
+    _remoteOr(content?.presets, l10n.localeName) ??
+    [l10n.newRequestPreset1, l10n.newRequestPreset2, l10n.newRequestPreset3];
 
 class _NewRequestEmptyPageState extends State<NewRequestEmptyPage> {
   static const double _maxWidth = 560;
@@ -63,6 +70,8 @@ class _NewRequestEmptyPageState extends State<NewRequestEmptyPage> {
   late final FocusNode _focusNode = FocusNode(onKeyEvent: _onKeyEvent);
 
   bool _sending = false;
+
+  NewRequestContent? _content;
 
   // Вопрос в пузыре морфа. Живёт дольше `_sending`: после успеха панель
   // уходит под чат, и откат анимации был бы виден в кроссфейде. Сбрасывается
@@ -85,6 +94,18 @@ class _NewRequestEmptyPageState extends State<NewRequestEmptyPage> {
       _profile = client.userID == null ? null : client.fetchOwnProfile();
     }
     return _profile;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final texts = NewRequestTexts.instance..applyFetched();
+    _content = texts.current;
+    texts.ensureLoaded().then((_) {
+      if (!mounted || _content != null) return;
+      setState(() => _content = texts.current);
+    });
+    texts.refresh(Matrix.of(context).client.homeserver?.host);
   }
 
   @override
@@ -304,7 +325,7 @@ class _NewRequestEmptyPageState extends State<NewRequestEmptyPage> {
       spacing: 8,
       runSpacing: 8,
       children: [
-        for (final (i, preset) in newRequestPresets(l10n).indexed)
+        for (final (i, preset) in newRequestPresets(l10n, _content).indexed)
           ActionChip(
             key: Key('new_request_preset_$i'),
             // RawChip задаёт подписи maxLines 1 без переноса: на узкой панели
@@ -386,7 +407,7 @@ class _NewRequestEmptyPageState extends State<NewRequestEmptyPage> {
                             child: Padding(
                               padding: const EdgeInsets.symmetric(vertical: 12),
                               child: NewRequestTypewriter(
-                                examples: newRequestExamples(l10n),
+                                examples: newRequestExamples(l10n, _content),
                                 active: empty && !_busy,
                                 style: fieldStyle?.copyWith(
                                   color: theme.colorScheme.onSurfaceVariant

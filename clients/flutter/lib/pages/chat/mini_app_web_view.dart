@@ -130,7 +130,6 @@ class MiniAppWebViewContent extends StatefulWidget {
   /// сразу на ней. Пусто — главная.
   final String appStartPath;
   final VoidCallback onClose;
-  final VoidCallback? onMinimize;
 
   const MiniAppWebViewContent({
     required this.appUrl,
@@ -141,7 +140,6 @@ class MiniAppWebViewContent extends StatefulWidget {
     this.appType = 'first_party',
     this.appStartPath = '',
     required this.onClose,
-    this.onMinimize,
     super.key,
   });
 

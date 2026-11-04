@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart' show kPrimaryMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -543,6 +545,86 @@ Future<void> miniAppWindowMain(List<String> args) async {
   runApp(MiniAppWindowApp(controller: controller, config: config));
 }
 
+/// Окно mini App рисует свою шапку вместо системной (macOS — прозрачный
+/// titlebar, Windows — снятый WS_CAPTION). Откат Windows — выставить false.
+final bool miniAppWindowFrameless =
+    defaultTargetPlatform == TargetPlatform.macOS ||
+    defaultTargetPlatform == TargetPlatform.windows;
+
+/// Единственная шапка отдельного окна: название, «Прикрепить к Лизе», крестик.
+class MiniAppWindowHeader extends StatelessWidget {
+  final String title;
+  final String attachTooltip;
+  final String closeTooltip;
+  final VoidCallback onAttach;
+  final VoidCallback onClose;
+  final VoidCallback onDragStart;
+
+  const MiniAppWindowHeader({
+    required this.title,
+    required this.attachTooltip,
+    required this.closeTooltip,
+    required this.onAttach,
+    required this.onClose,
+    required this.onDragStart,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 44,
+      child: Row(
+        children: [
+          Expanded(
+            child: Listener(
+              key: const ValueKey('miniapp-window-drag'),
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (e) {
+                if (e.buttons == kPrimaryMouseButton) onDragStart();
+              },
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 16),
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            key: const ValueKey('miniapp-window-attach'),
+            tooltip: attachTooltip,
+            // Обратный «Открепить» из шапки панели: тот же значок, повёрнутый.
+            icon: ExcludeSemantics(
+              child: Transform.rotate(
+                angle: math.pi,
+                child: const Icon(Icons.open_in_new, size: 20),
+              ),
+            ),
+            onPressed: onAttach,
+          ),
+          IconButton(
+            key: const ValueKey('miniapp-window-close'),
+            tooltip: closeTooltip,
+            icon: const Icon(Icons.close, size: 22),
+            onPressed: onClose,
+          ),
+          const SizedBox(width: 4),
+        ],
+      ),
+    );
+  }
+}
+
 class MiniAppWindowApp extends StatefulWidget {
   final WindowController controller;
   final MiniAppWindowConfig config;
@@ -617,7 +699,10 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
       }
     });
     _nativeWindow
-        .invokeMethod<void>('present', {'title': _config.appName})
+        .invokeMethod<void>('present', {
+          'title': _config.appName,
+          'frameless': miniAppWindowFrameless,
+        })
         .then((_) => _reportVisibility());
     // Снимок страхует пропущенное native notification и смену главного окна.
     _visibilityTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
@@ -668,14 +753,6 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
     }
   }
 
-  Future<void> _copyLink(L10n l10n) async {
-    final state = _contentKey.currentState;
-    if (state == null) return;
-    _showToast(l10n.miniAppCreatingLink, autoHide: false);
-    final message = await state.copyInviteLink();
-    if (mounted) _showToast(message);
-  }
-
   Future<void> _attach(L10n l10n) async {
     final state = _contentKey.currentState;
     if (state != null && state.paymentInProgress) {
@@ -688,6 +765,10 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
     } catch (e, s) {
       _reportError(e, s);
     }
+  }
+
+  void _startDrag() {
+    _nativeWindow.invokeMethod<void>('startDrag').catchError((Object _) {});
   }
 
   void _close() {
@@ -723,37 +804,13 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
               children: [
                 Column(
                   children: [
-                    SizedBox(
-                      height: 44,
-                      child: Row(
-                        children: [
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Text(
-                              _config.appName,
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          IconButton(
-                            key: const ValueKey('miniapp-window-copy-link'),
-                            tooltip: l10n.miniAppCopyLink,
-                            icon: const Icon(Icons.link, size: 22),
-                            onPressed: () => _copyLink(l10n),
-                          ),
-                          IconButton(
-                            key: const ValueKey('miniapp-window-attach'),
-                            tooltip: l10n.miniAppAttach,
-                            icon: const Icon(Icons.push_pin_outlined, size: 20),
-                            onPressed: () => _attach(l10n),
-                          ),
-                          const SizedBox(width: 4),
-                        ],
-                      ),
+                    MiniAppWindowHeader(
+                      title: _config.appName,
+                      attachTooltip: l10n.miniAppAttach,
+                      closeTooltip: l10n.close,
+                      onAttach: () => _attach(l10n),
+                      onClose: _close,
+                      onDragStart: _startDrag,
                     ),
                     Divider(height: 1, color: colorScheme.outlineVariant),
                     Expanded(

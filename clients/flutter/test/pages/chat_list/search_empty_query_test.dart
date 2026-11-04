@@ -49,7 +49,7 @@ const _sectionKeys = {
 };
 
 const _ruTitles = {
-  SearchSection.agentsAndBots: 'Агенты и боты',
+  SearchSection.agentsAndBots: 'Агенты',
   SearchSection.people: 'Люди',
   SearchSection.companies: 'Компании',
   SearchSection.publicRooms: 'Публичные чаты',
@@ -218,7 +218,7 @@ void main() {
 
   testWidgets(
     // AC:RL-chat-list-search-empty-and-order/3
-    'AC-3 порядок: Агенты и боты → Люди → Компании → Публичные чаты → '
+    'AC-3 порядок: Агенты → Люди → Компании → Публичные чаты → '
     'Публичные каналы → Чаты',
     (tester) async {
       // Требование Надежды — сам порядок, а не «какой-то»: литерал здесь

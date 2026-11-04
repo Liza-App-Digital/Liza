@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat_details/chat_capsules_section.dart';
 import 'package:liza/pages/chat_details/chat_details.dart';
 import 'package:liza/utils/auth_proxy_service.dart';
 import 'package:liza/utils/channel_discussion.dart';
@@ -427,6 +428,8 @@ class ChatDetailsView extends StatelessWidget {
                             room: room,
                             controller: controller,
                           ),
+                        if (!room.isChannel && !isAiDm)
+                          ChatCapsulesSection(room: room),
                         if (!room.isDirectChat && !detailsOnly) ...[
                           Divider(color: theme.dividerColor),
                           if (canEditChannelSettings) ...[

@@ -313,7 +313,6 @@ abstract class AppRoutes {
         LizaThemes.isColumnMode(context) &&
                 state.fullPath?.startsWith('/rooms/settings') == false
             ? TwoColumnLayout(
-                compactable: true,
                 mainView: ChatList(
                   activeChat: state.pathParameters['roomid'],
                   activeSpace: state.uri.queryParameters['spaceId'],

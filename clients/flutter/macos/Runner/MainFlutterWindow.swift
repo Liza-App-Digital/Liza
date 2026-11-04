@@ -165,6 +165,16 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
     case "present":
       window.title = args?["title"] as? String ?? ""
       window.minSize = NSSize(width: 360, height: 480)
+      if args?["frameless"] as? Bool == true {
+        // .titled/.resizable остаются (borderless не становится key-окном):
+        // контент заезжает под прозрачный titlebar, светофор прячем.
+        window.styleMask.insert(.fullSizeContentView)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        for button: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+          window.standardWindowButton(button)?.isHidden = true
+        }
+      }
       if !window.setFrameUsingName(MiniAppWindowPlugin.frameName) {
         window.setFrame(MiniAppWindowPlugin.defaultFrame(), display: false)
       }
@@ -178,6 +188,9 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
       result(nil)
     case "focus":
       MiniAppWindowPlugin.focus(window)
+      result(nil)
+    case "startDrag":
+      if let event = NSApp.currentEvent { window.performDrag(with: event) }
       result(nil)
     case "close":
       window.close()

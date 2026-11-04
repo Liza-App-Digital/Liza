@@ -1,7 +1,7 @@
 // ignore_for_file: depend_on_referenced_packages
 // ledger:RL-chat-list-agents-people-tabs
 //
-// Вкладки списка чатов «Агенты и боты» / «Люди» и строка «+ Новый запрос»
+// Вкладки списка чатов «Агенты» / «Люди» и строка «+ Новый запрос»
 // (задание Надежды 18.10, newInterface/2026-10-19/05). Фильтр — РЕАЛЬНЫЙ
 // roomMatchesFilter на реальных Room; классификатор — РЕАЛЬНЫЙ
 // MatrixState.isBotOrAiUser (каталог ролей подменён StubRoleService).
@@ -26,7 +26,7 @@ Future<void> _loadRu(WidgetTester tester) =>
     tester.runAsync(() => L10n.delegate.load(const Locale('ru')));
 
 void main() {
-  group('roomMatchesFilter: «Агенты и боты» / «Люди»', () {
+  group('roomMatchesFilter: «Агенты» / «Люди»', () {
     late Client client;
     late StubRoleService roles;
     late MatrixState matrix;
@@ -117,7 +117,7 @@ void main() {
       };
       for (final MapEntry(key: name, value: room) in cases.entries) {
         expect(room.isDirectChat, isTrue, reason: '$name — DM');
-        expect(agents(room), isTrue, reason: '$name → «Агенты и боты»');
+        expect(agents(room), isTrue, reason: '$name → «Агенты»');
         expect(people(room), isFalse, reason: '$name не в «Людях»');
       }
     });
@@ -187,7 +187,7 @@ void main() {
   });
 
   group('ряд чипов', () {
-    testWidgets('AC-3: порядок и подписи чипов: Все → Агенты и боты → Люди → '
+    testWidgets('AC-3: порядок и подписи чипов: Все → Агенты → Люди → '
         'Компании → Группы → Каналы → Новые; «Личные» нет '
         '— AC:RL-chat-list-agents-people-tabs/3', (tester) async {
       await _loadRu(tester);
@@ -211,7 +211,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(labels, [
         'Все',
-        'Агенты и боты',
+        'Агенты',
         'Люди',
         'Компании',
         'Группы',

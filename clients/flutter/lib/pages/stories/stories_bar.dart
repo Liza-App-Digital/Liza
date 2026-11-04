@@ -9,6 +9,7 @@ import '../../utils/channel_stories.dart';
 import '../../utils/stories/active_stories_provider.dart';
 import '../../utils/stories/deleted_stories_store.dart';
 import '../../utils/stories/frequent_contacts.dart';
+import '../../utils/stories/stories_bar_order.dart';
 import '../../utils/stories/stories_extension.dart';
 import '../../utils/stories/stories_seen_store.dart';
 import '../../utils/stories/story_media_picker.dart';
@@ -61,7 +62,13 @@ class _StoriesBarState extends State<StoriesBar> {
   /// Подписка на Matrix-синхронизацию: лента обновляется сама при новых
   /// сторисах/протухании, без захода в чат и обратно.
   StreamSubscription? _syncSub;
+  StreamSubscription? _presenceSub;
   Timer? _reloadDebounce;
+
+  /// Кто сейчас онлайн -> с какого момента (для порядка «вышел — левее всех»).
+  /// Наполняется из sync-presence без сети; уже онлайн на старте — по времени
+  /// последней активности.
+  final Map<String, DateTime> _onlineSince = {};
 
   @override
   void initState() {
@@ -78,6 +85,35 @@ class _StoriesBarState extends State<StoriesBar> {
       // автоматически. Дебаунс 3с, чтобы не перезагружать на каждое мелкое
       // событие синхронизации.
       _syncSub = client.onSync.stream.listen((_) => _scheduleReload());
+      _seedOnline(client);
+      _presenceSub = client.onPresenceChanged.stream.listen(_onPresence);
+    });
+  }
+
+  void _seedOnline(Client client) {
+    // ignore: deprecated_member_use
+    for (final p in client.presences.values) {
+      if (p.presence == PresenceType.online) {
+        _onlineSince.putIfAbsent(
+          p.userid,
+          () => p.lastActiveTimestamp ?? DateTime.now(),
+        );
+      }
+    }
+    if (_onlineSince.isNotEmpty && mounted) setState(() {});
+  }
+
+  void _onPresence(CachedPresence p) {
+    if (!mounted) return;
+    final wasOnline = _onlineSince.containsKey(p.userid);
+    final isOnline = p.presence == PresenceType.online;
+    if (isOnline == wasOnline) return;
+    setState(() {
+      if (isOnline) {
+        _onlineSince[p.userid] = DateTime.now();
+      } else {
+        _onlineSince.remove(p.userid);
+      }
     });
   }
 
@@ -91,6 +127,7 @@ class _StoriesBarState extends State<StoriesBar> {
   @override
   void dispose() {
     _syncSub?.cancel();
+    _presenceSub?.cancel();
     _reloadDebounce?.cancel();
     _scrollController.dispose();
     super.dispose();
@@ -180,24 +217,33 @@ class _StoriesBarState extends State<StoriesBar> {
         : client.ringStateFromActive(myRoom, myActiveEvents, seenStore);
 
     // Комнаты с непустым кешем активных сторисов (кроме своей комнаты).
-    final otherRooms = client.storiesRooms
-        .where((r) => r.id != myRoom?.id)
-        .where((r) => (_activeByRoom[r.id]?.isNotEmpty) == true)
-        .toList();
+    // Категория 1: авторы сторис, свежая публикация — левее (боты наравне).
+    final otherRooms = sortByLatestStory<Room>(
+      client.storiesRooms
+          .where((r) => r.id != myRoom?.id)
+          .where((r) => (_activeByRoom[r.id]?.isNotEmpty) == true),
+      latestTs: (r) => latestStoryTs(_activeByRoom[r.id] ?? const []),
+      tiebreak: (r) => r.id,
+    );
 
-    // Частые собеседники — после авторов сторис, без дублей с ними, без Лизы
-    // и ботов (они закреплены в списке чатов). Ранжирование — чистая функция
-    // над готовым кэшем, тяжёлого в build нет.
+    // Категория 2 — онлайн (без ботов), 3 — остальные по последнему
+    // сообщению в личке (боты считаются). Без дублей с вышестоящими.
     final matrix = Matrix.of(context);
-    final frequent = rankFrequentContacts(
+    final shown = <String>{
+      ?client.userID,
+      for (final room in otherRooms) ?client.storyOwnerOf(room),
+    };
+    final online = rankOnlineContacts(
       _dmActivity,
-      excludedUserIds: {
-        ?client.userID,
-        MatrixState.lizaMxid,
-        for (final room in otherRooms) ?client.storyOwnerOf(room),
-      },
+      onlineSince: _onlineSince,
+      excludedUserIds: shown,
       isBot: (id) => _isBot(matrix, id),
     );
+    final recent = rankRecentDialogs(
+      _dmActivity,
+      excludedUserIds: {...shown, for (final c in online) c.userId},
+    );
+    final frequent = [...online, ...recent];
 
     return SizedBox(
       height: StoriesBar.height,

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 
 import '../../widgets/story_avatar_ring.dart';
+import 'stories_bar_order.dart';
 import 'stories_extension.dart';
 import 'stories_seen_store.dart';
 
@@ -29,14 +30,18 @@ class ActiveStoriesProvider extends ChangeNotifier {
   }
 
   /// Очередь авторов для viewer: мой room первым (если есть активные),
-  /// далее чужие в порядке client.storiesRooms, только с непустыми активными.
+  /// далее чужие с непустыми активными — свежая публикация левее.
   /// Единый источник порядка для StoriesBar и StoryViewer.
   List<Room> orderedRoomsWithActive(Client client) {
     bool hasActive(Room r) => (_activeByRoom[r.id]?.isNotEmpty) == true;
     final my = client.myStoriesRoom;
     return [
       if (my != null && hasActive(my)) my,
-      ...client.storiesRooms.where((r) => r.id != my?.id).where(hasActive),
+      ...sortByLatestStory<Room>(
+        client.storiesRooms.where((r) => r.id != my?.id).where(hasActive),
+        latestTs: (r) => latestStoryTs(_activeByRoom[r.id] ?? const []),
+        tiebreak: (r) => r.id,
+      ),
     ];
   }
 

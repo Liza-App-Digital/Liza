@@ -31,15 +31,14 @@ class _MatrixWithClient extends MatrixState {
   SharedPreferences get store => prefs;
 }
 
-Finder _tile(String userId) =>
-    find.byKey(ValueKey('frequentContact:$userId'));
+Finder _tile(String userId) => find.byKey(ValueKey('frequentContact:$userId'));
 
 void main() {
   late Client client;
 
   setUp(FrequentContactsCache.instance.reset);
 
-  Future<void> addDm(String peer, int messages) async {
+  Future<void> addDm(String peer, int messages, {int ageMin = 0}) async {
     final roomId = '!dm-${peer.hashCode}:example.invalid';
     final room = Room(id: roomId, client: client);
     client.rooms.add(room);
@@ -66,7 +65,9 @@ void main() {
       final e = MatrixEvent(
         eventId: '\$e-$roomId-$i',
         senderId: peer,
-        originServerTs: DateTime.now().subtract(Duration(minutes: i + 1)),
+        originServerTs: DateTime.now().subtract(
+          Duration(minutes: ageMin + i + 1),
+        ),
         type: EventTypes.Message,
         content: const {'msgtype': 'm.text', 'body': 'hi'},
       );
@@ -90,10 +91,10 @@ void main() {
       await client.abortSync();
       client.rooms.clear();
       client.accountData.remove('m.direct');
-      await addDm('@bob:example.invalid', 5);
-      await addDm('@carol:example.invalid', 2);
-      await addDm('@shop_bot:bots.liza.ru', 20);
-      await addDm('@liza:bots.liza.ru', 30);
+      await addDm('@bob:example.invalid', 5, ageMin: 10);
+      await addDm('@carol:example.invalid', 2, ageMin: 30);
+      await addDm('@shop_bot:bots.liza.ru', 20, ageMin: 60);
+      await addDm('@liza:bots.liza.ru', 30, ageMin: 90);
       await addDm('@helper:example.invalid', 9);
     });
     final matrix = _MatrixWithClient(client, prefs);
@@ -105,8 +106,7 @@ void main() {
         ),
         GoRoute(
           path: '/rooms/:roomid',
-          builder: (_, state) =>
-              Text('room:${state.pathParameters['roomid']}'),
+          builder: (_, state) => Text('room:${state.pathParameters['roomid']}'),
         ),
       ],
     );
@@ -141,8 +141,10 @@ void main() {
     });
   }
 
-  testWidgets('порядок: «Мой сторис» → частые по числу сообщений; без Лизы '
-      'и ботов; без кольца и точки «в сети»', (tester) async {
+  testWidgets('порядок: «Мой сторис» → остальные по времени последнего '
+      'сообщения (боты и Лиза считаются); без кольца и точки «в сети»', (
+    tester,
+  ) async {
     await pumpBar(tester);
     final add = tester.getCenter(find.byIcon(Icons.add_outlined)).dx;
     final helper = tester.getCenter(_tile('@helper:example.invalid')).dx;
@@ -150,10 +152,19 @@ void main() {
     final carol = tester.getCenter(_tile('@carol:example.invalid')).dx;
     // AC:RL-stories-bar-frequent-contacts/1
     expect(add < helper, isTrue, reason: '«Мой сторис» первым');
-    expect(helper < bob && bob < carol, isTrue, reason: '9 > 5 > 2 сообщений');
-    // AC:RL-stories-bar-frequent-contacts/3
-    expect(_tile('@shop_bot:bots.liza.ru'), findsNothing);
-    expect(_tile('@liza:bots.liza.ru'), findsNothing);
+    expect(
+      helper < bob && bob < carol,
+      isTrue,
+      reason: 'свежий диалог левее: helper, bob, carol',
+    );
+    // Категория 3 (31d9cfe0): боты и Лиза не исключаются, идут по давности.
+    final shop = tester.getCenter(_tile('@shop_bot:bots.liza.ru')).dx;
+    final liza = tester.getCenter(_tile('@liza:bots.liza.ru')).dx;
+    expect(
+      carol < shop && shop < liza,
+      isTrue,
+      reason: 'боты правее по давности',
+    );
     // AC:RL-stories-bar-frequent-contacts/7
     for (final id in [
       '@helper:example.invalid',
@@ -164,12 +175,13 @@ void main() {
         find.descendant(of: _tile(id), matching: find.byType(Avatar)),
       );
       expect(avatar.presenceUserId, isNull, reason: 'точки «в сети» нет');
-      expect(avatar.storyRing, isNull, reason: 'у частого без сторис нет кольца');
+      expect(
+        avatar.storyRing,
+        isNull,
+        reason: 'у частого без сторис нет кольца',
+      );
     }
-    expect(
-      find.bySemanticsLabel('Открыть чат с bob'),
-      findsOneWidget,
-    );
+    expect(find.bySemanticsLabel('Открыть чат с bob'), findsOneWidget);
     await teardown(tester);
   });
 

@@ -20,7 +20,7 @@ const _userB = '@boris:example.invalid';
 
 const _defaultLabels = [
   'Все',
-  'Агенты и боты',
+  'Агенты',
   'Люди',
   'Компании',
   'Группы',
@@ -189,7 +189,7 @@ void main() {
     Future<void> swipeRow(
       WidgetTester tester,
       double dx, {
-      String from = 'Агенты и боты',
+      String from = 'Агенты',
       int steps = 40,
     }) async {
       final swipe = await tester.startGesture(
@@ -231,7 +231,7 @@ void main() {
           'Все',
           'Новые',
           'Люди',
-          'Агенты и боты',
+          'Агенты',
           'Компании',
           'Группы',
           'Каналы',
@@ -269,13 +269,13 @@ void main() {
       await longPressDrag(
         tester,
         'Люди',
-        tester.getTopLeft(find.text('Агенты и боты')) + const Offset(-4, 8),
+        tester.getTopLeft(find.text('Агенты')) + const Offset(-4, 8),
       );
 
       expect(labelsByX(tester), [
         'Все',
         'Люди',
-        'Агенты и боты',
+        'Агенты',
         'Компании',
         'Группы',
         'Каналы',
@@ -291,10 +291,10 @@ void main() {
       ]);
       expect(selected, isEmpty, reason: 'перетаскивание — не выбор вкладки');
 
-      // Вправо: «Агенты и боты» — за «Группы» (onReorder отдаёт индекс «после»).
+      // Вправо: «Агенты» — за «Группы» (onReorder отдаёт индекс «после»).
       await longPressDrag(
         tester,
-        'Агенты и боты',
+        'Агенты',
         tester.getCenter(find.text('Группы')),
       );
       expect(labelsByX(tester), [
@@ -302,7 +302,7 @@ void main() {
         'Люди',
         'Компании',
         'Группы',
-        'Агенты и боты',
+        'Агенты',
         'Каналы',
         'Новые',
       ]);
@@ -323,7 +323,7 @@ void main() {
         'Люди',
         'Компании',
         'Группы',
-        'Агенты и боты',
+        'Агенты',
       ]);
 
       // Другой аккаунт — свой порядок (по умолчанию).
@@ -393,13 +393,13 @@ void main() {
 
       Rect rectOf(String label) => tester.getRect(find.text(label));
       final all0 = rectOf('Все');
-      final next0 = rectOf('Агенты и боты');
+      final next0 = rectOf('Агенты');
       final allChip = tester.getRect(
         find.ancestor(of: find.text('Все'), matching: find.byType(FilterChip)),
       );
       final nextChip = tester.getRect(
         find.ancestor(
-          of: find.text('Агенты и боты'),
+          of: find.text('Агенты'),
           matching: find.byType(FilterChip),
         ),
       );
@@ -407,9 +407,9 @@ void main() {
       expect(allChip.center.dy, nextChip.center.dy);
       expect(allChip.height, nextChip.height);
 
-      await swipeRow(tester, -5, from: 'Агенты и боты', steps: 10);
+      await swipeRow(tester, -5, from: 'Агенты', steps: 10);
       final all1 = rectOf('Все');
-      final next1 = rectOf('Агенты и боты');
+      final next1 = rectOf('Агенты');
       expect(all1.left, lessThan(all0.left), reason: '«Все» уезжает влево');
       expect(
         all1.left - all0.left,
@@ -418,7 +418,7 @@ void main() {
       );
       expect(all1.top, all0.top);
 
-      await swipeRow(tester, 5, from: 'Агенты и боты', steps: 40);
+      await swipeRow(tester, 5, from: 'Агенты', steps: 40);
       expect(rectOf('Все').left, moreOrLessEquals(all0.left, epsilon: 1));
       expect(prefs.getStringList(filterOrderPrefsKey(_userA)), isNull);
     });

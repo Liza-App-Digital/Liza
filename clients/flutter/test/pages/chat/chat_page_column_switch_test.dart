@@ -155,7 +155,6 @@ void main() {
                 state,
                 LizaThemes.isColumnMode(context)
                     ? TwoColumnLayout(
-                        compactable: true,
                         mainView: const Text('list'),
                         sideView: child,
                       )
@@ -196,11 +195,8 @@ void main() {
         locale: const Locale('ru'),
         builder: (context, child) => ValueListenableBuilder<bool>(
           valueListenable: forceColumn,
-          builder: (_, force, _) => MiniAppHostScope(
-            forceColumnMode: force,
-            compactChatList: false,
-            child: child!,
-          ),
+          builder: (_, force, _) =>
+              MiniAppHostScope(forceColumnMode: force, child: child!),
         ),
       ),
     );

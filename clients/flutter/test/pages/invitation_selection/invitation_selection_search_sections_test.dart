@@ -1,14 +1,14 @@
 // ledger:RL-search-people-vs-bots-sections
 //
 // Экран «Пригласить в группу» на РЕАЛЬНОМ виджете (InvitationSelection →
-// InvitationSelectionView): выдача поиска разбита на «Люди» / «Агенты и боты».
+// InvitationSelectionView): выдача поиска разбита на «Люди» / «Агенты».
 //
 // Покрываемые AC (tests/registry/RL-search-people-vs-bots-sections.md):
 //   AC-1 два раздела в одном списке на этом экране.
 //   AC-2 человек / федеративный человек — «Люди»; бот по роли ai, бот
-//        liza-bot-api по домену, ИИ — «Агенты и боты».
-//   AC-3 только люди → заголовка «Агенты и боты» нет.
-//   AC-4 роли пришли позже 1,5 с → бот переезжает в «Агенты и боты».
+//        liza-bot-api по домену, ИИ — «Агенты».
+//   AC-3 только люди → заголовка «Агенты» нет.
+//   AC-4 роли пришли позже 1,5 с → бот переезжает в «Агенты».
 //
 // Red-proof AC-4: убрать `onLate?.call()` в waitForRolesBounded → «Кубок»
 // остаётся среди людей, тест «роли пришли позже» красный.
@@ -80,7 +80,7 @@ void main() {
   testWidgets(
       // AC:RL-search-people-vs-bots-sections/1
       // AC:RL-search-people-vs-bots-sections/2
-      'приглашение: люди под «Люди», боты и ИИ под «Агенты и боты»',
+      'приглашение: люди под «Люди», боты и ИИ под «Агенты»',
       (tester) async {
     final roles = StubRoleService(
       client,
@@ -89,7 +89,7 @@ void main() {
     await tester.runAsync(() => search(tester, roles, 'kot'));
 
     expect(find.text('Люди'), findsOneWidget);
-    expect(find.text('Агенты и боты'), findsOneWidget);
+    expect(find.text('Агенты'), findsOneWidget);
     final bots = header(tester, botsAndAiSectionKey);
     final people = header(tester, peopleSectionKey);
     for (final human in ['Анна kot', 'Иван kot']) {
@@ -102,7 +102,7 @@ void main() {
 
   testWidgets(
       // AC:RL-search-people-vs-bots-sections/3
-      'приглашение: только люди → раздела «Агенты и боты» нет',
+      'приглашение: только люди → раздела «Агенты» нет',
       (tester) async {
     final roles = StubRoleService(client);
     await tester.runAsync(() => search(tester, roles, 'zed'));

@@ -16,8 +16,6 @@ import 'package:liza/pages/chat/chat_app_bar_title.dart';
 import 'package:liza/pages/chat/chat_event_list.dart';
 import 'package:liza/pages/chat/company_subscribe_banner.dart';
 import 'package:liza/pages/chat/encryption_button.dart';
-import 'package:liza/pages/chat/mini_app_manager.dart';
-import 'package:liza/pages/chat/mini_app_overlay.dart';
 import 'package:liza/pages/chat/pinned_events.dart';
 import 'package:liza/pages/chat/reply_display.dart';
 import 'package:liza/utils/account_config.dart';
@@ -552,22 +550,6 @@ class ChatView extends StatelessWidget {
                                         ),
                                 ),
                               ),
-                            // Резерв снизу под свёрнутую плашку miniApp, чтобы
-                            // она не перекрывала поле ввода (плашка — глобальный
-                            // overlay у bottom:0, см. MiniAppOverlay).
-                            AnimatedBuilder(
-                              animation: MiniAppManager.instance,
-                              builder: (context, _) {
-                                final manager = MiniAppManager.instance;
-                                final reserve =
-                                    manager.hasApps && !manager.isExpanded;
-                                return SizedBox(
-                                  height: reserve
-                                      ? kMiniAppCollapsedBarHeight
-                                      : 0,
-                                );
-                              },
-                            ),
                           ],
                         ),
                       ),

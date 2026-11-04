@@ -9,8 +9,6 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_overlay.dart';
 import 'package:liza/pages/chat/mini_app_window.dart';
-import 'package:liza/pages/chat_list/compact_chat_list_column.dart';
-import 'package:liza/widgets/layouts/mini_app_host_scope.dart';
 import 'package:liza/widgets/layouts/two_column_layout.dart';
 
 import '../../utils/test_client.dart';
@@ -34,9 +32,8 @@ void main() {
   var homeInits = 0;
   var titleTaps = 0;
   Size? homeSize;
-  // Что видит приложение под хостом: колоночный режим и свёртка списка.
+  // Что видит приложение под хостом: колоночный режим.
   final columnModes = <bool>[];
-  var compact = false;
 
   setUpAll(() async {
     client = await prepareTestClient();
@@ -48,10 +45,8 @@ void main() {
     manager.windowsSupported = false;
     MiniAppOverlay.isTablet = (_) => false;
     manager.panelWidth.value = kMiniAppDefaultPanelWidth;
-    manager.splitFraction.value = 0.5;
-    manager.chatListCompactable.value = false;
+    manager.panelFilled.value = false;
     columnModes.clear();
-    compact = false;
     contentInits.clear();
     contentPaths.clear();
     homeInits = 0;
@@ -92,10 +87,7 @@ void main() {
           onInit: () => homeInits++,
           onTitleTap: () => titleTaps++,
           onSize: (s) => homeSize = s,
-          onScope: (columnMode, isCompact) {
-            columnModes.add(columnMode);
-            compact = isCompact;
-          },
+          onScope: columnModes.add,
         ),
       ),
     );
@@ -123,23 +115,34 @@ void main() {
       tester.getRect(find.byKey(const ValueKey('miniapp-content-shop')));
 
   group('MiniAppManager', () {
-    test('по умолчанию: закреплённый с 1281 px, уже — на весь экран', () {
-      // AC:RL-miniapp-adaptive-window/1
-      expect(manager.isFullscreenFor(390), isTrue);
-      expect(manager.isFullscreenFor(1000), isTrue);
-      expect(manager.isFullscreenFor(1200), isTrue);
-      expect(manager.isFullscreenFor(1440), isFalse);
-      openShop();
-      manager.setFullscreen(true);
-      expect(manager.isFullscreenFor(1440), isTrue);
-      manager.closeAll();
-      openShop();
-      expect(
-        manager.fullscreenPreference,
-        isNull,
-        reason: 'новое открытие после закрытия всех — снова по ширине',
-      );
+    test('режим выводится из ширины и планшета: только sheet и side', () {
+      // AC:RL-miniapp-adaptive-window/1 AC:RL-miniapp-adaptive-window/48
+      expect(MiniAppLayoutMode.values, [
+        MiniAppLayoutMode.sheet,
+        MiniAppLayoutMode.side,
+      ]);
+      for (final w in const [390.0, 1000.0, 1200.0, 1280.0]) {
+        expect(miniAppLayoutModeFor(w), MiniAppLayoutMode.sheet, reason: '$w');
+      }
+      expect(miniAppLayoutModeFor(1281), MiniAppLayoutMode.side);
+      expect(miniAppLayoutModeFor(1440), MiniAppLayoutMode.side);
+      expect(miniAppLayoutModeFor(1920, tablet: true), MiniAppLayoutMode.sheet);
     });
+
+    test(
+      'стек: закрытие верхнего показывает предыдущее, последнего — пусто',
+      () {
+        // AC:RL-miniapp-adaptive-window/44
+        openShop();
+        openCafe();
+        expect(manager.activeApp?.appId, 'cafe');
+        manager.close('cafe');
+        expect(manager.activeApp?.appId, 'shop');
+        manager.close('shop');
+        expect(manager.activeApp, isNull);
+        expect(manager.hasApps, isFalse);
+      },
+    );
 
     test('ширина панели ужимается под окно', () {
       // AC:RL-miniapp-adaptive-window/5
@@ -198,10 +201,6 @@ void main() {
           tester.getRect(find.byType(_ProbeHome)).right,
           1440 - kMiniAppDefaultPanelWidth,
         );
-        expect(
-          find.byKey(const ValueKey('miniapp-fullscreen')),
-          findsOneWidget,
-        );
         expect(find.byType(Dialog), findsNothing);
         expect(homeInits, 1);
       },
@@ -212,10 +211,10 @@ void main() {
       Size(1000, 800),
       Size(1200, 800),
     ]) {
-      testWidgets('${size.width.toInt()}: по умолчанию на весь экран', (
+      testWidgets('${size.width.toInt()}: на весь экран, кнопки режима нет', (
         tester,
       ) async {
-        // AC:RL-miniapp-adaptive-window/1
+        // AC:RL-miniapp-adaptive-window/1 AC:RL-miniapp-adaptive-window/48
         await pumpHost(tester, size);
         openShop();
         await tester.pumpAndSettle();
@@ -223,132 +222,124 @@ void main() {
         final rect = panelRect(tester);
         expect(rect.left, 0);
         expect(rect.right, size.width);
-        expect(find.byKey(const ValueKey('miniapp-dock')), findsOneWidget);
+        expect(find.byKey(const ValueKey('miniapp-dock')), findsNothing);
+        expect(find.byKey(const ValueKey('miniapp-fullscreen')), findsNothing);
       });
     }
 
-    testWidgets('1440: на весь экран → вернуть → свернуть → развернуть, '
-        'WebView и Router живы', (tester) async {
-      // AC:RL-miniapp-adaptive-window/4
-      await pumpHost(tester, const Size(1440, 900));
-      openShop();
-      await tester.pumpAndSettle();
+    for (final size in const [Size(390, 844), Size(1440, 900)]) {
+      for (final windows in const [false, true]) {
+        testWidgets('шапка ${size.width.toInt()}, окна ОС: $windows — '
+            'только ✕, название и ↗', (tester) async {
+          // AC:RL-miniapp-adaptive-window/40
+          // Надежда 27.10: «Итого у нас останется крестик и разворачивание в
+          // отдельное окно».
+          manager.windowsSupported = windows;
+          await pumpHost(tester, size);
+          openShop(allowDetach: false);
+          await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const ValueKey('miniapp-fullscreen')));
-      await tester.pumpAndSettle();
-      expect(panelRect(tester).width, 1440);
+          expect(find.byKey(const ValueKey('miniapp-close')), findsOneWidget);
+          expect(find.text('Магазин'), findsOneWidget);
+          expect(
+            find.byKey(const ValueKey('miniapp-detach')),
+            windows ? findsOneWidget : findsNothing,
+          );
+          expect(
+            find.byType(IconButton),
+            findsNWidgets(windows ? 2 : 1),
+            reason: 'в шапке нет других кнопок',
+          );
+          for (final key in const [
+            'miniapp-copy-link',
+            'miniapp-fullscreen',
+            'miniapp-minimize',
+            'miniapp-dock',
+          ]) {
+            expect(find.byKey(ValueKey(key)), findsNothing, reason: key);
+          }
+          expect(find.byType(PopupMenuButton<String>), findsNothing);
+        });
+      }
+    }
 
-      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
-      await tester.pumpAndSettle();
-      expect(panelRect(tester).width, kMiniAppDefaultPanelWidth);
-
-      await tester.tap(find.byKey(const ValueKey('miniapp-minimize')));
-      await tester.pumpAndSettle();
-      expect(homeSize!.width, 1440);
-      // AC:RL-miniapp-adaptive-window/6
-      expect(find.text('Магазин'), findsOneWidget);
-
-      manager.expand();
-      await tester.pumpAndSettle();
-      expect(panelRect(tester).width, kMiniAppDefaultPanelWidth);
-
-      expect(contentInits['shop'], 1);
-      expect(homeInits, 1);
+    testWidgets('плашки и резерва под неё нет ни в одном состоянии', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/41
+      // Надежда 27.10: «Вот такого отображения не должно быть ни на десктопах,
+      // ни на мобильных, ни где-либо ещё».
+      for (final size in const [Size(390, 844), Size(1440, 900)]) {
+        await pumpHost(tester, size);
+        expect(find.byKey(const ValueKey('miniapp-host-bar')), findsNothing);
+        openShop();
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('miniapp-host-bar')), findsNothing);
+        manager.closeAll();
+        await tester.pumpAndSettle();
+        expect(find.byKey(const ValueKey('miniapp-host-bar')), findsNothing);
+        expect(find.text('Магазин'), findsNothing);
+        expect(homeSize, size, reason: 'чат без резерва под плашку');
+      }
     });
 
-    testWidgets('390: двойной экран — miniApp сверху, чат снизу; '
-        'клавиатура не роняет раскладку', (tester) async {
-      // AC:RL-miniapp-adaptive-window/3 AC:RL-miniapp-adaptive-window/4
+    testWidgets('свайп вниз по шапке: далеко — закрывает, чуть — возвращает', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/42
+      await pumpHost(tester, const Size(390, 844));
+      openShop();
+      await tester.pumpAndSettle();
+      final top = panelRect(tester).top;
+
+      await tester.timedDrag(
+        find.text('Магазин'),
+        const Offset(0, 100),
+        const Duration(seconds: 2),
+      );
+      await tester.pumpAndSettle();
+      expect(manager.hasApps, isTrue, reason: 'ниже порога — не закрываем');
+      expect(panelRect(tester).top, top);
+
+      await tester.drag(find.text('Магазин'), const Offset(0, 500));
+      await tester.pumpAndSettle();
+      expect(manager.hasApps, isFalse);
+      expect(find.byKey(const ValueKey('miniapp-content-shop')), findsNothing);
+    });
+
+    testWidgets('Android «назад»: сначала диалог в панели, потом закрытие '
+        'активного app', (tester) async {
+      // AC:RL-miniapp-adaptive-window/8 AC:RL-miniapp-adaptive-window/43
       await pumpHost(tester, const Size(390, 844));
       openShop();
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
+      await tester.tap(find.byKey(const ValueKey('fake-content-dialog')));
       await tester.pumpAndSettle();
+      expect(find.text('fake-dialog'), findsOneWidget);
 
-      final home = tester.getRect(find.byType(_ProbeHome));
-      final panel = tester.getRect(
-        find
-            .ancestor(
-              of: find.byKey(const ValueKey('miniapp-content-shop')),
-              matching: find.byType(Material),
-            )
-            .first,
-      );
-      expect(panel.top, 0);
-      expect(panel.bottom, lessThanOrEqualTo(home.top));
-      expect(home.top, closeTo(844 / 2, 1));
-      expect(home.bottom, 844);
-      expect(find.byKey(const ValueKey('miniapp-fullscreen')), findsOneWidget);
-
-      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      final squeezed = tester.getRect(find.byType(_ProbeHome));
-      expect(
-        squeezed.height - 300,
-        greaterThanOrEqualTo(160),
-        reason: 'над клавиатурой чату остаётся место под поле ввода',
-      );
+      expect(find.text('fake-dialog'), findsNothing);
+      expect(manager.hasApps, isTrue);
 
-      expect(contentInits['shop'], 1);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(manager.hasApps, isFalse);
       expect(homeInits, 1);
     });
 
-    testWidgets('1200: «вернуть панель» — сбоку, приложение остаётся в двух '
-        'колонках', (tester) async {
-      // AC:RL-miniapp-adaptive-window/2
-      await pumpHost(tester, const Size(1200, 800));
+    testWidgets('«назад» в боковой панели уходит чату, панель не закрывает', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/43
+      await pumpHost(tester, const Size(1440, 900));
       openShop();
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
+      await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
-
-      expect(panelRect(tester).right, 1200);
-      expect(homeSize!.width, greaterThan(840));
-      expect(homeInits, 1);
+      expect(manager.hasApps, isTrue);
     });
-
-    testWidgets(
-      '1100: на боковую панель ширины мало — закрепить = двойной экран',
-      (tester) async {
-        // AC:RL-miniapp-adaptive-window/3
-        await pumpHost(tester, const Size(1100, 800));
-        openShop();
-        await tester.pumpAndSettle();
-        await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
-        await tester.pumpAndSettle();
-
-        final home = tester.getRect(find.byType(_ProbeHome));
-        expect(home.top, closeTo(400, 1));
-        expect(homeSize!.width, 1100);
-        expect(panelRect(tester).width, 1100);
-      },
-    );
-
-    testWidgets(
-      'Android «назад»: сначала диалог в панели, потом сворачивание',
-      (tester) async {
-        // AC:RL-miniapp-adaptive-window/8
-        await pumpHost(tester, const Size(390, 844));
-        openShop();
-        await tester.pumpAndSettle();
-
-        await tester.tap(find.byKey(const ValueKey('fake-content-dialog')));
-        await tester.pumpAndSettle();
-        expect(find.text('fake-dialog'), findsOneWidget);
-
-        await tester.binding.handlePopRoute();
-        await tester.pumpAndSettle();
-        expect(find.text('fake-dialog'), findsNothing);
-        expect(manager.isExpanded, isTrue);
-
-        await tester.binding.handlePopRoute();
-        await tester.pumpAndSettle();
-        expect(manager.isExpanded, isFalse);
-        expect(homeInits, 1);
-      },
-    );
 
     testWidgets('граница панели тянется мышью в пределах clamp', (
       tester,
@@ -359,31 +350,17 @@ void main() {
       await tester.pumpAndSettle();
 
       final handle = find.byKey(const ValueKey('miniapp-host-divider'));
-      await tester.drag(handle, const Offset(-2000, 0));
+      // Левый край 730 — правее середины окна (720): панель закреплена и
+      // упирается в порог двух колонок.
+      await tester.drag(handle, const Offset(-270, 0));
       await tester.pumpAndSettle();
+      expect(manager.panelFilled.value, isFalse);
       expect(panelRect(tester).width, 1440 - kMiniAppMinChildWidth);
 
       await tester.drag(handle, const Offset(2000, 0));
       await tester.pumpAndSettle();
       expect(panelRect(tester).width, kMiniAppMinPanelWidth);
       expect(contentInits['shop'], 1);
-    });
-
-    testWidgets('плашка 40 px только в свёрнутом состоянии', (tester) async {
-      // AC:RL-miniapp-adaptive-window/6
-      await pumpHost(tester, const Size(390, 844));
-      openShop();
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('miniapp-host-bar')), findsNothing);
-
-      manager.minimize();
-      await tester.pumpAndSettle();
-      final bar = tester.getRect(
-        find.byKey(const ValueKey('miniapp-host-bar')),
-      );
-      expect(bar.height, kMiniAppCollapsedBarHeight);
-      final label = tester.widget<Text>(find.text('Магазин'));
-      expect(label.style?.fontSize, 14);
     });
 
     testWidgets('deep-link доходит до контента; новый путь пересоздаёт его', (
@@ -401,24 +378,13 @@ void main() {
       expect(contentInits['shop'], 2);
     });
 
-    testWidgets('«Скопировать ссылку» — кнопкой в шапке, меню «⋮» нет; '
-        'диалог из контента открывается внутри хоста', (tester) async {
+    testWidgets('диалог из контента открывается внутри хоста', (tester) async {
       // AC:RL-miniapp-adaptive-window/8 — хост смонтирован над Router; без
       // своего Navigator тут было «context does not include a Navigator».
-      // Надежда 27.10: «пункт "еще" не имеет смысла, нужно только скопировать
-      // ссылку» — меню заменено кнопкой.
       for (final size in const [Size(390, 844), Size(1440, 900)]) {
         await pumpHost(tester, size);
         openShop();
         await tester.pumpAndSettle();
-
-        expect(find.byType(PopupMenuButton<String>), findsNothing);
-        expect(find.byKey(const ValueKey('miniapp-copy-link')), findsOneWidget);
-        expect(
-          find.byTooltip('Скопировать ссылку'),
-          findsOneWidget,
-          reason: 'на ${size.width.toInt()}',
-        );
 
         await tester.tap(find.byKey(const ValueKey('fake-content-dialog')));
         await tester.pumpAndSettle();
@@ -441,7 +407,6 @@ void main() {
       expect(manager.detachedApps.map((a) => a.appId), ['shop']);
       expect(manager.hasApps, isFalse, reason: 'в окне Лизы ничего нет');
       expect(manager.activeApp, isNull);
-      expect(manager.isExpanded, isFalse);
 
       openCafe(allowDetach: false);
       expect(manager.detachedApps.map((a) => a.appId), ['shop']);
@@ -484,7 +449,6 @@ void main() {
       manager.close('shop');
       expect(manager.detachedApps, isEmpty);
       expect(manager.activeApp?.appId, 'cafe');
-      expect(manager.isExpanded, isTrue);
     });
 
     test('открепить → прикрепить: та же страница, новое поколение', () {
@@ -495,13 +459,11 @@ void main() {
       expect(detached.appStartPath, '#!/tproduct/5');
       expect(detached.generation, 1);
       expect(manager.hasApps, isFalse);
-      expect(manager.isExpanded, isFalse);
 
       manager.attach('shop', startPath: '#!/tproduct/6');
       expect(manager.detachedApps, isEmpty);
       expect(manager.activeApp!.appStartPath, '#!/tproduct/6');
       expect(manager.activeApp!.generation, 2);
-      expect(manager.isExpanded, isTrue);
     });
 
     test('выход из аккаунта закрывает и окна ОС', () {
@@ -511,16 +473,6 @@ void main() {
       openCafe(allowDetach: false);
       manager.closeForClient(client);
       expect(manager.detachedApps, isEmpty);
-      expect(manager.hasApps, isFalse);
-    });
-
-    test('крестик плашки закрывает панель, окна ОС не трогает', () {
-      // AC:RL-miniapp-detached-window/3
-      manager.windowsSupported = true;
-      openShop();
-      openCafe(allowDetach: false);
-      manager.closeDocked();
-      expect(manager.detachedApps.map((a) => a.appId), ['shop']);
       expect(manager.hasApps, isFalse);
     });
 
@@ -564,9 +516,10 @@ void main() {
       );
 
       expect(find.byType(PopupMenuButton<String>), findsNothing);
-      expect(find.byKey(const ValueKey('miniapp-copy-link')), findsOneWidget);
-      expect(find.byKey(const ValueKey('miniapp-fullscreen')), findsOneWidget);
-      expect(find.byKey(const ValueKey('miniapp-minimize')), findsOneWidget);
+      // AC:RL-miniapp-detached-window/4 AC:RL-miniapp-adaptive-window/34
+      expect(find.byKey(const ValueKey('miniapp-copy-link')), findsNothing);
+      expect(find.byKey(const ValueKey('miniapp-fullscreen')), findsNothing);
+      expect(find.byKey(const ValueKey('miniapp-minimize')), findsNothing);
       await tester.tap(find.byKey(const ValueKey('miniapp-detach')));
       await tester.pumpAndSettle();
 
@@ -588,453 +541,173 @@ void main() {
         await tester.pumpAndSettle();
       }
     });
-
-    testWidgets('сворачивание боковой панели — вниз, к плашке, а не вбок', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-detached-window/6
-      await pumpHost(tester, const Size(1440, 900));
-      openShop();
-      await tester.pumpAndSettle();
-      final open = panelRect(tester);
-
-      await tester.tap(find.byKey(const ValueKey('miniapp-minimize')));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 100));
-      final early = panelRect(tester);
-      await tester.pump(const Duration(milliseconds: 100));
-      final late = panelRect(tester);
-
-      for (final rect in [early, late]) {
-        expect(rect.left, open.left, reason: 'панель не уезжает вбок');
-        expect(rect.width, open.width);
-      }
-      expect(early.top, greaterThan(open.top));
-      expect(late.top, greaterThan(early.top));
-      await tester.pumpAndSettle();
-      expect(find.text('Магазин'), findsOneWidget, reason: 'плашка внизу');
-    });
   });
 
   group('Планшет — как на ПК, без двойного экрана', () {
-    testWidgets('альбом: по умолчанию на весь экран, закрепить — сбоку', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-detached-window/5
-      MiniAppOverlay.isTablet = (_) => true;
-      await pumpHost(tester, const Size(1366, 1024));
-      openShop();
-      await tester.pumpAndSettle();
-      expect(panelRect(tester).width, 1366);
-
-      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
-      await tester.pumpAndSettle();
-      expect(panelRect(tester).right, 1366);
-      expect(panelRect(tester).width, kMiniAppDefaultPanelWidth);
-    });
-
-    for (final size in const [Size(1024, 1366), Size(768, 1024)]) {
-      testWidgets('${size.width.toInt()}×${size.height.toInt()}: весь экран, '
-          'закрепить некуда — ни кнопки, ни бегунка', (tester) async {
-        // AC:RL-miniapp-detached-window/5
-        MiniAppOverlay.isTablet = (_) => true;
-        await pumpHost(tester, size);
-        openShop();
-        await tester.pumpAndSettle();
-        expect(panelRect(tester).width, size.width);
-        expect(find.byKey(const ValueKey('miniapp-dock')), findsNothing);
-        expect(
-          find.byKey(const ValueKey('miniapp-host-split-handle')),
-          findsNothing,
-        );
-        expect(find.byKey(const ValueKey('miniapp-fullscreen')), findsNothing);
-      });
+    for (final size in const [
+      Size(1366, 1024),
+      Size(1024, 1366),
+      Size(768, 1024),
+    ]) {
+      testWidgets(
+        '${size.width.toInt()}×${size.height.toInt()}: на весь экран, '
+        'ни кнопки режима, ни бегунка',
+        (tester) async {
+          // AC:RL-miniapp-detached-window/5
+          MiniAppOverlay.isTablet = (_) => true;
+          await pumpHost(tester, size);
+          openShop();
+          await tester.pumpAndSettle();
+          expect(panelRect(tester).width, size.width);
+          expect(find.byKey(const ValueKey('miniapp-dock')), findsNothing);
+          expect(
+            find.byKey(const ValueKey('miniapp-host-split-handle')),
+            findsNothing,
+          );
+          expect(
+            find.byKey(const ValueKey('miniapp-fullscreen')),
+            findsNothing,
+          );
+        },
+      );
     }
 
     test('телефон и узкое окно — по-прежнему по ширине', () {
-      // AC:RL-miniapp-detached-window/5
-      expect(manager.isFullscreenFor(1440), isFalse);
-      expect(manager.isFullscreenFor(1440, tablet: true), isTrue);
-      expect(miniAppLayoutModeFor(manager, 1100), MiniAppLayoutMode.sheet);
-      manager.setFullscreen(false);
-      expect(miniAppLayoutModeFor(manager, 1100), MiniAppLayoutMode.split);
-      expect(
-        miniAppLayoutModeFor(manager, 1100, tablet: true),
-        MiniAppLayoutMode.sheet,
-      );
-      expect(
-        miniAppLayoutModeFor(manager, 1366, tablet: true),
-        MiniAppLayoutMode.side,
-      );
+      // AC:RL-miniapp-detached-window/5 AC:RL-miniapp-adaptive-window/48
+      expect(miniAppLayoutModeFor(1100), MiniAppLayoutMode.sheet);
+      expect(miniAppLayoutModeFor(1440), MiniAppLayoutMode.side);
+      expect(miniAppLayoutModeFor(1366, tablet: true), MiniAppLayoutMode.sheet);
     });
   });
 
-  group('Бегунок двойного экрана', () {
-    Rect homeRect(WidgetTester tester) =>
-        tester.getRect(find.byType(_ProbeHome));
-    final handle = find.byKey(const ValueKey('miniapp-host-split-handle'));
-
-    Future<void> openSplit(WidgetTester tester) async {
-      await pumpHost(tester, const Size(390, 844));
-      openShop();
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
-      await tester.pumpAndSettle();
-    }
-
-    testWidgets('тянется от минимума до 0.7 и держит долю', (tester) async {
-      // AC:RL-miniapp-adaptive-window/11
-      await openSplit(tester);
-      expect(homeRect(tester).top, closeTo(422, 1));
-
-      await tester.drag(handle, const Offset(0, -2000));
-      await tester.pumpAndSettle();
-      expect(homeRect(tester).top, closeTo(kMiniAppSplitMinPanelHeight, 1));
-
-      await tester.drag(
-        handle,
-        Offset(0, 844 * 0.7 - kMiniAppSplitMinPanelHeight),
-      );
-      await tester.pumpAndSettle();
-      expect(homeRect(tester).top, closeTo(844 * 0.7, 2));
-
-      manager.minimize();
-      await tester.pumpAndSettle();
-      manager.expand();
-      await tester.pumpAndSettle();
-      expect(homeRect(tester).top, closeTo(844 * 0.7, 2));
-      expect(contentInits['shop'], 1);
-      expect(homeInits, 1);
-    });
-
-    testWidgets('нет полосы: панель вплотную к чату при любой доле', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/20
-      await openSplit(tester);
-      void expectNoGap() =>
-          expect(panelRect(tester).bottom, closeTo(homeRect(tester).top, 0.5));
-      expectNoGap();
-      await tester.drag(handle, const Offset(0, -2000));
-      await tester.pumpAndSettle();
-      expectNoGap();
-      await tester.drag(
-        handle,
-        Offset(0, 844 * 0.78 - kMiniAppSplitMinPanelHeight),
-      );
-      await tester.pumpAndSettle();
-      expect(homeRect(tester).top, closeTo(844 * 0.78, 2));
-      expectNoGap();
-    });
-
-    testWidgets('на стыке только пилюля и линия 1 px, без фона', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/21
-      await openSplit(tester);
-      final seam = homeRect(tester).top;
-      final pill = tester.getRect(
-        find.descendant(of: handle, matching: find.byType(DecoratedBox)),
-      );
-      expect(pill.size, const Size(36, 5));
-      expect(pill.center.dx, closeTo(195, 0.5));
-      expect(pill.center.dy, closeTo(seam, 1));
-      expect(
-        find.descendant(of: handle, matching: find.byType(ColoredBox)),
-        findsNothing,
-      );
-      final divider = tester.getRect(
-        find.byKey(const ValueKey('miniapp-host-split-divider')),
-      );
-      expect(divider.height, 1);
-      expect(divider.width, 390);
-      expect(divider.center.dy, closeTo(seam, 0.5));
-    });
-
-    testWidgets('бегунок не крадёт тап у заголовка чата, но тянется', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/22
-      await openSplit(tester);
-      final seam = homeRect(tester).top;
-      final zone = tester.getRect(handle);
-      expect(zone.bottom - seam, lessThanOrEqualTo(26));
-      expect(seam - zone.top, lessThanOrEqualTo(6));
-      for (final point in [
-        Offset(195, seam + 4),
-        Offset(195, seam + 14),
-        Offset(20, seam + 14),
-      ]) {
-        final before = titleTaps;
-        await tester.tapAt(point);
-        await tester.pumpAndSettle();
-        expect(titleTaps, before + 1, reason: 'тап в $point');
-      }
-      expect(homeRect(tester).top, closeTo(seam, 0.5));
-
-      await tester.dragFrom(Offset(195, seam + 20), const Offset(0, 100));
-      await tester.pumpAndSettle();
-      expect(homeRect(tester).top, closeTo(seam + 100, 2));
-      expect(titleTaps, 3);
-    });
-
-    testWidgets('пока тянут — двигается только превью, WebView не ресайзится', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/11
-      await openSplit(tester);
-      final gesture = await tester.startGesture(tester.getCenter(handle));
-      await gesture.moveBy(const Offset(0, 40));
-      await gesture.moveBy(const Offset(0, 160));
-      await tester.pump();
-      expect(
-        find.byKey(const ValueKey('miniapp-host-split-preview')),
-        findsOneWidget,
-      );
-      expect(homeRect(tester).top, closeTo(422, 1));
-      await gesture.up();
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const ValueKey('miniapp-host-split-preview')),
-        findsNothing,
-      );
-      expect(homeRect(tester).top, greaterThan(422 + 150));
-    });
-
-    testWidgets('отпущен у низа — на весь экран, на 0.78 — двойной экран', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/12
-      await openSplit(tester);
-      await tester.drag(handle, Offset(0, 844 * 0.28));
-      await tester.pumpAndSettle();
-      expect(manager.fullscreenPreference, isFalse);
-      expect(homeRect(tester).top, closeTo(844 * 0.78, 2));
-
-      await tester.drag(handle, const Offset(0, 2000));
-      await tester.pumpAndSettle();
-      expect(manager.fullscreenPreference, isTrue);
-      expect(panelRect(tester).left, 0);
-      expect(find.byKey(const ValueKey('miniapp-dock')), findsOneWidget);
-      expect(contentInits['shop'], 1);
-    });
-
-    testWidgets('клавиатура при доле 0.78: чату ≥160, доля не меняется', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/13
-      await openSplit(tester);
-      await tester.drag(handle, Offset(0, 844 * 0.28));
-      await tester.pumpAndSettle();
-      final fraction = manager.splitFraction.value;
-
-      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      expect(homeRect(tester).height - 300, greaterThanOrEqualTo(160));
-      expect(manager.splitFraction.value, fraction);
-
-      tester.view.resetViewInsets();
-      await tester.pumpAndSettle();
-      expect(homeRect(tester).top, closeTo(844 * 0.78, 2));
-    });
-  });
-
-  group('Свёртка списка чатов до аватарок', () {
+  group('Панель на всё окно: три положения', () {
     final divider = find.byKey(const ValueKey('miniapp-host-divider'));
     double mainWidth(WidgetTester tester) =>
         tester.getSize(find.byKey(const ValueKey('probe-main'))).width;
 
-    Future<void> openSide(WidgetTester tester) async {
-      await pumpHost(tester, const Size(1440, 900), twoColumn: true);
-      manager.chatListCompactable.value = true;
+    /// Тянет бегунок так, чтобы левый край панели оказался в [toLeft].
+    Future<void> dragTo(WidgetTester tester, double toLeft) async {
+      final from = panelRect(tester).left;
+      final gesture = await tester.startGesture(Offset(from, 450));
+      await gesture.moveBy(Offset((toLeft - from) / 2, 0));
+      await tester.pump();
+      await gesture.moveBy(Offset((toLeft - from) / 2, 0));
+      await tester.pump();
+      await gesture.up();
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> openSide(WidgetTester tester, [double width = 1440]) async {
+      await pumpHost(tester, Size(width, 900), twoColumn: true);
       openShop();
       await tester.pumpAndSettle();
     }
 
-    testWidgets('панель тянется дальше двух колонок — список сворачивается', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/14 AC:RL-miniapp-adaptive-window/15
-      // AC:RL-miniapp-adaptive-window/16
+    for (final width in const [1300.0, 1440.0, 1920.0]) {
+      testWidgets('${width.toInt()}: левее середины — панель до колонки '
+          'пространств, приложение не перестраивается', (tester) async {
+        // AC:RL-miniapp-adaptive-window/30
+        await openSide(tester, width);
+        await dragTo(tester, width / 2 - 40);
+        final pinned = Size(width - manager.panelWidth.value, 900);
+
+        expect(manager.panelFilled.value, isTrue);
+        final rect = panelRect(tester);
+        expect(rect.left, LizaThemes.navRailWidth);
+        expect(rect.right, width);
+        expect(
+          homeSize,
+          pinned,
+          reason: 'приложение под панелью держит ширину закреплённого режима',
+        );
+        expect(homeInits, 1);
+        expect(contentInits['shop'], 1);
+        expect(find.byKey(const ValueKey('miniapp-fullscreen')), findsNothing);
+        expect(
+          find.byKey(const ValueKey('miniapp-host-divider')),
+          findsOneWidget,
+          reason: 'бегунок остаётся доступен',
+        );
+      });
+    }
+
+    testWidgets('скачок резкий и ровно на середине окна', (tester) async {
+      // AC:RL-miniapp-adaptive-window/31
       await openSide(tester);
-      expect(compact, isFalse);
-      expect(
-        mainWidth(tester),
-        LizaThemes.columnWidth + LizaThemes.navRailWidth,
-      );
+      await dragTo(tester, 730);
+      expect(manager.panelFilled.value, isFalse);
+      expect(panelRect(tester).left, 1440 - 599);
 
-      await tester.drag(divider, const Offset(-2000, 0));
-      await tester.pumpAndSettle();
-      expect(panelRect(tester).width, 1440 - kMiniAppCompactMinChildWidth);
-      expect(compact, isTrue);
-      expect(
-        mainWidth(tester),
-        LizaThemes.navRailWidth + 1 + kCompactChatListWidth,
-      );
-      expect(
-        columnModes,
-        everyElement(isTrue),
-        reason: 'builder шелла не переключается посреди перетаскивания',
-      );
-      expect(homeInits, 1);
-      expect(contentInits['shop'], 1);
+      await dragTo(tester, 710);
+      expect(manager.panelFilled.value, isTrue);
+      expect(panelRect(tester).left, LizaThemes.navRailWidth);
     });
 
-    testWidgets('гистерезис: сворачивается за 817, разворачивается с 841', (
+    testWidgets(
+      'потянуть обратно — резко в закреплённое с шириной по указателю',
+      (tester) async {
+        // AC:RL-miniapp-adaptive-window/32
+        await openSide(tester);
+        await dragTo(tester, 400);
+        expect(manager.panelFilled.value, isTrue);
+
+        await dragTo(tester, 900);
+        expect(manager.panelFilled.value, isFalse);
+        expect(panelRect(tester).left, 900);
+        expect(panelRect(tester).width, 540);
+        expect(contentInits['shop'], 1);
+
+        await dragTo(tester, 400);
+        await dragTo(tester, 2000);
+        expect(manager.panelFilled.value, isFalse);
+        expect(panelRect(tester).width, kMiniAppMinPanelWidth);
+      },
+    );
+
+    testWidgets(
+      'колонки аватарок нет: список чатов полный во всех положениях',
+      (tester) async {
+        // AC:RL-miniapp-adaptive-window/33
+        await openSide(tester);
+        const full = LizaThemes.columnWidth + LizaThemes.navRailWidth;
+        expect(mainWidth(tester), full);
+        await dragTo(tester, 600);
+        expect(mainWidth(tester), full);
+        await dragTo(tester, 1000);
+        expect(mainWidth(tester), full);
+        expect(
+          columnModes,
+          everyElement(isTrue),
+          reason: 'builder шелла не переключается посреди перетаскивания',
+        );
+      },
+    );
+
+    testWidgets('«назад» из режима на всё окно возвращает закреплённое', (
       tester,
     ) async {
-      // AC:RL-miniapp-adaptive-window/14
+      // AC:RL-miniapp-adaptive-window/35
       await openSide(tester);
-      Future<void> childTo(double width) async {
-        final current = 1440 - panelRect(tester).width;
-        await tester.drag(divider, Offset(width - current, 0));
-        await tester.pumpAndSettle();
-        expect(1440 - panelRect(tester).width, closeTo(width, 1));
-      }
-
-      await childTo(830);
-      expect(compact, isFalse, reason: 'зона гистерезиса — ещё полный');
-      await childTo(810);
-      expect(compact, isTrue);
-      await childTo(830);
-      expect(compact, isTrue, reason: 'зона гистерезиса — ещё свёрнут');
-      await childTo(845);
-      expect(compact, isFalse);
+      await dragTo(tester, 400);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(manager.panelFilled.value, isFalse);
+      expect(panelRect(tester).left, 1000);
     });
 
-    testWidgets('без открытого чата панель не шире порога двух колонок', (
+    testWidgets('закрытие miniApp сбрасывает режим на всё окно', (
       tester,
     ) async {
-      // AC:RL-miniapp-adaptive-window/18
+      // AC:RL-miniapp-adaptive-window/36
       await openSide(tester);
-      await tester.drag(divider, const Offset(-2000, 0));
-      await tester.pumpAndSettle();
-      expect(compact, isTrue);
-
-      manager.chatListCompactable.value = false;
-      await tester.pumpAndSettle();
-      expect(panelRect(tester).width, 1440 - kMiniAppMinChildWidth);
-      expect(compact, isFalse);
-      expect(
-        mainWidth(tester),
-        LizaThemes.columnWidth + LizaThemes.navRailWidth,
-      );
-    });
-
-    testWidgets('доля не съедает чат: потолок оставляет ≥160 px', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/12
-      await pumpHost(tester, const Size(390, 844));
-      openShop();
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
-      await tester.pumpAndSettle();
-      await tester.drag(
-        find.byKey(const ValueKey('miniapp-host-split-handle')),
-        Offset(0, 844 * 0.38),
-      );
-      await tester.pumpAndSettle();
-      expect(manager.fullscreenPreference, isFalse);
-      expect(
-        tester.getRect(find.byType(_ProbeHome)).height,
-        greaterThanOrEqualTo(160),
-      );
-    });
-
-    testWidgets('«развернуть» срабатывает и при дробной ширине окна', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/19
-      await pumpHost(tester, const Size(1209.6, 900), twoColumn: true);
-      manager.chatListCompactable.value = true;
-      openShop();
-      await tester.pumpAndSettle();
-      // 1209.6 < 1281 — по умолчанию на весь экран; закрепляем сбоку.
-      await tester.tap(find.byKey(const ValueKey('miniapp-dock')));
-      await tester.pumpAndSettle();
-      await tester.drag(divider, const Offset(-2000, 0));
-      await tester.pumpAndSettle();
-      expect(compact, isTrue);
-      manager.expandChatList();
-      await tester.pumpAndSettle();
-      expect(compact, isFalse);
-    });
-
-    testWidgets('«развернуть список» и закрытие miniApp возвращают полный', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/19
-      await openSide(tester);
-      await tester.drag(divider, const Offset(-2000, 0));
-      await tester.pumpAndSettle();
-      expect(compact, isTrue);
-
-      manager.expandChatList();
-      await tester.pumpAndSettle();
-      expect(compact, isFalse);
-      expect(panelRect(tester).width, 1440 - kMiniAppMinChildWidth - 1);
-
-      await tester.drag(divider, const Offset(-2000, 0));
-      await tester.pumpAndSettle();
-      expect(compact, isTrue);
+      await dragTo(tester, 400);
       manager.closeAll();
       await tester.pumpAndSettle();
-      expect(compact, isFalse);
-      expect(homeSize!.width, 1440);
-    });
-
-    testWidgets('колонка аватарок: тап открывает чат, «развернуть» зовётся', (
-      tester,
-    ) async {
-      // AC:RL-miniapp-adaptive-window/16
-      final rooms = [
-        Room(id: '!a:example.invalid', client: client),
-        Room(id: '!b:example.invalid', client: client),
-      ];
-      final tapped = <String>[];
-      var expanded = 0;
-      await tester.pumpWidget(
-        MaterialApp(
-          localizationsDelegates: L10n.localizationsDelegates,
-          supportedLocales: L10n.supportedLocales,
-          locale: const Locale('ru'),
-          home: Scaffold(
-            body: SizedBox(
-              width: kCompactChatListWidth,
-              child: CompactChatListColumn(
-                rooms: rooms,
-                activeChat: '!b:example.invalid',
-                filterActive: true,
-                onTap: (r) => tapped.add(r.id),
-                onContextAction: (_, _) {},
-                onExpand: () => expanded++,
-              ),
-            ),
-          ),
-        ),
-      );
+      openShop();
       await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-
-      await tester.tap(
-        find.byKey(const ValueKey('compact_chat_!a:example.invalid')),
-      );
-      await tester.pumpAndSettle();
-      expect(tapped, ['!a:example.invalid']);
-
-      await tester.tap(find.byKey(const ValueKey('compact-chat-list-expand')));
-      expect(expanded, 1);
-      final badge = tester.widget<Badge>(find.byType(Badge));
-      expect(
-        badge.isLabelVisible,
-        isTrue,
-        reason: 'активный фильтр не «Все» — точка на кнопке',
-      );
-      // Avatar (MxcImage) держит таймер повторной загрузки — дать ему истечь.
-      await tester.pumpWidget(const SizedBox());
-      await tester.pump(const Duration(seconds: 3));
+      expect(manager.panelFilled.value, isFalse);
+      expect(panelRect(tester).width, kMiniAppDefaultPanelWidth);
+      expect(divider, findsOneWidget);
     });
   });
 }
@@ -1044,7 +717,7 @@ class _ProbeHome extends StatefulWidget {
   final VoidCallback onInit;
   final VoidCallback onTitleTap;
   final ValueChanged<Size> onSize;
-  final void Function(bool columnMode, bool compact) onScope;
+  final ValueChanged<bool> onScope;
 
   const _ProbeHome({
     required this.onInit,
@@ -1068,10 +741,7 @@ class _ProbeHomeState extends State<_ProbeHome> {
   @override
   Widget build(BuildContext context) {
     widget.onSize(MediaQuery.sizeOf(context));
-    widget.onScope(
-      LizaThemes.isColumnMode(context),
-      MiniAppHostScope.compactChatListOf(context),
-    );
+    widget.onScope(LizaThemes.isColumnMode(context));
     // Сверху — кликабельный «заголовок чата» во всю ширину: в двойном экране
     // бегунок лежит поверх него и не должен красть тапы.
     if (!widget.twoColumn) {
@@ -1089,7 +759,6 @@ class _ProbeHomeState extends State<_ProbeHome> {
       );
     }
     return const TwoColumnLayout(
-      compactable: true,
       mainView: SizedBox.expand(key: ValueKey('probe-main')),
       sideView: SizedBox.expand(key: ValueKey('probe-side')),
     );

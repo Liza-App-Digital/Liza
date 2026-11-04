@@ -99,8 +99,8 @@ class MiniAppInstance {
 /// состояние развёрнутости. Уведомляет подписчиков (MiniAppOverlay)
 /// о любых изменениях.
 ///
-/// [apps], [hasApps], [activeApp], [isExpanded] — про то, что показано В ОКНЕ
-/// Лизы (панель, плашка). Открепленные в окна ОС — в [detachedApps], их окнами
+/// [apps], [hasApps], [activeApp] — про то, что показано В ОКНЕ
+/// Лизы (панель). Открепленные в окна ОС — в [detachedApps], их окнами
 /// управляет `MiniAppWindows`.
 class MiniAppManager extends ChangeNotifier {
   MiniAppManager._();
@@ -110,63 +110,28 @@ class MiniAppManager extends ChangeNotifier {
   bool isInteractiveVisible(MiniAppInstance app) =>
       app.sessionCurrent &&
       _apps.contains(app) &&
-      (app.detached
-          ? app.interactiveState.visible
-          : _isExpanded && _activeAppId == app.appId);
+      (app.detached ? app.interactiveState.visible : _activeAppId == app.appId);
 
   @override
   void notifyListeners() {
     for (final app in _apps.where((app) => !app.detached)) {
-      app.interactiveState.setVisible(_isExpanded && _activeAppId == app.appId);
+      app.interactiveState.setVisible(_activeAppId == app.appId);
     }
+    if (!hasApps) panelFilled.value = false;
     super.notifyListeners();
   }
 
   final List<MiniAppInstance> _apps = [];
   String? _activeAppId;
-  bool _isExpanded = false;
-  bool? _fullscreen;
 
   /// Ширина боковой панели на широком окне. ValueNotifier, а не поле с
   /// notifyListeners: при перетаскивании границы перестраивается только
   /// геометрия, а не весь overlay со всеми WebView.
   final panelWidth = ValueNotifier<double>(kMiniAppDefaultPanelWidth);
 
-  /// Доля высоты miniApp в двойном экране (бегунок на узком окне).
-  final splitFraction = ValueNotifier<double>(0.5);
-
-  /// Список чатов сейчас можно свернуть до аватарок: его публикует ChatList
-  /// (открыт чат, нет поиска). Только тогда панель тянется дальше порога двух
-  /// колонок — в настройках и на пустой /rooms сворачивать нечего.
-  final chatListCompactable = ValueNotifier<bool>(false);
-  Object? _compactableOwner;
-
-  void publishChatListCompactable(Object owner, bool value) {
-    _compactableOwner = owner;
-    chatListCompactable.value = value;
-  }
-
-  /// Снять признак, если его выставлял именно [owner]: новый ChatList мог уже
-  /// опубликовать своё значение в том же кадре.
-  void releaseChatListCompactable(Object owner) {
-    if (!identical(_compactableOwner, owner)) return;
-    _compactableOwner = null;
-    chatListCompactable.value = false;
-  }
-
-  // Ширина окна из последней раскладки хоста — для «развернуть список».
-  double _windowWidth = 0;
-
-  void reportWindowWidth(double width) => _windowWidth = width;
-
-  /// Кнопка «развернуть список» в колонке аватарок: ужать панель так, чтобы
-  /// список снова поместился целиком.
-  void expandChatList() {
-    if (_windowWidth <= 0) return;
-    // +1: при дробной ширине окна (масштаб 125%) разность может выйти
-    // 840.999… — ниже порога, и список так и не развернулся бы.
-    panelWidth.value = _windowWidth - kMiniAppMinChildWidth - 1;
-  }
+  /// Панель растянута на всё окно, кроме колонки пространств: бегунок
+  /// утянули за середину окна. Живёт, пока открыта хоть одна панель.
+  final panelFilled = ValueNotifier<bool>(false);
 
   /// Отдельные окна ОС поддержаны (macOS/Windows, выставляет `main`): mini App
   /// по умолчанию открывается окном, в шапке панели есть «Открепить».
@@ -184,22 +149,6 @@ class MiniAppManager extends ChangeNotifier {
       List.unmodifiable(_apps.where((a) => a.detached));
   bool get hasApps => _docked.isNotEmpty;
   int get appCount => _docked.length;
-  bool get isExpanded => _isExpanded;
-
-  /// Явный выбор пользователя «на весь экран» / «закреплённый» (боковая панель
-  /// на широком окне, двойной экран на узком). null — по умолчанию от ширины.
-  bool? get fullscreenPreference => _fullscreen;
-
-  /// Развёрнут ли miniApp на весь экран при данной ширине окна.
-  /// Планшет по умолчанию — на весь экран при любой ширине.
-  bool isFullscreenFor(double windowWidth, {bool tablet = false}) =>
-      _fullscreen ?? (tablet || windowWidth < kMiniAppDockedByDefaultMinWidth);
-
-  void setFullscreen(bool value) {
-    if (_fullscreen == value) return;
-    _fullscreen = value;
-    notifyListeners();
-  }
 
   String? get activeAppId => _activeAppId;
 
@@ -258,14 +207,12 @@ class MiniAppManager extends ChangeNotifier {
         _focusRequests.add(appId);
       } else {
         _activeAppId = appId;
-        _isExpanded = true;
       }
       notifyListeners();
       return;
     }
 
     final detached = windowsSupported && allowDetach;
-    if (!detached && !hasApps) _fullscreen = null;
     _apps.add(
       MiniAppInstance(
         appUrl: appUrl,
@@ -280,10 +227,7 @@ class MiniAppManager extends ChangeNotifier {
         detached: detached,
       ),
     );
-    if (!detached) {
-      _activeAppId = appId;
-      _isExpanded = true;
-    }
+    if (!detached) _activeAppId = appId;
     notifyListeners();
   }
 
@@ -301,10 +245,8 @@ class MiniAppManager extends ChangeNotifier {
   void attach(String appId, {String? startPath}) {
     final index = _apps.indexWhere((a) => a.appId == appId && a.detached);
     if (index < 0) return;
-    if (!hasApps) _fullscreen = null;
     _apps[index] = _apps[index].moved(appStartPath: startPath, detached: false);
     _activeAppId = appId;
-    _isExpanded = true;
     notifyListeners();
   }
 
@@ -313,22 +255,6 @@ class MiniAppManager extends ChangeNotifier {
   void _pickDockedActive() {
     if (activeApp != null) return;
     _activeAppId = _docked.lastOrNull?.appId;
-    if (_activeAppId == null) _isExpanded = false;
-  }
-
-  /// Сворачивает текущий miniApp в плашку.
-  void minimize() {
-    _isExpanded = false;
-    notifyListeners();
-  }
-
-  /// Разворачивает miniApp. Если указан appId — переключает на него.
-  void expand([String? appId]) {
-    if (appId != null && _docked.any((a) => a.appId == appId)) {
-      _activeAppId = appId;
-    }
-    _isExpanded = true;
-    notifyListeners();
   }
 
   /// Закрывает конкретный miniApp.
@@ -349,17 +275,6 @@ class MiniAppManager extends ChangeNotifier {
     }
   }
 
-  /// Закрывает всё, что в окне Лизы (крестик плашки); окна ОС не трогает.
-  void closeDocked() {
-    for (final app in _apps.where((a) => !a.detached)) {
-      app.interactiveState.invalidate();
-    }
-    _apps.removeWhere((a) => !a.detached);
-    _activeAppId = null;
-    _isExpanded = false;
-    notifyListeners();
-  }
-
   /// Закрывает все miniApp.
   void closeAll() {
     for (final app in _apps) {
@@ -367,7 +282,6 @@ class MiniAppManager extends ChangeNotifier {
     }
     _apps.clear();
     _activeAppId = null;
-    _isExpanded = false;
     notifyListeners();
   }
 
