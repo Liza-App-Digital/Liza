@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/app_config.dart';
+import 'package:liza/config/setting_keys.dart';
+import 'package:liza/widgets/online_dot.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_web_view.dart';
 import 'package:liza/pages/chat_list/knock_request_badge.dart';
@@ -123,6 +125,15 @@ class ChatListItem extends StatelessWidget {
     // LABA-2242: удалённый бот (аккаунт деактивирован → вышел из DM) читается как
     // «Удалённый аккаунт» + серый призрак, а не штатное «Пустой чат (был …)».
     final isDeletedBot = isDeletedBotDm(room);
+    // Точка «в сети» (Надежда 05.11): только живой человек в личном чате —
+    // без ботов (в т.ч. не-ИИ вроде «Службы поддержки»), удалённых ботов и
+    // чата с собой; уважает ту же настройку, что и лента сторис.
+    final showOnlineDot =
+        directChatMatrixId != null &&
+        directChatMatrixId != room.client.userID &&
+        !isDeletedBot &&
+        !Matrix.of(context).isBotOrAiUser(directChatMatrixId) &&
+        AppSettings.showPresences.value;
     final displayname = isDeletedBot
         ? L10n.of(context).deletedAccount
         : room.getLocalizedDisplayname(MatrixLocals(L10n.of(context)));
@@ -236,6 +247,15 @@ class ChatListItem extends StatelessWidget {
                             // независимых GestureDetector на Android.
                           ),
                         ),
+                        if (showOnlineDot)
+                          Positioned(
+                            right: 0,
+                            bottom: 0,
+                            child: OnlinePresenceDot(
+                              client: room.client,
+                              userId: directChatMatrixId,
+                            ),
+                          ),
                       ],
                     ),
                   ),

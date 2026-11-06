@@ -207,8 +207,12 @@ class NewGroupController extends State<NewGroup> {
       context.go('/rooms/$roomId/invite');
       return;
     }
-    final roomId = await Matrix.of(context).client.createGroupChat(
+    final client = Matrix.of(context).client;
+    final roomId = await client.createGroupChat(
       enableEncryption: enableEncryption,
+      // Ожидание sync в SDK без таймаута: не принёс sync комнату — экран
+      // создания висит вечно. Ждём своим ограниченным waitForRoomInSync.
+      waitForSync: false,
       visibility: groupCanBeFound
           ? sdk.Visibility.public
           : sdk.Visibility.private,
@@ -227,6 +231,7 @@ class NewGroupController extends State<NewGroup> {
           ),
       ],
     );
+    await waitForRoomInSync(client, roomId);
     if (!mounted) return;
     context.go('/rooms/$roomId/invite');
   }

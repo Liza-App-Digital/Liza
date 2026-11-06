@@ -96,7 +96,16 @@ COPY --from=builder /install /usr/local
 
 EXPOSE 5000/tcp
 
+# Liza: конфиг и креды — только снаружи (volume / k8s Secret), в образ не запекаются.
+# SYGNAL_CONF — путь к sygnal.yaml (штатная env Sygnal); пути keyfile (APNs .p8) и
+# service_account_file (FCM) указываются в самом yaml на смонтированные файлы.
+# Пример под Kubernetes — docker/sygnal.k8s.yaml.example.
+ENV SYGNAL_CONF=/sygnal/sygnal.yaml
+WORKDIR /sygnal
+
 ENTRYPOINT ["python", "-m", "sygnal.sygnal"]
 
+# Liza: в python:*-slim нет curl (из-за этого healthcheck был выключен в compose) —
+# проверяем /health штатным python. /health — liveness и readiness (без внешних зависимостей).
 HEALTHCHECK --start-period=25s --interval=15s --timeout=5s \
-  CMD curl --fail --silent --show-error http://localhost:5000/health || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=4)" || exit 1

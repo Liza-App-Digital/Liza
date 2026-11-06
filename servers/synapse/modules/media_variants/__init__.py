@@ -24,6 +24,8 @@ from synapse.events import EventBase
 from synapse.module_api import ModuleApi
 from synapse.types import StateMap
 
+from synapse_modules._ha import register_on_new_event_once
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,9 +54,8 @@ class MediaVariantsModule:
         self._min_bitrate_bps = config["min_bitrate_bps"]
         self._min_width = config["min_width"]
 
-        api.register_third_party_rules_callbacks(
-            on_new_event=self._on_new_event,
-        )
+        # HA: эффект выполняет один процесс инстанса (см. synapse_modules._ha).
+        register_on_new_event_once(api, self._on_new_event)
 
         logger.info(
             "MediaVariantsModule loaded (server=%s, transcoder=%s, "

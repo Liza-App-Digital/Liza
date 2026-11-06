@@ -97,6 +97,9 @@ class ChatTopologySyncGateModule:
                 self.forced_full_state.ensure_schema,
             )
 
+        # HA: намеренно во ВСЕХ процессах, не через synapse_modules._ha —
+        # колбэк инвалидирует per-process кэш HiddenRoomsLookup, побочных
+        # эффектов вне процесса у него нет.
         api.register_third_party_rules_callbacks(
             on_new_event=self._on_new_event,
         )

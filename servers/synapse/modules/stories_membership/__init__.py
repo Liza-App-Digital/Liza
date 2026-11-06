@@ -12,6 +12,8 @@ from typing import Any
 
 from twisted.internet import reactor
 
+from synapse_modules._ha import is_effects_process, register_on_new_event_once
+
 from ._logic import (
     LEGACY_STORIES_ROOM_NAME,
     STORIES_TAG,
@@ -67,9 +69,14 @@ class StoriesMembershipModule:
             None,
         )
 
-        api.register_third_party_rules_callbacks(
-            on_new_event=self._on_new_event,
-        )
+        # HA: подписки/отписки выполняет один процесс инстанса (см. synapse_modules._ha).
+        register_on_new_event_once(api, self._on_new_event)
+        # HA: модуль грузится в каждый процесс (main и все воркеры). Чистку и
+        # разовые backfill'ы гоняем в одном процессе — писателе push_rules (мьют
+        # идёт через add_push_rule, вне писателя он падает), иначе N воркеров
+        # делали бы одну и ту же работу N раз. См. synapse_modules._ha.
+        if not is_effects_process(api):
+            return
         # Периодическую чистку планируем только в боевом reactor.
         # В юнит-тестах reactor не запускается, callLater копится безвредно.
         reactor.callLater(self._cleanup_interval, self._run_cleanup_safe)

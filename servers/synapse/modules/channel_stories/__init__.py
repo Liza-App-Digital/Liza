@@ -24,6 +24,7 @@ event.content - это тот же creation_content, что клиент пер�
 import logging
 from typing import Any
 
+from synapse_modules._ha import register_on_new_event_once
 from synapse_modules.channel_stories._logic import (
     CHANNEL_STORIES_OF,
     CHAT_TYPE_KEY,
@@ -55,9 +56,8 @@ class ChannelStoriesModule:
         db_pool = self._main_store.db_pool if self._main_store is not None else None
         self._store = ChannelStoriesStore(db_pool)
 
-        api.register_third_party_rules_callbacks(
-            on_new_event=self._on_new_event,
-        )
+        # HA: раздачу членства выполняет один процесс инстанса (см. synapse_modules._ha).
+        register_on_new_event_once(api, self._on_new_event)
         api.run_as_background_process("channel_stories_schema", self._store.ensure_schema)
 
     async def _chat_type(self, room_id: str) -> str | None:

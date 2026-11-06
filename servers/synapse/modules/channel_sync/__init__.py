@@ -15,6 +15,7 @@ chat_topology_sync_gate/__init__.py:40-41 и stories_membership/__init__.py:55-5
 import logging
 from typing import Any
 
+from synapse_modules._ha import is_effects_process, register_on_new_event_once
 from synapse_modules.channel_sync._logic import (
     CHANNEL_DISCUSSION_STATE,
     DISCUSSION_CHAT_TYPE,
@@ -41,6 +42,7 @@ from synapse_modules.channel_sync._storage import MirrorStore
 
 logger = logging.getLogger(__name__)
 
+
 _CHAT_TYPE_KEY = "com.liza.chat.type"
 _CHANNEL_TYPE = "channel"
 _AI_LOCALPARTS = frozenset({"liza", "gpt", "deepseek"})
@@ -64,9 +66,9 @@ class ChannelSyncModule:
         db_pool = self._main_store.db_pool if self._main_store is not None else None
         self._store = MirrorStore(db_pool)
 
-        api.register_third_party_rules_callbacks(
-            on_new_event=self._on_new_event,
-        )
+        # HA: зеркалирование и раздачу доступа выполняет один процесс инстанса
+        # (писатель push_rules, см. synapse_modules._ha).
+        register_on_new_event_once(api, self._on_new_event)
         api.run_as_background_process("channel_sync_startup", self._on_startup)
 
     async def _on_startup(self) -> None:
@@ -80,6 +82,11 @@ class ChannelSyncModule:
             await self._store.ensure_schema()
         except Exception:
             logger.exception("channel_sync: не удалось создать схему")
+        # HA: схема идемпотентна и нужна каждому процессу, а миграцию каналов
+        # выполняет один процесс — писатель push_rules (миграция мьютит через
+        # add_push_rule), см. synapse_modules._ha.
+        if not is_effects_process(self._api):
+            return
         await self._migrate_channel_discussions()
 
     async def _channel_type(self, room_id: str) -> str | None:

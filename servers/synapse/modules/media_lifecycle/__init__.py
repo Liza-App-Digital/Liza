@@ -35,6 +35,8 @@ from synapse.events import EventBase
 from synapse.module_api import ModuleApi
 from synapse.types import StateMap
 
+from synapse_modules._ha import register_on_new_event_once
+
 logger = logging.getLogger(__name__)
 
 ALLOWED_SERVER_NAME = "dev.liza.laba.prodamus.tech"
@@ -109,9 +111,8 @@ class MediaLifecycleModule:
                 f"media_lifecycle: admin-token пуст ({self._mmr_admin_token_path})"
             )
 
-        api.register_third_party_rules_callbacks(
-            on_new_event=self._on_new_event,
-        )
+        # HA: эффект выполняет один процесс инстанса (см. synapse_modules._ha).
+        register_on_new_event_once(api, self._on_new_event)
 
         # Schema init — отложенный async-вызов на старте модуля.
         # ModuleApi не даёт sync-точку входа для DDL, поэтому шлём через

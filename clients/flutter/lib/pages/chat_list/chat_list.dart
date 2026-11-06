@@ -703,6 +703,11 @@ class ChatListController extends State<ChatList>
 
   void _processIncomingUris(Uri? uri, {bool isInitialLink = false}) async {
     if (uri == null) return;
+    // `ShareMedia-<bundleId>:share` — служебная ссылка расширения «Поделиться»:
+    // медиа приходит отдельным потоком `receive_sharing_intent`. app_links
+    // пересылает и её; без этого возврата fallback ниже делал `go('/rooms')`
+    // поверх выбора чата (жалоба 2026-11-05). iOS отдаёт схему в нижнем регистре.
+    if (uri.scheme.toLowerCase().startsWith('sharemedia-')) return;
     // На вебе initial-link — URL самой страницы, уже разобранный роутером
     // (webInitialLocation); иначе fallback ниже уводил бы с /opening в /rooms.
     if (!shouldHandleIncomingUri(isWeb: kIsWeb, isInitialLink: isInitialLink)) {

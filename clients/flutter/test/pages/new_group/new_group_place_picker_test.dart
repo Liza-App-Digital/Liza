@@ -22,6 +22,7 @@ import 'package:matrix/matrix.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/new_group/new_group.dart';
 import 'package:liza/utils/chat_topology.dart';
@@ -87,8 +88,19 @@ void main() {
     api = FakeMatrixApi();
     api.api['PUT'] ??= {};
     client = await prepareTestClient(loggedIn: true, httpClient: api);
+    // Виджет Matrix после первого sync запускает чистку призраков со случайной
+    // задержкой 0–30 с. Пространства из addSpace фейковый сервер не знает →
+    // «призраки» → clearCache, который под fake-async виснет навсегда
+    // (тест зависал ~1 раз из 4). Сервер «знает» все локальные комнаты.
+    api.api['GET']!['/client/v3/joined_rooms'] = (_) => {
+      'joined_rooms': [
+        for (final room in client.rooms)
+          if (room.membership == Membership.join) room.id,
+      ],
+    };
     client.backgroundSync = false;
     store = await SharedPreferences.getInstance();
+    await AppSettings.init(loadWebConfigFile: false);
   });
 
   tearDown(() async {

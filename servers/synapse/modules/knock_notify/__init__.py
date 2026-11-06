@@ -15,12 +15,14 @@ event_reports (LABA-2241): не патчить ядро push, когда дос�
 не поддерживают (channel_sync форсит invite) — событие knock там не возникает.
 
 Доступ только через публичный ModuleApi (is_mine, send_http_push_notification,
-register_third_party_rules_callbacks) — приватный api._hs не нужен, БД не трогаем.
+register_third_party_rules_callbacks) — БД не трогаем; api._hs читает только
+общий хелпер synapse_modules._ha (в каком процессе слать пуш).
 """
 
 import logging
 from typing import Any
 
+from synapse_modules._ha import register_on_new_event_once
 from synapse_modules.knock_notify._logic import (
     MEMBER_EVENT_TYPE,
     POWER_LEVELS_TYPE,
@@ -40,7 +42,8 @@ class KnockNotifyModule:
 
     def __init__(self, config: dict[str, Any], api: Any) -> None:
         self._api = api
-        api.register_third_party_rules_callbacks(on_new_event=self._on_new_event)
+        # HA: пуш шлёт один процесс инстанса, а не каждый (см. synapse_modules._ha).
+        register_on_new_event_once(api, self._on_new_event)
 
     async def _on_new_event(self, event: Any, state_events: Any) -> None:
         content = dict(getattr(event, "content", {}) or {})

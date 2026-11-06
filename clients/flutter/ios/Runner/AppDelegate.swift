@@ -2,6 +2,7 @@ import UIKit
 import Flutter
 import UserNotifications
 import flutter_foreground_task
+import receive_sharing_intent
 
 /// Заглушка `flutter_foreground_task` на iOS (жалоба 2026-09-22: «Сбой приложения»
 /// при каждом сворачивании, сборки 3764/3765). Плагин регистрирует обработчик
@@ -42,7 +43,44 @@ class SceneDelegate: FlutterSceneDelegate {
       _ = FlutterViewController(project: nil, nibName: nil, bundle: nil)
       appDelegate?.connectingWindowScene = nil
     }
+    // Холодный старт по ссылке «Поделиться» (см. `handleShareMediaURL`).
+    for context in connectionOptions.urlContexts {
+      LizaShareMedia.handle(context.url, initial: true)
+    }
     super.scene(scene, willConnectTo: session, options: connectionOptions)
+  }
+
+  override func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    for context in URLContexts {
+      LizaShareMedia.handle(context.url, initial: false)
+    }
+    super.scene(scene, openURLContexts: URLContexts)
+  }
+}
+
+/// Приём ссылки `ShareMedia-<bundleId>:share` от расширения «Liza Share».
+/// Под сценами iOS отдаёт схему URL в НИЖНЕМ регистре (`sharemedia-…`), а
+/// `receive_sharing_intent` сверяет префикс с учётом регистра
+/// (`hasMatchingSchemePrefix`) — и молча отбрасывает ссылку: после «Опубликовать»
+/// в Лизе открывался просто список чатов, медиа до Dart не доходило (жалоба
+/// 2026-11-05, сборки ≥3766, начиная с перехода на UIScene). Возвращаем схеме
+/// регистр, который ждёт плагин, и вызываем его напрямую — его собственный
+/// путь через fallback движка этот префикс больше не пропустит.
+enum LizaShareMedia {
+  static func handle(_ url: URL, initial: Bool) {
+    guard let bundleId = Bundle.main.bundleIdentifier,
+      let scheme = url.scheme,
+      scheme.caseInsensitiveCompare("\(kSchemePrefix)-\(bundleId)") == .orderedSame,
+      var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+    else { return }
+    components.scheme = "\(kSchemePrefix)-\(bundleId)"
+    guard let fixed = components.url else { return }
+    let plugin = SwiftReceiveSharingIntentPlugin.instance
+    if initial {
+      _ = plugin.application(UIApplication.shared, didFinishLaunchingWithOptions: [UIApplication.LaunchOptionsKey.url: fixed])
+    } else {
+      _ = plugin.application(UIApplication.shared, open: fixed, options: [:])
+    }
   }
 }
 

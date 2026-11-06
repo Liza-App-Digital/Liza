@@ -16,6 +16,7 @@ import '../../utils/stories/story_media_picker.dart';
 import '../../widgets/avatar.dart';
 import '../../widgets/horizontal_mouse_wheel.dart';
 import '../../widgets/matrix.dart';
+import '../../widgets/online_dot.dart';
 import '../../widgets/story_avatar_ring.dart';
 import 'story_viewer.dart';
 
@@ -35,7 +36,14 @@ class StoriesBar extends StatefulWidget {
   State<StoriesBar> createState() => _StoriesBarState();
 }
 
-class _StoriesBarState extends State<StoriesBar> {
+class _StoriesBarState extends State<StoriesBar>
+    with AutomaticKeepAliveClientMixin {
+  /// Лента живёт в ленивом SliverList списка чатов: без keep-alive при
+  /// прокрутке чатов вниз и обратно State пересоздавался — горизонтальная
+  /// позиция аватаров сбрасывалась в начало (виделось как «автоскролл»).
+  @override
+  bool get wantKeepAlive => true;
+
   /// Кеш активных сторисов: roomId -> список Event.
   /// Заполняется асинхронно, build читает синхронно.
   final Map<String, List<Event>> _activeByRoom = {};
@@ -43,6 +51,10 @@ class _StoriesBarState extends State<StoriesBar> {
   /// Активность личных чатов для блока «частые собеседники». Считается в
   /// [FrequentContactsCache] (TTL, без сети), build только ранжирует.
   List<DmActivity> _dmActivity = const [];
+
+  /// Все годные личные чаты (без окна и порога сообщений): из них берётся
+  /// категория «онлайн» — человек онлайн виден, даже если давно не переписывались.
+  List<DmActivity> _dmCandidates = const [];
 
   /// Ленивый singleton для текущего State-цикла.
   /// Инициализируется при первом вызове build, не пересоздаётся при перестройках.
@@ -164,7 +176,38 @@ class _StoriesBarState extends State<StoriesBar> {
         ..clear()
         ..addAll(result);
       _dmActivity = activity;
+      _dmCandidates = _collectDmCandidates(client);
     });
+  }
+
+  /// Личные чаты-кандидаты без сети: время — по последнему событию комнаты.
+  List<DmActivity> _collectDmCandidates(Client client) => [
+    for (final room in client.rooms)
+      if (isFrequentContactCandidateRoom(room))
+        DmActivity(
+          userId: room.directChatMatrixID!,
+          roomId: room.id,
+          messageCount: 0,
+          lastMessageTs: _liveLastTs(room),
+        ),
+  ];
+
+  /// Время последнего сообщения комнаты из живого состояния SDK (обновляется
+  /// каждым sync), а не из 10-минутного кэша активности.
+  int _liveLastTs(Room room) =>
+      room.lastEvent?.originServerTs.millisecondsSinceEpoch ?? 0;
+
+  /// [DmActivity] с временем не старше живого последнего события комнаты.
+  DmActivity _fresh(Client client, DmActivity d) {
+    final room = client.getRoomById(d.roomId);
+    final live = room == null ? 0 : _liveLastTs(room);
+    if (live <= d.lastMessageTs) return d;
+    return DmActivity(
+      userId: d.userId,
+      roomId: d.roomId,
+      messageCount: d.messageCount,
+      lastMessageTs: live,
+    );
   }
 
   bool _isBot(MatrixState matrix, String userId) =>
@@ -201,6 +244,7 @@ class _StoriesBarState extends State<StoriesBar> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final client = Matrix.of(context).client;
     final seenStore = _seenStoreOf(context);
     final myRoom = client.myStoriesRoom;
@@ -234,15 +278,23 @@ class _StoriesBarState extends State<StoriesBar> {
       for (final room in otherRooms) ?client.storyOwnerOf(room),
     };
     final online = rankOnlineContacts(
-      _dmActivity,
+      _dmCandidates,
       onlineSince: _onlineSince,
       excludedUserIds: shown,
       isBot: (id) => _isBot(matrix, id),
     );
+    final recentCutoff = DateTime.now()
+        .subtract(frequentContactsWindow)
+        .millisecondsSinceEpoch;
     final recent = rankRecentDialogs(
-      _dmActivity,
+      [
+        ..._dmActivity.map((d) => _fresh(client, d)),
+        // Новый диалог/сообщение, которых ещё нет в 10-минутном кэше.
+        ..._dmCandidates.where((d) => d.lastMessageTs >= recentCutoff),
+      ],
       excludedUserIds: {...shown, for (final c in online) c.userId},
     );
+    final onlineIds = {for (final c in online) c.userId};
     final frequent = [...online, ...recent];
 
     return SizedBox(
@@ -322,6 +374,7 @@ class _StoriesBarState extends State<StoriesBar> {
               _FrequentContactTile(
                 key: ValueKey('frequentContact:${contact.userId}'),
                 contact: contact,
+                online: onlineIds.contains(contact.userId),
               ),
           ],
         ),
@@ -330,14 +383,19 @@ class _StoriesBarState extends State<StoriesBar> {
   }
 }
 
-/// Тайл частого собеседника: аватар без кольца и без точки «в сети»
-/// (решение постановщика 14.10), тап — его личный чат. Аватар и имя — из
+/// Тайл частого собеседника: аватар без кольца, зелёная точка «в сети» только
+/// у категории «онлайн» (Надежда 05.11 — иначе порядок не проверить), тап — его личный чат. Аватар и имя — из
 /// member-стейта DM без сетевого профиля (тот же источник, что у авторов,
 /// RL-stories-bar-avatar).
 class _FrequentContactTile extends StatelessWidget {
-  const _FrequentContactTile({super.key, required this.contact});
+  const _FrequentContactTile({
+    super.key,
+    required this.contact,
+    required this.online,
+  });
 
   final DmActivity contact;
+  final bool online;
 
   @override
   Widget build(BuildContext context) {
@@ -360,6 +418,7 @@ class _FrequentContactTile extends StatelessWidget {
           size: StoriesBar.avatarSize,
         ),
         onTap: () => context.go('/rooms/${contact.roomId}'),
+        onlineDotKey: online ? ValueKey('onlineDot:${contact.userId}') : null,
       ),
     );
   }
@@ -371,7 +430,11 @@ class _StoryTile extends StatelessWidget {
     required this.onTap,
     required this.showAdd,
     this.onAddPressed,
+    this.onlineDotKey,
   });
+
+  /// Не null — рисуем зелёную точку «в сети» (ключ нужен стражу).
+  final Key? onlineDotKey;
 
   /// Аватарка уже с кольцом (Avatar.storyRing) - концентрично, бокс avatarSize.
   final Widget avatar;
@@ -394,6 +457,12 @@ class _StoryTile extends StatelessWidget {
           alignment: Alignment.bottomRight,
           children: [
             avatar,
+            if (onlineDotKey != null)
+              Positioned(
+                right: 2,
+                bottom: 2,
+                child: OnlineDot(key: onlineDotKey, size: 16),
+              ),
             if (showAdd)
               SizedBox(
                 width: 24,
