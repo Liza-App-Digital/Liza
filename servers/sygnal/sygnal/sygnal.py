@@ -369,7 +369,14 @@ def main() -> None:
     config = parse_config()
     config = merge_left_with_defaults(CONFIG_DEFAULTS, config)
     check_config(config)
-    custom_reactor = cast(SygnalReactor, asyncioreactor.AsyncioSelectorReactor())
+    # Liza: работаем на установленном глобальном реакторе, а не на втором экземпляре.
+    # С Twisted 26 новый AsyncioSelectorReactor() получает собственный event loop, а
+    # FileBodyProducer (тело POST в FCM) крутится через task.cooperate глобального
+    # реактора — его loop не запущен, тело не отправлялось, и FCM-запросы висели до
+    # таймаута Google (~240 с, outcome connection_failure / retry_exhausted).
+    from twisted.internet import reactor as installed_reactor
+
+    custom_reactor = cast(SygnalReactor, installed_reactor)
     sygnal = Sygnal(config, custom_reactor)
     sygnal.run()
 

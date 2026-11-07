@@ -146,6 +146,18 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
         attempt()
     }
 
+    /// Есть ли в Центре уведомлений уже показанный системой баннер события.
+    /// Разовая проверка (без опроса, в отличие от [retractDelivered]): её зовёт
+    /// локальный путь из /sync перед показом своего баннера. Матч строго по
+    /// `userInfo["event_id"]` — у локальных уведомлений плагина его нет.
+    static func isEventDelivered(eventId: String, completion: @escaping (Bool) -> Void) {
+        UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
+            completion(delivered.contains {
+                ($0.request.content.userInfo["event_id"] as? String) == eventId
+            })
+        }
+    }
+
     static func deliveredRoomIds(completion: @escaping ([String]) -> Void) {
         UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
             var rooms: [String] = []
@@ -413,6 +425,14 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
         case "deliveredRoomIds":
             MacApnsPushPlugin.deliveredRoomIds { rooms in
                 DispatchQueue.main.async { result(rooms) }
+            }
+        case "isEventDelivered":
+            let args = call.arguments as? [String: Any]
+            guard let eventId = args?["eventId"] as? String, !eventId.isEmpty else {
+                return result(false)
+            }
+            MacApnsPushPlugin.isEventDelivered(eventId: eventId) { found in
+                DispatchQueue.main.async { result(found) }
             }
         case "retractDelivered":
             let args = call.arguments as? [String: Any]

@@ -112,6 +112,16 @@ extension LocalNotificationsExtension on MatrixState {
       );
       return skip(PushReason.apnsHandled);
     }
+    // macOS у скрытого окна: система баннер уже показала, а onMessage ещё не
+    // дошёл (App Nap) — проверка выше этого не видит. Спрашиваем шторку.
+    if (PlatformInfos.isMacOS &&
+        (await backgroundPush?.isDeliveredByOs(event.eventId) ?? false)) {
+      Logs().v(
+        '[Push] Skip local notification: macOS already shows APNs banner',
+        event.eventId,
+      );
+      return skip(PushReason.apnsHandled);
+    }
     // Отметку «показано» шлём ДО загрузки аватара (та ждёт сеть до 3 с): иначе
     // опоздавший APNs-пуш успеет проскочить нативный гейт и дать второй баннер.
     backgroundPush?.markLocallyShown(event.eventId);

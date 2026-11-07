@@ -315,6 +315,20 @@ class ApnsPushService {
     }
   }
 
+  /// macOS: показан ли системой баннер события (матч по `userInfo["event_id"]`).
+  /// Ошибка/недоступный канал — `false`: лишний баннер безопаснее потерянного.
+  Future<bool> isEventDelivered(String eventId) async {
+    try {
+      return await _channel.invokeMethod<bool>('isEventDelivered', {
+            'eventId': eventId,
+          }) ??
+          false;
+    } catch (e) {
+      Logs().w('[APNs] isEventDelivered failed', e);
+      return false;
+    }
+  }
+
   /// Комнаты уже показанных системой уведомлений (`threadIdentifier`). Нужен,
   /// чтобы на resume снять баннеры тех комнат, которые пользователь успел
   /// прочитать на другом устройстве.

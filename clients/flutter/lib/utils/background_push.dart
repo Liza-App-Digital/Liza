@@ -418,6 +418,27 @@ class BackgroundPush {
   bool isNativelyReceived(String eventId) =>
       _nativelyReceivedEventIds.contains(eventId);
 
+  /// macOS: баннер события уже в Центре уведомлений, хотя
+  /// `didReceiveRemoteNotification` до процесса ещё не дошёл. У скрытого окна
+  /// (App Nap) он приходит с опозданием, [isNativelyReceived] молчит, и
+  /// догоняющий /sync рисовал второй баннер того же сообщения через минуту-две
+  /// (DM в фоне, 2026-11-06). Поэтому спрашиваем шторку напрямую; найден —
+  /// отмечаем как нативно полученное, чтобы опоздавший onMessage ушёл в дубль.
+  /// После `await` перепроверяем отметку: onMessage мог прийти, пока ждали.
+  /// [lookup] — точка подмены для тестов.
+  Future<bool> isDeliveredByOs(
+    String eventId, {
+    Future<bool> Function(String eventId)? lookup,
+  }) async {
+    if (eventId.isEmpty) return false;
+    if (isNativelyReceived(eventId)) return true;
+    final found = lookup != null
+        ? await lookup(eventId)
+        : await (apns?.isEventDelivered(eventId) ?? Future.value(false));
+    if (found) markNativelyReceived(eventId);
+    return found || isNativelyReceived(eventId);
+  }
+
   /// Нативный слой (NSE/AppDelegate) спрашивает ПЕРЕД показом баннера. Отвечаем
   /// «подавить», только когда это ДОКАЗУЕМО лишний баннер:
   ///   1. событие уже показано локальным уведомлением этого же клиента;

@@ -33,6 +33,11 @@ const _channel = MethodChannel('com.prodamus.laba.liza/apns');
 const _userA = '@nadezhda.rozental:nadezhda.liza.ru';
 const _room = '!room:nadezhda.liza.ru';
 
+/// `cancelDeliveredForReadRooms` на не-Apple платформе сразу выходит — на
+/// Linux-раннере CI эти проверки не имеют смысла.
+final _appleOnly =
+    (Platform.isIOS || Platform.isMacOS) ? false : 'только на iOS/macOS-хосте';
+
 /// Вызов натив → Dart по реальному каналу (как `channel.invokeMethod` из Swift).
 Future<void> _nativeCall(String method, Map<String, dynamic> args) {
   final messenger =
@@ -249,7 +254,7 @@ void main() {
       await done;
 
       expect(cancelled, [_room]);
-    });
+    }, skip: _appleOnly);
 
     test('resume: комната по-прежнему непрочитана → баннер остаётся', () async {
       await _syncRoom(a, notificationCount: 3);
@@ -270,6 +275,6 @@ void main() {
           .timeout(BackgroundPush.resumeSyncWait + const Duration(seconds: 2));
 
       expect(cancelled, [_room]);
-    });
+    }, skip: _appleOnly);
   });
 }
