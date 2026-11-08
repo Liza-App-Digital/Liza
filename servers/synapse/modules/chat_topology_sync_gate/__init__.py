@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 # и скрытые комнаты вырежутся из /sync у всех владельцев iOS/macOS.
 KNOWN_PLATFORMS = ("ios", "macos", "android", "windows", "web")
 
+# Платформы с порогом в version-gate. web там нет (сервис отвечает 404 «unknown
+# platform»): веб-клиент скрытые чаты не видит намеренно (решение 07.11), гейт
+# для него закрыт без запроса — иначе на каждый /sync веб-устройства уходил HTTP
+# в version-gate с 404 (≈200/ч warning в логах HS user).
+GATED_PLATFORMS = ("ios", "macos", "android", "windows")
+
 
 class ChatTopologySyncGateModule:
     @staticmethod
@@ -59,7 +65,7 @@ class ChatTopologySyncGateModule:
                 base_url=base_url,
                 http_get=self._http_get_json,
                 ttl_seconds=config["threshold_ttl_seconds"],
-                platforms=KNOWN_PLATFORMS,
+                platforms=GATED_PLATFORMS,
             )
         else:
             self.thresholds = None

@@ -132,3 +132,50 @@ def test_non_apple_request_has_no_bundle():
 
     asyncio.run(client.get_min_build("android"))
     assert seen == ["https://version.test/version/android"]
+
+
+def test_get_min_build_failure_is_cached_for_failure_ttl(monkeypatch):
+    calls = []
+    now = [1000.0]
+    monkeypatch.setattr("time.monotonic", lambda: now[0])
+
+    async def fake_get(url):
+        calls.append(url)
+        return None
+
+    client = VersionGateThresholds(
+        base_url="https://version.test",
+        http_get=fake_get,
+        platforms=("android",),
+        failure_ttl_seconds=30,
+    )
+    assert asyncio.run(client.get_min_build("android")) is None
+    assert asyncio.run(client.get_min_build("android")) is None
+    assert len(calls) == 1  # повтор в пределах failure TTL — без HTTP
+    now[0] += 31
+    assert asyncio.run(client.get_min_build("android")) is None
+    assert len(calls) == 2
+
+
+def test_get_min_build_failure_keeps_last_known_value(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("time.monotonic", lambda: now[0])
+    answers = [{"min_stories_build": 3675}, None]
+
+    async def fake_get(url):
+        return answers.pop(0)
+
+    client = VersionGateThresholds(
+        base_url="https://version.test", http_get=fake_get, platforms=("android",), ttl_seconds=60
+    )
+    assert asyncio.run(client.get_min_build("android")) == 3675
+    now[0] += 61
+    assert asyncio.run(client.get_min_build("android")) == 3675  # сбой — последнее известное
+    assert answers == []
+
+
+def test_module_does_not_gate_web_through_version_gate():
+    from .. import GATED_PLATFORMS, KNOWN_PLATFORMS
+
+    assert "web" in KNOWN_PLATFORMS
+    assert "web" not in GATED_PLATFORMS

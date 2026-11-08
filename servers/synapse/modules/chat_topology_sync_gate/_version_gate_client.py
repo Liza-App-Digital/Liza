@@ -32,10 +32,15 @@ class VersionGateThresholds:
         http_get: Callable[[str], Awaitable[Optional[dict]]],
         ttl_seconds: int = 300,
         platforms: tuple = ("ios", "macos", "android", "windows"),
+        failure_ttl_seconds: int = 30,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._http_get = http_get
         self._ttl_seconds = ttl_seconds
+        # Неудачный запрос тоже кэшируется, но коротко: без этого при недоступном
+        # version-gate HTTP уходил на каждый /sync каждого устройства платформы.
+        self._failure_ttl_seconds = failure_ttl_seconds
+        self._failed_ts: dict[str, float] = {}
         self._platforms = set(platforms)
         self._cache: dict[str, Optional[int]] = {}
         self._cache_ts: dict[str, float] = {}
@@ -44,8 +49,12 @@ class VersionGateThresholds:
         if platform not in self._platforms:
             return None
 
+        now = time.monotonic()
         last_fetch = self._cache_ts.get(platform)
-        if last_fetch is not None and (time.monotonic() - last_fetch) < self._ttl_seconds:
+        if last_fetch is not None and (now - last_fetch) < self._ttl_seconds:
+            return self._cache.get(platform)
+        last_failure = self._failed_ts.get(platform)
+        if last_failure is not None and (now - last_failure) < self._failure_ttl_seconds:
             return self._cache.get(platform)
 
         data = None
@@ -59,7 +68,10 @@ class VersionGateThresholds:
 
         if data is None:
             # fail-closed: используем последнее известное значение, если есть
+            self._failed_ts[platform] = time.monotonic()
             return self._cache.get(platform)
+
+        self._failed_ts.pop(platform, None)
 
         threshold = data.get("min_stories_build")
         self._cache[platform] = threshold
