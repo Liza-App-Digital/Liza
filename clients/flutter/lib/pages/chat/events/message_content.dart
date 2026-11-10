@@ -9,6 +9,9 @@ import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/events/poll.dart';
 import 'package:liza/pages/chat/events/video_player.dart';
+import 'package:liza/pages/chat/fluid_page_building_view.dart';
+import 'package:liza/pages/chat/mini_app_manager.dart';
+import 'package:liza/utils/fluid_page.dart';
 import 'package:liza/utils/formatting_text_controller.dart';
 import 'package:liza/utils/adaptive_bottom_sheet.dart';
 import 'package:liza/utils/date_time_extension.dart';
@@ -27,6 +30,7 @@ import 'bot_interactive_content.dart';
 import 'inline_bot_video.dart';
 import 'bot_invoice_content.dart';
 import 'cute_events.dart';
+import 'fluid_page_card.dart';
 import 'gallery.dart';
 import 'html_message.dart';
 import 'xl_buttons_content.dart';
@@ -356,6 +360,15 @@ class MessageContent extends StatelessWidget {
               timeOverlay: trailingTime,
             );
           case MessageTypes.File:
+            // Страница-ответ ИИ-бота: карточка вместо файла-вложения. Чужой
+            // `m.file` с таким же маркером остаётся обычным файлом.
+            if (isFluidPageEvent(event) &&
+                isFluidPageSender(
+                  event,
+                  isBotOrAiUser: Matrix.of(context).isBotOrAiUser,
+                )) {
+              return FluidPageCard(event: event, textColor: textColor);
+            }
             return MessageDownloadContent(
               event,
               textColor: textColor,
@@ -423,6 +436,26 @@ class MessageContent extends StatelessWidget {
                 buttonTextColor: buttonTextColor,
                 onInfoTab: onInfoTab,
                 fontSize: fontSize,
+              );
+            }
+            // Обещание страницы от бота: ход сборки вместо текста обещания.
+            final pagePending = fluidPagePending(event);
+            if (pagePending != null &&
+                isFluidPageSender(
+                  event,
+                  isBotOrAiUser: Matrix.of(context).isBotOrAiUser,
+                )) {
+              return FluidPageProgressCard(
+                pending: pagePending,
+                textColor: textColor,
+                onTap: () {
+                  if (!MiniAppManager.instance.sideLayout) return;
+                  MiniAppManager.instance.openPendingPage(
+                    event.room,
+                    pagePending,
+                    title: L10n.of(context).fluidPageBuilding,
+                  );
+                },
               );
             }
             if (event.content.containsKey(storyRefKey)) {

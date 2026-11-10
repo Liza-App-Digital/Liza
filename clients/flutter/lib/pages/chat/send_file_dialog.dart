@@ -74,7 +74,7 @@ Map<String, dynamic>? buildGalleryExtra({
 
 /// Делит подпись по `AppConfig.maxCaptionLength` (в графемах): влезает — идёт
 /// подписью к файлу; не влезает — подпись пустая, а весь текст уходит после
-/// файлов отдельным сообщением, как в Telegram (заявка №52). Делить сам текст
+/// файлов отдельным сообщением, как в популярных мессенджерах (заявка №52). Делить сам текст
 /// не нужно: обрезок под фото и продолжение в соседнем пузыре читаются хуже
 /// цельного сообщения.
 ({String caption, String? trailingText}) splitCaption(String text) =>
@@ -87,7 +87,7 @@ int albumCountFor(int total) =>
     (total + AppConfig.albumChunkSize - 1) ~/ AppConfig.albumChunkSize;
 
 /// `extraContent` файла [index] набора из [total], нарезанного на альбомы по
-/// `AppConfig.albumChunkSize` (как в Telegram, LABA-2621). [albumIds] — id
+/// `AppConfig.albumChunkSize` (как в популярных мессенджерах, LABA-2621). [albumIds] — id
 /// альбомов по порядку (`albumCountFor(total)` штук) или `null`, если набор
 /// не альбомный. Хвост из одного файла уходит обычным сообщением: альбом
 /// `n == 1` рисовался бы сеткой-одиночкой. Подпись — только на первом файле
@@ -982,7 +982,7 @@ class SendFileDialogState extends State<SendFileDialog> {
         },
       ).run();
       scaffoldMessenger.clearSnackBars();
-      // Текст, не влезший в подпись, — ПОСЛЕ всей серии (как в Telegram:
+      // Текст, не влезший в подпись, — ПОСЛЕ всей серии (как в популярных мессенджерах:
       // сначала вложения, потом текст) и только если ушёл хоть один файл.
       // Иначе вышло бы ровно «отправился только текст» из заявки №52.
       final text = trailingText;

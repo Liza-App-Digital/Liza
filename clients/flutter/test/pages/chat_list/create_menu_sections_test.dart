@@ -31,8 +31,11 @@ void main() {
   test('AC-1: ∀ роль — три раздела в порядке задания 18.10, без «Контактов»', () {
     for (final role in _Role.values) {
       expect(sections(role), [
-        [_A.newRequest, _A.group, _A.channel],
-        [_A.developers, if (_isDeveloper(role)) _A.mcp],
+        [_A.newRequest, _A.group],
+        [
+          _A.developers,
+          if (_isDeveloper(role)) ...[_A.channel, _A.mcp],
+        ],
         [_A.invite],
       ], reason: 'role=$role');
     }
@@ -45,27 +48,26 @@ void main() {
   });
 
   // AC:RL-create-menu-order-agent-entry/2
-  test(
-    'AC-2: «Создать канал» есть у всех ролей, канал создаётся приватным',
-    () {
-      for (final role in _Role.values) {
-        expect(
-          sections(role).first.contains(_A.channel),
-          isTrue,
-          reason: 'role=$role',
-        );
-      }
-      // Публичность канала — как у группы: по умолчанию выключена.
-      final newGroup = File(
-        'lib/pages/new_group/new_group.dart',
-      ).readAsStringSync();
-      expect(newGroup, contains('bool publicGroup = false;'));
-    },
-  );
+  // AC:RL-channels-developer-only/1
+  test('AC-2: «Создать канал» только у developer (каналы в разработке 06.11), '
+      'канал создаётся приватным', () {
+    for (final role in _Role.values) {
+      expect(
+        sections(role).expand((s) => s).contains(_A.channel),
+        _isDeveloper(role),
+        reason: 'role=$role',
+      );
+    }
+    // Публичность канала — как у группы: по умолчанию выключена.
+    final newGroup = File(
+      'lib/pages/new_group/new_group.dart',
+    ).readAsStringSync();
+    expect(newGroup, contains('bool publicGroup = false;'));
+  });
 
   // AC:RL-create-menu-order-agent-entry/4
-  test('AC-4: метку разработчика получает только МСР', () {
-    expect(developerOnlyActions, {_A.mcp});
+  test('AC-4: метку разработчика получают канал и МСР', () {
+    expect(developerOnlyActions, {_A.channel, _A.mcp});
     final header = File(
       'lib/pages/chat_list/chat_list_header.dart',
     ).readAsStringSync();

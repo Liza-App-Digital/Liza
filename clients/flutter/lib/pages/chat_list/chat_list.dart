@@ -13,6 +13,7 @@ import 'package:matrix/matrix.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat_list/chat_list_view.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_locals.dart';
@@ -143,9 +144,15 @@ bool roomMatchesFilter(
   }
 }
 
+/// Каналы и чаты-обсуждения в разработке — видит только роль developer
+/// (RL-channels-developer-only). Скрытие клиентское: подписка и членство на
+/// сервере не меняются.
+bool roomVisibleForRole(Room room, {required bool isDeveloper}) =>
+    isDeveloper || !(room.isChannel || room.isChannelDiscussion);
+
 /// Глобальный поиск (публичные чаты/каналы, компании, каталог людей) идёт
 /// только по непустому запросу: пустая лупа показывает свои чаты, как в
-/// Telegram, и не тянет чужие публичные комнаты (задание Надежды 18.10).
+/// популярных мессенджерах, и не тянет чужие публичные комнаты (задание Надежды 18.10).
 /// ledger:RL-chat-list-search-empty-and-order
 bool shouldRunGlobalSearch(String text) => text.trim().isNotEmpty;
 
@@ -258,9 +265,20 @@ class ChatListController extends State<ChatList>
     final matrix = Matrix.of(context);
     // Поиск — по всем своим чатам, независимо от выбранного чипа (как в TG);
     // сам activeFilter не сбрасываем — после выхода из поиска чип прежний.
-    final filter = isSearchMode ? ActiveFilter.allChats : activeFilter;
+    // Чип «Каналы» виден только developer: при потере роли выбранный чип
+    // исчезает из ряда, а список не должен остаться пустым.
+    final filter =
+        isSearchMode ||
+            (activeFilter == ActiveFilter.channels &&
+                !matrix.isCurrentUserDeveloper)
+        ? ActiveFilter.allChats
+        : activeFilter;
     final rooms = matrix.client.rooms
         .where((r) => !r.isHiddenChat)
+        .where(
+          (r) =>
+              roomVisibleForRole(r, isDeveloper: matrix.isCurrentUserDeveloper),
+        )
         .where(
           (r) => roomMatchesFilter(r, filter, isBotOrAi: matrix.isBotOrAiUser),
         )
@@ -863,6 +881,10 @@ class ChatListController extends State<ChatList>
 
   @override
   void dispose() {
+    // В dispose дерево заблокировано — хост пересчитается после кадра.
+    scheduleMicrotask(
+      () => MiniAppManager.instance.releaseChatListCompactable(this),
+    );
     _intentDataStreamSubscription?.cancel();
     _intentFileStreamSubscription?.cancel();
     _intentUriStreamSubscription?.cancel();
@@ -1301,7 +1323,26 @@ class ChatListController extends State<ChatList>
 
   @override
   Widget build(BuildContext context) {
+    _publishCompactable();
     return ChatListView(this);
+  }
+
+  // Можно ли свернуть список до аватарок ради широкой панели mini App: открыт
+  // чат (на пустой /rooms справа «Новый запрос», сворачивать незачем), нет
+  // поиска и пространства. Хост читает это после кадра — менять
+  // ValueNotifier посреди build нельзя.
+  bool get _compactable =>
+      activeChat != null && !isSearchMode && activeSpaceId == null;
+
+  void _publishCompactable() {
+    if (MiniAppManager.instance.chatListCompactable.value == _compactable) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        MiniAppManager.instance.publishChatListCompactable(this, _compactable);
+      }
+    });
   }
 
   void _hackyWebRTCFixForWeb() {

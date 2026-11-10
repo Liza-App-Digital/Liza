@@ -8,7 +8,7 @@ import 'package:liza/utils/stories/story_reactions.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/matrix.dart';
 
-/// Лист «Просмотры» своей сторис (LABA-2616, как в Telegram): зрители
+/// Лист «Просмотры» своей сторис (LABA-2616, как в популярных мессенджерах): зрители
 /// сегмента и эмодзи их реакций, отреагировавшие сверху. Вёрстка строки —
 /// как у «кто прочитал» в чате ([ReadReceiptsList]).
 Future<void> showStoryViewersSheet(

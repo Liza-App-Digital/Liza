@@ -4564,6 +4564,34 @@
   "@miniAppAttach": {},
   "miniAppMoveDuringPayment": "Wait until the payment is finished",
   "@miniAppMoveDuringPayment": {},
+  "chatListExpand": "Expand chat list",
+  "@chatListExpand": {},
+  "chatListCollapse": "Collapse chat list",
+  "@chatListCollapse": {},
+  "fluidPageOpen": "Open page",
+  "@fluidPageOpen": {},
+  "fluidPagePreview": "Page: {title}",
+  "@fluidPagePreview": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "fluidPageUnavailable": "Couldn't open the page",
+  "@fluidPageUnavailable": {},
+  "fluidPageBuilding": "Building a page",
+  "@fluidPageBuilding": {},
+  "fluidPageStageAnswer": "Preparing the answer",
+  "@fluidPageStageAnswer": {},
+  "fluidPageStagePhotos": "Finding photos",
+  "@fluidPageStagePhotos": {},
+  "fluidPageStageLayout": "Laying out the page",
+  "@fluidPageStageLayout": {},
+  "fluidPageReady": "Page is ready",
+  "@fluidPageReady": {},
+  "fluidPageFailed": "Couldn't build the page — the answer is in the chat",
+  "@fluidPageFailed": {},
   "miniAppResizePanel": "Drag to resize",
   "@miniAppResizePanel": {},
   "miniAppLoadTimeout": "Loading timed out",

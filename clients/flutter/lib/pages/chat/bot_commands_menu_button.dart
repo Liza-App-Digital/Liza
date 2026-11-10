@@ -5,7 +5,7 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/bot_commands_registry.dart';
 
-/// Кнопка меню команд бота (Telegram «Menu») слева от поля ввода в DM с ботом,
+/// Кнопка меню команд бота («Menu», как в популярных мессенджерах) слева от поля ввода в DM с ботом,
 /// задавшим `setMyCommands`. Слушает `BotCommandsRegistry.revision`: появляется,
 /// как только команды приехали. Тап — список команд; выбор вставляет
 /// `/<команда> ` в поле ввода (отправляет пользователь сам, можно дописать

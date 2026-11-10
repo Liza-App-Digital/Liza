@@ -119,10 +119,10 @@ void main() {
           expect(icon, findsNothing, reason: '$action');
           expect(text.style?.fontWeight, isNull, reason: '$action');
         }
-        // AC-14: метка разработчика — только у МСР.
+        // AC-14: метка разработчика — только у developer-пунктов (Канал, МСР).
         expect(
           mark,
-          action == CreateMenuAction.mcp ? findsOneWidget : findsNothing,
+          developerOnlyActions.contains(action) ? findsOneWidget : findsNothing,
           reason: '$action',
         );
       }

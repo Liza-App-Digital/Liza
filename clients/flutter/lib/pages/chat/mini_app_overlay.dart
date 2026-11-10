@@ -1,9 +1,12 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat/fluid_page_building_view.dart';
+import 'package:liza/pages/chat/fluid_page_view.dart';
 import 'package:liza/pages/chat/mini_app_host_api.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_web_view.dart';
@@ -83,11 +86,14 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
   static const _closeMinFlingDistance = 60.0;
   static const _velocityThreshold = 200.0;
 
-  // Тянут границу боковой панели — поверх WebView кладём щит, иначе
-  // platform view / iframe перехватывает мышь, и граница «залипает».
-  bool _resizing = false;
+  // Тянут границу боковой панели — поверх WebView кладём щит, а сам WebView
+  // прячем (panelResizing): щит Flutter нативный вид не перекрывает, и
+  // отпускание мыши над страницей уходило в WebView — граница «залипала».
+  bool get _resizing => _manager.panelResizing.value;
+  set _resizing(bool value) => _manager.panelResizing.value = value;
   double _resizeStartLeft = 0;
   double _resizeDx = 0;
+  bool _globalRouteAdded = false;
 
   @override
   void initState() {
@@ -106,6 +112,8 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
 
   @override
   void dispose() {
+    _removeGlobalRoute();
+    _manager.panelResizing.value = false;
     WidgetsBinding.instance.removeObserver(this);
     _manager.removeListener(_onManagerChanged);
     _slideController.dispose();
@@ -190,7 +198,29 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
   void _onResizeStart(double windowWidth) {
     _resizeStartLeft = _panelLeft(windowWidth);
     _resizeDx = 0;
+    if (!_globalRouteAdded) {
+      GestureBinding.instance.pointerRouter.addGlobalRoute(_onGlobalPointer);
+      _globalRouteAdded = true;
+    }
     setState(() => _resizing = true);
+  }
+
+  /// Страховка поверх распознавателя: любое отпускание или наведение без
+  /// нажатой кнопки завершает перетаскивание, даже если up-событие распознаватель
+  /// не получил.
+  void _onGlobalPointer(PointerEvent event) {
+    if (!_resizing) return;
+    if (event is PointerUpEvent ||
+        event is PointerCancelEvent ||
+        event is PointerHoverEvent) {
+      _onResizeEnd();
+    }
+  }
+
+  void _removeGlobalRoute() {
+    if (!_globalRouteAdded) return;
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(_onGlobalPointer);
+    _globalRouteAdded = false;
   }
 
   void _onResize(double dx, double windowWidth) {
@@ -207,7 +237,8 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
   }
 
   void _onResizeEnd() {
-    if (_resizing) setState(() => _resizing = false);
+    _removeGlobalRoute();
+    if (_resizing && mounted) setState(() => _resizing = false);
   }
 
   @override
@@ -220,9 +251,12 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     final mode = miniAppLayoutModeFor(size.width, tablet: tablet);
     // Свежий снимок темы — для отдельных окон ОС, которые откроются потом.
     MiniAppWindows.instance.theme = Theme.of(context);
+    _manager.sideLayout = mode == MiniAppLayoutMode.side;
     // Режим сменился посреди перетаскивания границы (поворот, ширина окна) —
     // ручка размонтирована и onEnd не придёт: не оставляем висеть щит.
-    if (mode == MiniAppLayoutMode.sheet) _resizing = false;
+    if (mode == MiniAppLayoutMode.sheet && _resizing) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _onResizeEnd());
+    }
 
     final panel = hasApps
         ? KeyedSubtree(
@@ -264,6 +298,8 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
         _slideController,
         _manager.panelWidth,
         _manager.panelFilled,
+        _manager.chatListCompactable,
+        _manager.chatListExpanded,
       ]),
       builder: (context, _) {
         final t = _slideController.value;
@@ -321,6 +357,13 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
                 data: childMq,
                 child: MiniAppHostScope(
                   forceColumnMode: mode == MiniAppLayoutMode.side,
+                  // Открытая HTML-страница забирает ширину у списка чатов: он
+                  // сжимается до аватарок, пока страница не закрыта.
+                  compactChatList:
+                      mode == MiniAppLayoutMode.side &&
+                      _manager.activeApp?.kind == MiniAppKind.html &&
+                      _manager.chatListCompactable.value &&
+                      !_manager.chatListExpanded.value,
                   child: widget.child,
                 ),
               ),
@@ -449,10 +492,12 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
     _manager.detach(app.appId, startPath: startPath);
   }
 
-  GlobalKey _keyFor(String contentKey) {
+  GlobalKey _keyFor(MiniAppInstance app) {
     return _contentKeys.putIfAbsent(
-      contentKey,
-      () => GlobalKey<MiniAppWebViewContentState>(),
+      app.contentKey,
+      () => app.kind == MiniAppKind.html
+          ? GlobalKey()
+          : GlobalKey<MiniAppWebViewContentState>(),
     );
   }
 
@@ -476,7 +521,11 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
               wide: scope.wide,
               onDragUpdate: scope.onDragUpdate,
               onDragEnd: scope.onDragEnd,
-              onDetach: miniAppDetachAllowed(context) ? _detachActiveApp : null,
+              onDetach:
+                  miniAppDetachAllowed(context) &&
+                      _manager.activeApp?.kind != MiniAppKind.html
+                  ? _detachActiveApp
+                  : null,
             ),
             Expanded(child: _buildContentStack()),
           ],
@@ -500,17 +549,24 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
     if (apps.isEmpty) return const SizedBox.shrink();
 
     final debugBuilder = MiniAppOverlay.debugContentBuilder;
-    return IndexedStack(
+    final stack = IndexedStack(
       index: activeIndex >= 0 ? activeIndex : 0,
       children: [
         for (final app in apps)
           debugBuilder != null
               ? KeyedSubtree(
-                  key: _keyFor(app.contentKey),
+                  key: _keyFor(app),
                   child: debugBuilder(context, app),
                 )
+              : app.kind == MiniAppKind.html
+              ? app.pageEvent == null
+                    ? FluidPageBuildingView(
+                        key: _keyFor(app),
+                        pendingId: app.appUrl.substring('pending:'.length),
+                      )
+                    : FluidPageView(key: _keyFor(app), event: app.pageEvent!)
               : MiniAppWebViewContent(
-                  key: _keyFor(app.contentKey),
+                  key: _keyFor(app),
                   appUrl: app.appUrl,
                   appId: app.appId,
                   appName: app.appName,
@@ -534,6 +590,23 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
                   onClose: () => _manager.close(app.appId),
                 ),
       ],
+    );
+    // Offstage, а не удаление: WebView остаётся живым (страница, корзина),
+    // просто не рисуется, пока тянут границу.
+    return ValueListenableBuilder<bool>(
+      valueListenable: _manager.panelResizing,
+      child: stack,
+      builder: (context, resizing, stack) => Stack(
+        fit: StackFit.expand,
+        children: [
+          Offstage(offstage: resizing, child: stack),
+          if (resizing)
+            ColoredBox(
+              key: const ValueKey('miniapp-resize-placeholder'),
+              color: Theme.of(context).colorScheme.surfaceContainerLow,
+            ),
+        ],
+      ),
     );
   }
 }
@@ -654,6 +727,26 @@ class _MiniAppHeader extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  if (app?.kind == MiniAppKind.html &&
+                      mode == MiniAppLayoutMode.side)
+                    ValueListenableBuilder<bool>(
+                      valueListenable: manager.chatListExpanded,
+                      builder: (context, expanded, _) => IconButton(
+                        key: const ValueKey('fluid-page-chatlist-toggle'),
+                        tooltip: expanded
+                            ? L10n.of(context).chatListCollapse
+                            : L10n.of(context).chatListExpand,
+                        icon: Icon(
+                          expanded
+                              ? Icons.keyboard_double_arrow_left
+                              : Icons.keyboard_double_arrow_right,
+                          size: 20,
+                        ),
+                        onPressed: expanded
+                            ? manager.collapseChatList
+                            : manager.expandChatList,
+                      ),
+                    ),
                   if (onDetach != null)
                     IconButton(
                       key: const ValueKey('miniapp-detach'),

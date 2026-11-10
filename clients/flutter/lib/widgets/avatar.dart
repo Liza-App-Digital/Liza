@@ -118,6 +118,21 @@ class Avatar extends StatelessWidget {
             side: border ?? BorderSide.none,
           );
 
+    final letterFallback = Container(
+      decoration: BoxDecoration(color: fallbackBackground),
+      alignment: Alignment.center,
+      child: Text(
+        fallbackLetters,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontFamily: 'RobotoMono',
+          color: fallbackText,
+          fontWeight: FontWeight.bold,
+          fontSize: (innerSize / 2.5).roundToDouble(),
+        ),
+      ),
+    );
+
     final container = Stack(
       children: [
         SizedBox(
@@ -150,23 +165,9 @@ class Avatar extends StatelessWidget {
                     fit: BoxFit.cover,
                     width: innerSize,
                     height: innerSize,
+                    failedBuilder: (_) => letterFallback,
                     placeholder: (_) => noPic
-                        ? Container(
-                            decoration: BoxDecoration(
-                              color: fallbackBackground,
-                            ),
-                            alignment: Alignment.center,
-                            child: Text(
-                              fallbackLetters,
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontFamily: 'RobotoMono',
-                                color: fallbackText,
-                                fontWeight: FontWeight.bold,
-                                fontSize: (innerSize / 2.5).roundToDouble(),
-                              ),
-                            ),
-                          )
+                        ? letterFallback
                         : Center(
                             child: Icon(
                               Icons.person_2,

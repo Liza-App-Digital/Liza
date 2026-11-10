@@ -10,7 +10,7 @@ import 'package:liza/widgets/avatar.dart';
 
 enum _LoadState { loading, data, forbidden, error }
 
-/// «Результаты опроса» Liza News, как в Telegram: по каждому варианту — число
+/// «Результаты опроса» Liza News, как в популярных мессенджерах: по каждому варианту — число
 /// голосов и кто голосовал. Итоги отдаёт бот и только разработчикам из списка
 /// редакции; эта страница — лишь витрина его ответа.
 class NewsPollResultsPage extends StatefulWidget {

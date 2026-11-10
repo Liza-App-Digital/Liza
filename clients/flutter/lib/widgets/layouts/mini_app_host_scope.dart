@@ -10,8 +10,12 @@ class MiniAppHostScope extends InheritedWidget {
   /// сменил бы builder посреди перетаскивания (дубль GlobalKey, потеря чата).
   final bool forceColumnMode;
 
+  /// Список чатов свёрнут до колонки аватарок, чтобы дать место панели.
+  final bool compactChatList;
+
   const MiniAppHostScope({
     required this.forceColumnMode,
+    required this.compactChatList,
     required super.child,
     super.key,
   });
@@ -22,7 +26,11 @@ class MiniAppHostScope extends InheritedWidget {
   static bool forceColumnModeOf(BuildContext context) =>
       _of(context)?.forceColumnMode ?? false;
 
+  static bool compactChatListOf(BuildContext context) =>
+      _of(context)?.compactChatList ?? false;
+
   @override
   bool updateShouldNotify(MiniAppHostScope oldWidget) =>
-      forceColumnMode != oldWidget.forceColumnMode;
+      forceColumnMode != oldWidget.forceColumnMode ||
+      compactChatList != oldWidget.compactChatList;
 }

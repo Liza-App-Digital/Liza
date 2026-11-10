@@ -14,6 +14,7 @@ import 'package:liza/utils/bot_miniapp_registry.dart';
 import 'package:liza/utils/miniapp_room.dart';
 import 'package:liza/widgets/mini_app_open_pill.dart';
 import 'package:liza/utils/chat_topology.dart';
+import 'package:liza/utils/fluid_page.dart';
 import 'package:liza/utils/forced_list_artifact.dart';
 import 'package:liza/utils/matrix_sdk_extensions/filtered_timeline_extension.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_locals.dart';
@@ -475,14 +476,15 @@ class ChatListItem extends StatelessWidget {
                                         (isDirectChat
                                             ? L10n.of(context).newChatRequest
                                             : L10n.of(context).inviteGroupChat)
-                                  : stripMatrixMentions(
-                                      snapshot.data ??
-                                          L10n.of(context).noMessagesYet,
-                                      room,
-                                      handles: Matrix.of(
-                                        context,
-                                      ).userHandleService,
-                                    ),
+                                  : _fluidPagePreview(context, lastEvent) ??
+                                        stripMatrixMentions(
+                                          snapshot.data ??
+                                              L10n.of(context).noMessagesYet,
+                                          room,
+                                          handles: Matrix.of(
+                                            context,
+                                          ).userHandleService,
+                                        ),
                               softWrap: false,
                               maxLines: room.notificationCount >= 1 ? 2 : 1,
                               overflow: TextOverflow.ellipsis,
@@ -559,6 +561,17 @@ class ChatListItem extends StatelessWidget {
   /// Пилюля «Открыть» на строке чата с ботом, у которого закреплён mini App.
   /// Показывается только когда реестр вернул конфиг для партнёра-бота DM;
   /// иначе — пусто. `ensureLoaded` дедуплицируется (один запрос на homeserver).
+  /// Страница-ответ ИИ — «Страница: <название>», а не «Файл от Liza».
+  static String? _fluidPagePreview(BuildContext context, Event? lastEvent) {
+    final title = fluidPagePreviewTitle(
+      lastEvent,
+      isBotOrAiUser: Matrix.of(context).isBotOrAiUser,
+    );
+    if (title == null) return null;
+    final l10n = L10n.of(context);
+    return title.isEmpty ? l10n.fluidPageOpen : l10n.fluidPagePreview(title);
+  }
+
   Widget _miniAppOpenPill(BuildContext context) => ValueListenableBuilder<int>(
     valueListenable: BotMiniAppRegistry.instance.revision,
     builder: (context, _, _) {

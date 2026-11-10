@@ -367,6 +367,15 @@ class _StoriesBarState extends State<StoriesBar>
                       storyRing: ring == StoryRingState.none ? null : ring,
                     ),
                     onTap: () => _openViewer(room.id),
+                    // Автор активной сторис тоже может быть онлайн: точка
+                    // рисуется и у него (у каналов и ботов её нет).
+                    onlineDotKey:
+                        channelId == null &&
+                            owner != null &&
+                            _onlineSince.containsKey(owner) &&
+                            !_isBot(matrix, owner)
+                        ? ValueKey('onlineDot:$owner')
+                        : null,
                   );
                 },
               ),

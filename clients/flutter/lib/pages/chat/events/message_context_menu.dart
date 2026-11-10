@@ -17,6 +17,7 @@ import 'package:liza/utils/adaptive_bottom_sheet.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/copy_media_eligibility.dart';
 import 'package:liza/utils/file_description.dart';
+import 'package:liza/utils/fluid_page.dart';
 import 'package:liza/utils/message_link.dart';
 import 'package:liza/utils/stories/story_model.dart';
 import 'package:liza/widgets/developer_mark.dart';
@@ -249,6 +250,7 @@ class _MessageContextMenu extends StatelessWidget {
     if (!contentProtected &&
         !isBadEncrypted &&
         !event.redacted &&
+        !isFluidPageEvent(event) &&
         hasCopyableText) {
       // Если пользователь выделил кусок в живом слое — копируем ИМЕННО его, а не
       // всё событие (жалоба 2026-09-08: «копирую фразу — копируется всё

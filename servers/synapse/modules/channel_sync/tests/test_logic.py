@@ -105,7 +105,7 @@ def test_discussion_settings_for_public_channel():
 
 def test_discussion_settings_closed_channel_is_restricted_to_subscribers():
     """AC:RL-channel-discussion-restricted-join/1 — закрытый канал: вход в чат по
-    членству в КАНАЛЕ, без инвайта (механика Telegram, Надежда 15.10). Любое
+    членству в КАНАЛЕ, без инвайта (механика популярных мессенджеров, Надежда 15.10). Любое
     не-public правило, включая неизвестное, — fail-safe в приватность: чат
     никогда не становится public."""
     for rule in ("invite", "knock", "restricted", "knock_restricted", None, "weird"):

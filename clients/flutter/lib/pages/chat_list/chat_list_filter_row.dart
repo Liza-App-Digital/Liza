@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:liza/pages/chat_list/chat_list.dart';
+import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/horizontal_mouse_wheel.dart';
 
 /// Ряд чипов-вкладок списка чатов. Порядок меняется зажатием чипа и
@@ -21,12 +22,20 @@ class ChatListFilterRow extends StatefulWidget {
     required this.onSelected,
     required this.store,
     required this.userId,
+    this.showChannels = true,
+    this.developerMark = false,
   });
 
   final ActiveFilter activeFilter;
   final ValueChanged<ActiveFilter> onSelected;
   final SharedPreferences store;
   final String? userId;
+
+  /// Чип «Каналы» — только developer (RL-channels-developer-only).
+  final bool showChannels;
+
+  /// Метка «Р» на чипе «Каналы» (раздел виден только роли developer).
+  final bool developerMark;
 
   @override
   State<ChatListFilterRow> createState() => _ChatListFilterRowState();
@@ -65,11 +74,15 @@ class _ChatListFilterRowState extends State<ChatListFilterRow> {
     );
   }
 
+  bool _isShown(ActiveFilter f) =>
+      widget.showChannels || f != ActiveFilter.channels;
+
   void _onReorder(int oldIndex, int newIndex) {
-    final movable = _order.skip(1).toList();
+    final movable = _order.skip(1).where(_isShown).toList();
+    final concealed = _order.skip(1).where((f) => !_isShown(f));
     if (newIndex > oldIndex) newIndex--;
     movable.insert(newIndex, movable.removeAt(oldIndex));
-    setState(() => _order = [ActiveFilter.allChats, ...movable]);
+    setState(() => _order = [ActiveFilter.allChats, ...movable, ...concealed]);
     final userId = widget.userId;
     if (userId == null) return;
     widget.store.setStringList(
@@ -81,12 +94,21 @@ class _ChatListFilterRowState extends State<ChatListFilterRow> {
   Widget _chip(ActiveFilter filter) => FilterChip(
     selected: filter == widget.activeFilter,
     onSelected: (_) => widget.onSelected(filter),
-    label: Text(filter.toLocalizedString(context)),
+    label: filter == ActiveFilter.channels && widget.developerMark
+        ? Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(filter.toLocalizedString(context)),
+              const SizedBox(width: 6),
+              const DeveloperMark(),
+            ],
+          )
+        : Text(filter.toLocalizedString(context)),
   );
 
   @override
   Widget build(BuildContext context) {
-    final movable = _order.skip(1).toList();
+    final movable = _order.skip(1).where(_isShown).toList();
     return SizedBox(
       height: 64,
       child: HorizontalMouseWheel(
@@ -96,7 +118,7 @@ class _ChatListFilterRowState extends State<ChatListFilterRow> {
           scrollDirection: Axis.horizontal,
           buildDefaultDragHandles: false,
           padding: const EdgeInsets.only(right: 12),
-          // «Все» — header: прокручивается вместе с рядом (как в Telegram),
+          // «Все» — header: прокручивается вместе с рядом (как в популярных мессенджерах),
           // но в индексы onReorder не входит, поэтому перед ней ничего не встанет.
           header: Padding(
             padding: const EdgeInsets.only(left: 16, right: 4),

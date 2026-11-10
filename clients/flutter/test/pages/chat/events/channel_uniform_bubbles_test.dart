@@ -151,6 +151,7 @@ void main() {
       expect(
         chatCompact.contains(
           'bool canEditEvent(Event event) => !isArchived && '
+          '!isFluidPageEvent(event) && '
           'event.status.isSent && '
           'currentRoomBundle.any((cl) => event.senderId == cl?.userID)',
         ),

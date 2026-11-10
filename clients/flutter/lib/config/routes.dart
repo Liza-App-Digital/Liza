@@ -313,6 +313,7 @@ abstract class AppRoutes {
         LizaThemes.isColumnMode(context) &&
                 state.fullPath?.startsWith('/rooms/settings') == false
             ? TwoColumnLayout(
+                compactable: true,
                 mainView: ChatList(
                   activeChat: state.pathParameters['roomid'],
                   activeSpace: state.uri.queryParameters['spaceId'],
@@ -419,7 +420,13 @@ abstract class AppRoutes {
                 state,
                 const NewGroup(createGroupType: CreateGroupType.channel),
               ),
-              redirect: loggedOutRedirect,
+              redirect: (context, state) {
+                final loggedOut = loggedOutRedirect(context, state);
+                if (loggedOut is String) return loggedOut;
+                // Каналы в разработке — только developer (RL-channels-developer-only).
+                if (!Matrix.of(context).isCurrentUserDeveloper) return '/rooms';
+                return null;
+              },
             ),
             ShellRoute(
               pageBuilder: (context, state, child) => defaultPageBuilder(
@@ -996,6 +1003,12 @@ Future<String> _handleChannelHandle(BuildContext context, String handle) async {
   if (!isLogged) {
     PendingDeepLinkStore.set(DeepLinkKind.channel, handle);
     return '/home';
+  }
+
+  // Каналы в разработке — только developer (RL-channels-developer-only).
+  if (!Matrix.of(context).isCurrentUserDeveloper) {
+    _showChannelLinkError((l10n) => l10n.channelLinkNotFound);
+    return '/rooms';
   }
 
   if (validateChannelHandle(normalized) != null) {

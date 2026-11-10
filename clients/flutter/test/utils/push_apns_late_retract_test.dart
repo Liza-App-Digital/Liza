@@ -18,6 +18,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/utils/background_push.dart';
+import 'package:liza/utils/push_journal.dart';
 
 import 'per_user_fake_api.dart';
 import 'test_client.dart';
@@ -307,5 +308,35 @@ void main() {
 
     expect(out.retract, 'not-found');
     expect(probe.delivered, isEmpty);
+  }, skip: !Platform.isMacOS);
+  // AC:RL-macos-push-late-apns-retract/12
+  test('исход retract пишется в журнал при suppressLocal и suppressRead: '
+      'found:<мс> / missed, без retract-записи при show', () async {
+    final jr = PushJournal.forTest();
+    Future<void> run(String id, int? ms) async {
+      probe.retractMs = ms;
+      await push.handleApnsMessage(
+        _push(id),
+        retract: probe.retract,
+        deliver: probe.deliver,
+        report: probe.report,
+        journal: jr,
+      );
+    }
+
+    push.markLocallyShown('\$l1');
+    await run('\$l1', 280);
+    push.markLocallyShown('\$l2');
+    await run('\$l2', null);
+    await _syncEvent(a, _room, '\$u1', notificationCount: 1);
+    await run('\$u1', 100);
+
+    final r = jr.entries.where((e) => e.stage == PushStage.retract).toList();
+    expect(r.map((e) => e.reason), [
+      PushReason.retractFound,
+      PushReason.retractMissed,
+    ]);
+    expect(r.first.value, 280);
+    expect(r.last.value, isNull);
   }, skip: !Platform.isMacOS);
 }

@@ -5,6 +5,7 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/themes.dart';
 import 'package:liza/pages/chat/mini_app_interactive.dart';
+import 'package:liza/utils/fluid_page.dart';
 
 /// Сколько ширины боковая панель оставляет приложению при ПОЛНОМ списке чатов:
 /// порог двух колонок.
@@ -18,6 +19,14 @@ const double kMiniAppDefaultPanelWidth = 440;
 /// сбоку, а не на весь экран: двухколоночный режим (841) + панель по умолчанию.
 const double kMiniAppDockedByDefaultMinWidth =
     kMiniAppMinChildWidth + kMiniAppDefaultPanelWidth;
+
+/// Что показывает панель: mini App (WebView по URL) либо «жидкая» HTML-страница
+/// из события чата (ответ ИИ-бота, см. FluidPageView).
+enum MiniAppKind { miniApp, html }
+
+/// Идентификатор панели с HTML-страницей: одна на окно, новая страница
+/// заменяет прежнюю.
+const String kFluidPageAppId = 'liza-page';
 
 /// Описание одного открытого MiniApp-инстанса.
 class MiniAppInstance {
@@ -48,6 +57,12 @@ class MiniAppInstance {
   /// Открыт отдельным окном ОС (десктоп), а не панелью в окне Лизы.
   final bool detached;
 
+  /// Для [MiniAppKind.html] — событие `m.file` text/html с маркером
+  /// `com.liza.page`; [appUrl] тогда равен его eventId. null — страница ещё
+  /// собирается (панель «собираю», [appUrl] = `pending:<eventId обещания>`).
+  final MiniAppKind kind;
+  final Event? pageEvent;
+
   MiniAppInstance({
     required this.appUrl,
     required this.appId,
@@ -61,6 +76,8 @@ class MiniAppInstance {
     String? interactiveSessionId,
     this.generation = 0,
     this.detached = false,
+    this.kind = MiniAppKind.miniApp,
+    this.pageEvent,
   }) : interactiveSessionId = interactiveSessionId ?? miniAppCapability(),
        interactiveState = MiniAppInteractiveState()..setVisible(!detached),
        accountUserId = room.client.userID,
@@ -89,6 +106,8 @@ class MiniAppInstance {
       joinRequestQueryId: joinRequestQueryId,
       generation: generation + 1,
       detached: detached ?? this.detached,
+      kind: kind,
+      pageEvent: pageEvent,
     );
   }
 }
@@ -118,6 +137,7 @@ class MiniAppManager extends ChangeNotifier {
       app.interactiveState.setVisible(_activeAppId == app.appId);
     }
     if (!hasApps) panelFilled.value = false;
+    if (activeApp?.kind != MiniAppKind.html) chatListExpanded.value = false;
     super.notifyListeners();
   }
 
@@ -132,6 +152,98 @@ class MiniAppManager extends ChangeNotifier {
   /// Панель растянута на всё окно, кроме колонки пространств: бегунок
   /// утянули за середину окна. Живёт, пока открыта хоть одна панель.
   final panelFilled = ValueNotifier<bool>(false);
+
+  /// Тянут границу боковой панели. На это время WebView прячется: нативный
+  /// вид (WKWebView на macOS) лежит поверх Flutter и забирает отпускание
+  /// кнопки мыши — Flutter его не видит, и граница залипает.
+  final panelResizing = ValueNotifier<bool>(false);
+
+  /// Список чатов свёрнут до аватарок, пока открыта HTML-страница; владелец
+  /// развернул его вручную — true до закрытия страницы (тогда сбрасывается).
+  final chatListExpanded = ValueNotifier<bool>(false);
+
+  /// Список чатов можно свернуть: его публикует ChatList (открыт чат, нет
+  /// поиска и пространства). Только тогда страница сворачивает список.
+  final chatListCompactable = ValueNotifier<bool>(false);
+  Object? _compactableOwner;
+
+  void publishChatListCompactable(Object owner, bool value) {
+    _compactableOwner = owner;
+    chatListCompactable.value = value;
+  }
+
+  /// Снять признак, если его выставлял именно [owner]: новый ChatList мог уже
+  /// опубликовать своё значение в том же кадре.
+  void releaseChatListCompactable(Object owner) {
+    if (!identical(_compactableOwner, owner)) return;
+    _compactableOwner = null;
+    chatListCompactable.value = false;
+  }
+
+  void expandChatList() => chatListExpanded.value = true;
+  void collapseChatList() => chatListExpanded.value = false;
+
+  /// Хост сейчас раскладывает панель сбоку от чата (широкое окно). Выставляет
+  /// MiniAppOverlay при построении — карточка страницы по нему решает,
+  /// открывать ли её сама.
+  bool sideLayout = false;
+
+  final Set<String> _autoOpenedPages = {};
+
+  /// Страницу этого события ещё не открывали автоматически. Помечает как
+  /// открытую: закрыл вручную — повторно сама не вылезет.
+  bool claimAutoOpen(String eventId) => _autoOpenedPages.add(eventId);
+
+  /// Ход сборки страницы, которую сейчас ждёт панель «собираю» (null — не ждёт).
+  final pageBuild = ValueNotifier<FluidPagePending?>(null);
+
+  /// Обещания, панель которых пользователь закрыл: их страница сама не
+  /// откроется (тапом по карточке — да).
+  final Set<String> _dismissedPending = {};
+
+  static String pendingUrl(String pendingId) => 'pending:$pendingId';
+
+  /// Панель «собираю страницу» справа — сразу по обещанию бота; страница,
+  /// когда придёт, встанет на её место (тот же [kFluidPageAppId]).
+  void openPendingPage(
+    Room room,
+    FluidPagePending pending, {
+    required String title,
+  }) {
+    pageBuild.value = pending;
+    open(
+      appUrl: pendingUrl(pending.id),
+      appId: kFluidPageAppId,
+      appName: title,
+      room: room,
+      allowDetach: false,
+      kind: MiniAppKind.html,
+    );
+  }
+
+  /// Новый этап сборки — только для того обещания, которое ждёт панель.
+  void updatePending(FluidPagePending pending) {
+    if (pageBuild.value?.id == pending.id) pageBuild.value = pending;
+  }
+
+  bool showsPending(String pendingId) => _apps.any(
+    (a) => a.appId == kFluidPageAppId && a.appUrl == pendingUrl(pendingId),
+  );
+
+  bool isPendingDismissed(String pendingId) =>
+      _dismissedPending.contains(pendingId);
+
+  /// Открыть HTML-страницу из события [event] панелью (не окном ОС: страница
+  /// живёт рядом с чатом, чтобы с ботом можно было продолжать переписку).
+  void openPage(Event event, {required String title}) => open(
+    appUrl: event.eventId,
+    appId: kFluidPageAppId,
+    appName: title,
+    room: event.room,
+    allowDetach: false,
+    kind: MiniAppKind.html,
+    pageEvent: event,
+  );
 
   /// Отдельные окна ОС поддержаны (macOS/Windows, выставляет `main`): mini App
   /// по умолчанию открывается окном, в шапке панели есть «Открепить».
@@ -173,6 +285,8 @@ class MiniAppManager extends ChangeNotifier {
     String? botMxid,
     String? joinRequestQueryId,
     bool allowDetach = true,
+    MiniAppKind kind = MiniAppKind.miniApp,
+    Event? pageEvent,
   }) {
     final index = _apps.indexWhere((a) => a.appId == appId);
     if (index >= 0) {
@@ -185,7 +299,8 @@ class MiniAppManager extends ChangeNotifier {
           appType != existing.appType ||
           !identical(room.client, existing.room.client) ||
           room.id != existing.room.id ||
-          appUrl != existing.appUrl) {
+          appUrl != existing.appUrl ||
+          kind != existing.kind) {
         existing.interactiveState.invalidate();
         _apps[index] = MiniAppInstance(
           appUrl: appUrl,
@@ -201,6 +316,8 @@ class MiniAppManager extends ChangeNotifier {
           joinRequestQueryId: joinRequestQueryId,
           generation: existing.generation + 1,
           detached: existing.detached,
+          kind: kind,
+          pageEvent: pageEvent,
         );
       }
       if (existing.detached) {
@@ -225,6 +342,8 @@ class MiniAppManager extends ChangeNotifier {
         botMxid: botMxid,
         joinRequestQueryId: joinRequestQueryId,
         detached: detached,
+        kind: kind,
+        pageEvent: pageEvent,
       ),
     );
     if (!detached) _activeAppId = appId;
@@ -261,6 +380,9 @@ class MiniAppManager extends ChangeNotifier {
   void close(String appId) {
     for (final app in _apps.where((a) => a.appId == appId)) {
       app.interactiveState.invalidate();
+      if (app.kind == MiniAppKind.html && app.pageEvent == null) {
+        _dismissedPending.add(app.appUrl.substring('pending:'.length));
+      }
     }
     _apps.removeWhere((a) => a.appId == appId);
     _pickDockedActive();

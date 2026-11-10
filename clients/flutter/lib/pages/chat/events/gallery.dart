@@ -315,7 +315,7 @@ class GallerySendSummary {
 enum _AlbumUnsentAction { resend, delete }
 
 /// Меню по тапу на «!» альбома: повторить или удалить неотправленные члены.
-/// Как в Telegram — у упавшего альбома действие доступно с самого значка
+/// Как в популярных мессенджерах — у упавшего альбома действие доступно с самого значка
 /// ошибки, а не только из скрытого long-press. Повтор строго ПО ОЧЕРЕДИ:
 /// параллельные заливки держали бы в памяти все файлы разом.
 Future<void> showAlbumUnsentMenu(
@@ -547,7 +547,7 @@ class GalleryBubble extends StatelessWidget {
                   isThumbnail: true,
                   placeholder: (context) => placeholder,
                 );
-                // Плитка альбома GIF не анимируется (как в Telegram) —
+                // Плитка альбома GIF не анимируется (как в популярных мессенджерах) —
                 // только бейдж; тап открывает вьювер, где GIF играет.
                 if (isGifImageEvent(member)) {
                   tile = Stack(

@@ -53,6 +53,12 @@ enum PushStage {
   /// Смена статуса разрешения: причина — новый статус, `value` — прежний
   /// (`-1` — прежний неизвестен, первое наблюдение на установке).
   authStatus,
+
+  /// Исход снятия показанного системой APNs-оригинала (`retractDelivered`):
+  /// причина — `retractFound`/`retractMissed`, `value` — мс до находки.
+  /// Пишется по `suppressLocal`/`suppressRead`: без него не отличить «вспышка
+  /// ≤0,4 с» от «баннер остался на экране».
+  retract,
 }
 
 /// Закрытый перечень причин. Свободного текста журнал не принимает
@@ -67,6 +73,9 @@ enum PushReason {
   noEvent,
   duplicate,
   clearing,
+  // Исход retractDelivered.
+  retractFound,
+  retractMissed,
   // NativeBannerGate.
   suppress,
   banner,
@@ -424,6 +433,7 @@ abstract final class PushJournalStats {
         case PushStage.native:
         case PushStage.authRequest:
         case PushStage.authStatus:
+        case PushStage.retract:
           break;
       }
       if (e.reason != null &&
@@ -432,7 +442,8 @@ abstract final class PushJournalStats {
               e.stage == PushStage.native ||
               e.stage == PushStage.apns ||
               e.stage == PushStage.authRequest ||
-              e.stage == PushStage.authStatus)) {
+              e.stage == PushStage.authStatus ||
+              e.stage == PushStage.retract)) {
         final key = '${_snake(e.stage.name)}.${_snake(e.reason!.name)}';
         out[key] = (out[key] ?? 0) + 1;
       }

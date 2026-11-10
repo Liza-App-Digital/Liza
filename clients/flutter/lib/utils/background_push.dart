@@ -658,6 +658,17 @@ class BackgroundPush {
           ? await retract(eventId)
           : await apns?.retractDelivered(eventId);
       retractResult = ms == null ? 'not-found' : 'found:${ms}ms';
+      try {
+        jr.record(
+          PushStage.retract,
+          reason:
+              ms == null ? PushReason.retractMissed : PushReason.retractFound,
+          eventId: eventId,
+          roomId: raw['room_id'] as String?,
+          state: WidgetsBinding.instance.lifecycleState,
+          value: ms,
+        );
+      } catch (_) {}
     } else {
       await deliverFn(raw);
     }

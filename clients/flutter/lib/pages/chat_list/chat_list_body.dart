@@ -11,6 +11,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat_list/chat_list.dart';
 import 'package:liza/pages/chat_list/chat_list_filter_row.dart';
 import 'package:liza/pages/chat_list/chat_list_item.dart';
+import 'package:liza/pages/chat_list/compact_chat_list_column.dart';
 import 'package:liza/pages/chat_list/create_company_list_tile.dart';
 import 'package:liza/pages/chat_list/dummy_chat_list_item.dart';
 import 'package:liza/pages/chat_list/install_banner.dart';
@@ -22,6 +23,7 @@ import 'package:liza/pages/chat_list/space_view.dart';
 import '../stories/stories_bar.dart';
 import 'package:liza/pages/chat_list/update_banner.dart';
 import 'package:liza/pages/chat_list/web_update_banner.dart';
+import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/direct_chat_draft.dart';
 import 'package:liza/utils/federated_user_search_service.dart';
@@ -32,6 +34,7 @@ import 'package:liza/utils/version_gate_service.dart';
 import 'package:liza/widgets/adaptive_dialogs/public_room_dialog.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 import 'package:liza/widgets/horizontal_mouse_wheel.dart';
+import 'package:liza/widgets/layouts/mini_app_host_scope.dart';
 import 'package:liza/widgets/search_people_bots_sections.dart';
 import '../../config/themes.dart';
 import '../../widgets/matrix.dart';
@@ -65,6 +68,32 @@ class ChatListViewBody extends StatelessWidget {
         if (roomId == null) continue;
         spaceDelegateCandidates[roomId] = space;
       }
+    }
+
+    // Рядом широкая панель mini App — список свёрнут до аватарок. Тот же
+    // controller.scrollController: полный список в этот момент размонтирован,
+    // так что к контроллеру прикреплён ровно один scroll view. Чип и поиск
+    // живут в контроллере и переживают свёртку.
+    if (MiniAppHostScope.compactChatListOf(context) &&
+        !controller.isSearchMode) {
+      return StreamBuilder(
+        stream: client.onSync.stream
+            .where((s) => s.hasRoomUpdate)
+            .rateLimit(const Duration(seconds: 1)),
+        builder: (context, _) => CompactChatListColumn(
+          rooms: controller.filteredRooms,
+          activeChat: controller.activeChat,
+          filterActive: controller.activeFilter != ActiveFilter.allChats,
+          scrollController: controller.scrollController,
+          onTap: controller.onChatTap,
+          onContextAction: (room, ctx) => controller.chatContextAction(
+            room,
+            ctx,
+            spaceDelegateCandidates[room.id],
+          ),
+          onExpand: MiniAppManager.instance.expandChatList,
+        ),
+      );
     }
 
     // Каналы помечены room_type='com.liza.channel' модулем channel_guard:
@@ -150,9 +179,8 @@ class ChatListViewBody extends StatelessWidget {
                 const SliverToBoxAdapter(child: UpdateBanner()),
                 SliverToBoxAdapter(
                   child: WebUpdateBanner(
-                    updateAvailable: Matrix.of(
-                      context,
-                    ).webUpdateChecker.updateAvailable,
+                    updateAvailable:
+                        Matrix.of(context).webUpdateChecker.updateAvailable,
                   ),
                 ),
                 SliverToBoxAdapter(
@@ -193,6 +221,8 @@ class ChatListViewBody extends StatelessWidget {
                         onSelected: controller.setActiveFilter,
                         store: Matrix.of(context).store,
                         userId: Matrix.of(context).client.userID,
+                        showChannels: Matrix.of(context).isCurrentUserDeveloper,
+                        developerMark: true,
                       ),
                     // На пустых «Компаниях» заглушку «чатов больше нет» не
                     // рисуем: пустое состояние заменяет плашка «Создать компанию».
@@ -298,19 +328,13 @@ class ChatListViewBody extends StatelessWidget {
       },
     );
 
-    // Роль `ai` собеседника может прийти уже после рендера (префетч ролей
-    // DM-партнёров) — тогда DM бота компании переезжает из «Люди» в «Агенты»
-    // без /sync. Перестраиваемся по rolesVersion только на этих двух чипах:
-    // на остальных `child` отдаётся тем же инстансом и Flutter пропускает
-    // ребилд. Дерево при этом одно и то же — состояние StreamBuilder и ряда
-    // чипов не теряется при переключении фильтра.
-    final splitsByRole =
-        controller.activeFilter == ActiveFilter.agents ||
-        controller.activeFilter == ActiveFilter.people;
+    // Роль может прийти уже после рендера: роль `ai` собеседника (DM бота
+    // переезжает из «Люди» в «Агенты») и роль developer текущего юзера (чип и
+    // чаты «Каналы» появляются/исчезают) — всё без /sync. Поэтому список
+    // перестраивается на каждую смену rolesVersion на любом фильтре.
     return ValueListenableBuilder<int>(
       valueListenable: Matrix.of(context).userRoleService.rolesVersion,
-      child: splitsByRole ? null : buildList(),
-      builder: (context, _, child) => child ?? buildList(),
+      builder: (context, _, _) => buildList(),
     );
   }
 }

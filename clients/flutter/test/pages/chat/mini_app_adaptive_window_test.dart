@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
@@ -360,6 +361,56 @@ void main() {
       await tester.drag(handle, const Offset(2000, 0));
       await tester.pumpAndSettle();
       expect(panelRect(tester).width, kMiniAppMinPanelWidth);
+      expect(contentInits['shop'], 1);
+    });
+
+    testWidgets('пока тянут границу, WebView спрятан; отпускание отпускает', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/49
+      await pumpHost(tester, const Size(1440, 900));
+      openShop();
+      await tester.pumpAndSettle();
+      final placeholder = find.byKey(
+        const ValueKey('miniapp-resize-placeholder'),
+      );
+      final handle = find.byKey(const ValueKey('miniapp-host-divider'));
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(handle),
+        kind: PointerDeviceKind.mouse,
+      );
+      await gesture.moveBy(const Offset(-40, 0));
+      await tester.pump();
+      await gesture.moveBy(const Offset(-40, 0));
+      await tester.pump();
+      expect(manager.panelResizing.value, isTrue);
+      expect(placeholder, findsOneWidget);
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(manager.panelResizing.value, isFalse);
+      expect(placeholder, findsNothing);
+      expect(contentInits['shop'], 1);
+
+      // Отпускание съел нативный WebView: Flutter видит только движение мыши
+      // без нажатой кнопки — перетаскивание всё равно заканчивается.
+      final stuck = await tester.startGesture(
+        tester.getCenter(handle),
+        kind: PointerDeviceKind.mouse,
+      );
+      await stuck.moveBy(const Offset(-40, 0));
+      await tester.pump();
+      await stuck.moveBy(const Offset(-40, 0));
+      await tester.pump();
+      expect(manager.panelResizing.value, isTrue);
+      final hover = TestPointer(77, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(hover.hover(const Offset(300, 300)));
+      await tester.pump();
+      expect(manager.panelResizing.value, isFalse);
+      expect(placeholder, findsNothing);
+      await stuck.cancel();
+      await tester.pumpAndSettle();
       expect(contentInits['shop'], 1);
     });
 

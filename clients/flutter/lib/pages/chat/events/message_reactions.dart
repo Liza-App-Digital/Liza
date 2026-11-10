@@ -156,7 +156,7 @@ class _Reaction extends StatelessWidget {
     required this.onLongPress,
   });
 
-  /// 2–3 реагировавших одним эмодзи — их аватарками (как в Telegram), от
+  /// 2–3 реагировавших одним эмодзи — их аватарками (как в популярных мессенджерах), от
   /// [kReactionAvatarsMax]+1 — числом.
   Widget _reactorsTail(BuildContext context, ThemeData theme) {
     if (count > kReactionAvatarsMax || reactors.length != count) {

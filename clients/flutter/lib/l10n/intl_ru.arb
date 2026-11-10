@@ -4618,6 +4618,34 @@
   "@miniAppAttach": {},
   "miniAppMoveDuringPayment": "Дождитесь окончания оплаты",
   "@miniAppMoveDuringPayment": {},
+  "chatListExpand": "Развернуть список чатов",
+  "@chatListExpand": {},
+  "chatListCollapse": "Свернуть список чатов",
+  "@chatListCollapse": {},
+  "fluidPageOpen": "Открыть страницу",
+  "@fluidPageOpen": {},
+  "fluidPagePreview": "Страница: {title}",
+  "@fluidPagePreview": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      }
+    }
+  },
+  "fluidPageUnavailable": "Не удалось открыть страницу",
+  "@fluidPageUnavailable": {},
+  "fluidPageBuilding": "Собираю страницу",
+  "@fluidPageBuilding": {},
+  "fluidPageStageAnswer": "Готовлю ответ",
+  "@fluidPageStageAnswer": {},
+  "fluidPageStagePhotos": "Подбираю фотографии",
+  "@fluidPageStagePhotos": {},
+  "fluidPageStageLayout": "Верстаю страницу",
+  "@fluidPageStageLayout": {},
+  "fluidPageReady": "Страница готова",
+  "@fluidPageReady": {},
+  "fluidPageFailed": "Страницу собрать не получилось — ответ в чате",
+  "@fluidPageFailed": {},
   "miniAppResizePanel": "Потяните, чтобы изменить ширину",
   "@miniAppResizePanel": {},
   "miniAppLoadTimeout": "Превышено время загрузки",

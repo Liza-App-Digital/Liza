@@ -29,6 +29,8 @@ const _pendingByTask = <String, String>{};
 const _markedVia = <String, String>{
   'lib/pages/chat_list/chat_list_header.dart':
       'lib/pages/chat_list/create_menu_item_label.dart',
+  'lib/pages/chat_list/chat_list_body.dart':
+      'lib/pages/chat_list/chat_list_filter_row.dart',
 };
 
 void main() {

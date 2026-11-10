@@ -23,8 +23,10 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/channel_subscribe_bar.dart';
 import 'package:liza/pages/chat/chat_view.dart';
 import 'package:liza/pages/chat/event_info_dialog.dart';
+import 'package:liza/pages/chat/events/fluid_page_card.dart';
 import 'package:liza/pages/chat/events/message.dart';
 import 'package:liza/pages/chat/events/message_context_menu.dart';
+import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/start_poll_bottom_sheet.dart';
 import 'package:liza/pages/chat_details/chat_details.dart';
 import 'package:liza/utils/adaptive_bottom_sheet.dart';
@@ -36,6 +38,7 @@ import 'package:liza/utils/composer_enter_key.dart';
 import 'package:liza/utils/channel_peek.dart';
 import 'package:liza/pages/chat/events/gallery.dart';
 import 'package:liza/utils/chat_topology.dart';
+import 'package:liza/utils/fluid_page.dart';
 import 'package:liza/utils/composer_prefill.dart';
 import 'package:liza/utils/miniapp_room.dart';
 import 'package:liza/utils/xl_credentials.dart';
@@ -337,7 +340,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   /// Новейшее событие, реально попавшее на экран, — цель частичной квитанции
-  /// (Telegram-модель «прочитано = увидено»). `null` — считать нельзя или
+  /// (модель популярных мессенджеров «прочитано = увидено»). `null` — считать нельзя или
   /// не нужно: авто-скролл (иначе квитанция на промежуточный viewport и цикл
   /// «тряски» через смену layout), тред, исторический контекст по ссылке
   /// (`!allowNewEvent`), лента ещё не смонтирована. eventId берём из `ValueKey`
@@ -502,7 +505,7 @@ class ChatController extends State<ChatPageWithRoom>
         if (_scrolledUp) setState(() => _scrolledUp = false);
         setReadMarker();
     }
-    // Telegram-модель «прочитано = увидено»: выше низа квитанция уходит на
+    // модель популярных мессенджеров «прочитано = увидено»: выше низа квитанция уходит на
     // новейшее видимое событие, когда прокрутка УСТОЯЛАСЬ (дебаунс —
     // геометрия tagMap на каждый пиксель не нужна; во время авто-скролла
     // _newestVisibleEventId молчит сам). Слушатель ничего не рисует.
@@ -782,6 +785,40 @@ class ChatController extends State<ChatPageWithRoom>
           ),
         )
         .listen(_onOwnEcho);
+    // Страница-ответ ИИ открывается справа сама по приходу события, а не по
+    // постройке карточки: под длинной лентой карточка за экраном не строится.
+    if (!PlatformInfos.isLinux && !PlatformInfos.isWeb) {
+      final openedAt = DateTime.now();
+      final matrix = Matrix.of(context);
+      _fluidPageSubscription = client.onTimelineEvent.stream
+          .where(
+            (event) => shouldAutoOpenLiveFluidPage(
+              event: event,
+              roomId: roomId,
+              openedAt: openedAt,
+              sideLayout: MiniAppManager.instance.sideLayout,
+              isBotOrAiUser: matrix.isBotOrAiUser,
+            ),
+          )
+          .listen(_onFluidPage);
+      // Обещание страницы — панель «собираю» с этапами справа сразу, не ждём
+      // готовой страницы (до минуты).
+      _fluidPendingSubscription = client.onTimelineEvent.stream.listen((event) {
+        final pending = liveFluidPagePending(
+          event: event,
+          roomId: roomId,
+          openedAt: openedAt,
+          isBotOrAiUser: matrix.isBotOrAiUser,
+        );
+        if (pending == null || !mounted) return;
+        applyLiveFluidPagePending(
+          pending,
+          event: event,
+          sideLayout: MiniAppManager.instance.sideLayout,
+          title: L10n.of(context).fluidPageBuilding,
+        );
+      });
+    }
     // Действие человека в этом чате (отправка, реакция, кнопка бота) —
     // доказательство внимания: квитанция уходит сразу, и из окна без фокуса
     // (заявка №60). Реакция сама ни прокрутки, ни квитанции не вызывает.
@@ -942,7 +979,7 @@ class ChatController extends State<ChatPageWithRoom>
       if (plan.scrollToDivider) {
         // Маркер уехал вверх: позиционируемся на сепараторе «Непрочитанное» и
         // после позиционирования шлём квитанцию на новейшее ВИДИМОЕ событие
-        // (Telegram-модель «прочитано = увидено», запрос Саши Н. 2026-09-17).
+        // (модель популярных мессенджеров «прочитано = увидено», запрос Саши Н. 2026-09-17).
         // До этого здесь была квитанция на ПОСЛЕДНЕЕ событие (LABA-1894): бейдж
         // гас сразу, но сервер считал всё прочитанным, и при возврате чат
         // открывался снизу без сепаратора. Квитанция ОБЯЗАНА уйти (корень
@@ -1078,6 +1115,18 @@ class ChatController extends State<ChatPageWithRoom>
   bool _pendingScrollDownAfterEcho = false;
 
   StreamSubscription<Event>? _ownEchoSubscription;
+
+  StreamSubscription<Event>? _fluidPageSubscription;
+  StreamSubscription<Event>? _fluidPendingSubscription;
+
+  void _onFluidPage(Event event) {
+    if (!mounted) return;
+    final title = fluidPageTitle(event);
+    MiniAppManager.instance.openPage(
+      event,
+      title: title.isEmpty ? L10n.of(context).fluidPageOpen : title,
+    );
+  }
 
   StreamSubscription<String>? _humanInputSubscription;
 
@@ -1271,7 +1320,7 @@ class ChatController extends State<ChatPageWithRoom>
     // сообщение реально на экране, квитанцию НЕ глушим (иначе аватарка
     // «прочитал» у собеседника появлялась только после нашего ответа).
     //
-    // Выше низа (Telegram-модель «прочитано = увидено», 2026-09-17): вместо
+    // Выше низа (модель популярных мессенджеров «прочитано = увидено», 2026-09-17): вместо
     // молчания деградируем в ЧАСТИЧНУЮ квитанцию на новейшее видимое событие.
     // Так все реактивные вызовы (resume, updateView, дебаунс скролла,
     // позиционирование на сепараторе) идут через одну точку, а «всё прочитано»
@@ -1422,6 +1471,8 @@ class ChatController extends State<ChatPageWithRoom>
     timeline = null;
     discussionTimeline?.cancelSubscriptions();
     discussionTimeline = null;
+    _fluidPageSubscription?.cancel();
+    _fluidPendingSubscription?.cancel();
     _humanInputSubscription?.cancel();
     // Парно к addObserver в initState: без этого каждый закрытый чат оставался
     // lifecycle-слушателем и на каждом `resumed` звал setReadMarker (спасал
@@ -2649,6 +2700,7 @@ class ChatController extends State<ChatPageWithRoom>
 
   bool canEditEvent(Event event) =>
       !isArchived &&
+      !isFluidPageEvent(event) &&
       event.status.isSent &&
       currentRoomBundle.any((cl) => event.senderId == cl?.userID);
 

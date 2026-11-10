@@ -34,6 +34,11 @@ class MxcImage extends StatefulWidget {
   final Curve animationCurve;
   final ThumbnailMethod thumbnailMethod;
   final Widget Function(BuildContext context)? placeholder;
+
+  /// Терминальный сбой (ретраи исчерпаны / байты не декодируются): вместо
+  /// placeholder, чтобы «сбой» не выглядел как вечная «загрузка» (аватарки:
+  /// буква вместо человечка).
+  final Widget Function(BuildContext context)? failedBuilder;
   final String? cacheKey;
   final Client? client;
   final BorderRadius borderRadius;
@@ -45,6 +50,7 @@ class MxcImage extends StatefulWidget {
     this.height,
     this.fit,
     this.placeholder,
+    this.failedBuilder,
     this.isThumbnail = true,
     this.animated = false,
     this.cacheWidth,
@@ -101,6 +107,11 @@ class MxcImage extends StatefulWidget {
     // HEIC/HEIF — общий ISOBMFF ftyp-чек.
     return _MxcImageState._looksLikeHeicMagic(d);
   }
+
+  /// Первые 4 байта в hex для диагностики не-картинки (без media_id).
+  @visibleForTesting
+  static String magicHex(Uint8List d) =>
+      d.take(4).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
   // Решает, что дисковый файл-кэш SDK для этого вложения отравлен (не-картинка,
   // осевшая с кодом 200 во время переезда медиа) и его нужно сбросить+перекачать.
@@ -334,6 +345,16 @@ class _MxcImageState extends State<MxcImage> {
           )
           .timeout(_networkTimeout);
       if (!mounted) return;
+      // 200 с не-картинкой (тело-ошибка/HTML/обрезок): в статический LRU такое
+      // не кладём — иначе аватарка залипает человечком до вытеснения из LRU
+      // (Роман 09.11, «Invalid image data»). Исключение → штатный retry/backoff.
+      if (!MxcImage.looksLikeImageMagic(remoteData)) {
+        Logs().w(
+          '[avatar-bad-bytes] len=${remoteData.length} '
+          'magic=${MxcImage.magicHex(remoteData)} host=${uri.host}',
+        );
+        throw const FormatException('mxc body is not an image');
+      }
       // Без event MIME неизвестен — детектим по magic bytes (federation
       // через прокси, серверный raw thumbnailer, и т.п.).
       final transcoded = await _maybeTranscodeHeic(remoteData);
@@ -563,7 +584,10 @@ class _MxcImageState extends State<MxcImage> {
   // второго круга нет и виджет остаётся на placeholder/broken_image.
   void _maybeHealOnDecodeFailure() {
     final event = widget.event;
-    if (event == null) return;
+    if (event == null) {
+      _evictUndecodableUriImage();
+      return;
+    }
     final mxc =
         event.attachmentOrThumbnailMxcUrl(getThumbnail: widget.isThumbnail);
     final key = mxc?.toString();
@@ -583,6 +607,17 @@ class _MxcImageState extends State<MxcImage> {
       } catch (e, s) {
         Logs().w('MxcImage: heal-on-decode-failure failed', e, s);
       }
+    });
+  }
+
+  // uri-путь (аватарки): байты с валидным magic, но не декодируются (усечённые).
+  // Убираем запись из процессного LRU (ключ захвачен ДО отложенного вызова:
+  // innerSize/кольцо сторис меняют cacheKey) — следующий показ перекачает.
+  void _evictUndecodableUriImage() {
+    final key = widget.cacheKey;
+    if (key == null || widget.uri == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _imageDataCache.remove(key);
     });
   }
 
@@ -675,8 +710,9 @@ class _MxcImageState extends State<MxcImage> {
                   // Превью (лента/галерея) не должно показывать мёртвую «битую
                   // картинку»: откатываемся на placeholder (BlurHash постера).
                   // Терминальную иконку оставляем только для полноэкранного.
-                  if (widget.isThumbnail && widget.placeholder != null) {
-                    return widget.placeholder!.call(context);
+                  final failed = widget.failedBuilder ?? widget.placeholder;
+                  if (widget.isThumbnail && failed != null) {
+                    return failed.call(context);
                   }
                   return SizedBox(
                     width: widget.width,
@@ -694,7 +730,7 @@ class _MxcImageState extends State<MxcImage> {
               ),
             )
           : _failed
-              ? _retryOverlay(context)
+              ? (widget.failedBuilder?.call(context) ?? _retryOverlay(context))
               : placeholder(context),
     );
   }

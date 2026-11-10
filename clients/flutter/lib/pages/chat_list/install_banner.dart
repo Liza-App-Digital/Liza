@@ -70,17 +70,14 @@ class _InstallBannerState extends State<InstallBanner> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
               children: [
-                const Icon(
-                  Icons.install_mobile,
-                  color: Colors.white,
-                  size: 20,
-                ),
+                const Icon(Icons.install_mobile, color: Colors.white, size: 20),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
                     L10n.of(context).installAppBanner,
-                    style: theme.textTheme.bodyMedium
-                        ?.copyWith(color: Colors.white),
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: Colors.white,
+                    ),
                   ),
                 ),
                 // InkResponse вместо IconButton: у IconButton минимальная
