@@ -2,9 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
-import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/utils/fluid_page.dart';
 
 /// Этапы, которые видит пользователь (done/failed — итог, не шаг).
@@ -135,154 +133,15 @@ class FluidPageSteps extends StatelessWidget {
   }
 }
 
-/// Панель справа, пока бот собирает страницу: пульсирующий макет страницы,
-/// этапы и время. Готовая страница встаёт на её место (MiniAppManager).
-class FluidPageBuildingView extends StatelessWidget {
-  final String pendingId;
-
-  const FluidPageBuildingView({required this.pendingId, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return ColoredBox(
-      color: scheme.surface,
-      child: ValueListenableBuilder<FluidPagePending?>(
-        valueListenable: MiniAppManager.instance.pageBuild,
-        builder: (context, pending, _) {
-          if (pending == null || pending.id != pendingId) {
-            return const SizedBox.shrink();
-          }
-          return _Ticker(
-            running: !pending.finished,
-            builder: (context) {
-              final now = DateTime.now();
-              final stage = pending.stageAt(now);
-              if (stage == FluidPageStage.failed) {
-                return Center(
-                  key: const ValueKey('fluid-page-build-failed'),
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(
-                      L10n.of(context).fluidPageFailed,
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                );
-              }
-              return ListView(
-                key: const ValueKey('fluid-page-building'),
-                padding: const EdgeInsets.all(24),
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          L10n.of(context).fluidPageBuilding,
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                      ),
-                      Text(
-                        fluidPageElapsedLabel(now.difference(pending.started)),
-                        key: const ValueKey('fluid-page-build-elapsed'),
-                        style: TextStyle(
-                          color: scheme.onSurfaceVariant,
-                          fontFeatures: const [FontFeature.tabularFigures()],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  FluidPageSteps(stage: stage, color: scheme.primary),
-                  const SizedBox(height: 24),
-                  _SkeletonPage(color: scheme.surfaceContainerHighest),
-                ],
-              );
-            },
-          );
-        },
-      ),
-    );
-  }
-}
-
-/// Макет будущей страницы: заголовок, «фото», строки текста — пульсирует.
-class _SkeletonPage extends StatefulWidget {
-  final Color color;
-
-  const _SkeletonPage({required this.color});
-
-  @override
-  State<_SkeletonPage> createState() => _SkeletonPageState();
-}
-
-class _SkeletonPageState extends State<_SkeletonPage>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1100),
-    lowerBound: 0.45,
-  )..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  Widget _block(double height, {double widthFactor = 1}) => Padding(
-    padding: const EdgeInsets.only(bottom: 10),
-    child: FractionallySizedBox(
-      alignment: Alignment.centerLeft,
-      widthFactor: widthFactor,
-      child: Container(
-        height: height,
-        decoration: BoxDecoration(
-          color: widget.color,
-          borderRadius: BorderRadius.circular(AppConfig.borderRadius / 2),
-        ),
-      ),
-    ),
-  );
-
-  @override
-  Widget build(BuildContext context) => FadeTransition(
-    key: const ValueKey('fluid-page-skeleton'),
-    opacity: _pulse,
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _block(26, widthFactor: 0.6),
-        _block(14, widthFactor: 0.9),
-        const SizedBox(height: 6),
-        Row(
-          spacing: 10,
-          children: [
-            Expanded(child: _block(110)),
-            Expanded(child: _block(110)),
-          ],
-        ),
-        _block(14),
-        _block(14, widthFactor: 0.85),
-        _block(14, widthFactor: 0.7),
-        const SizedBox(height: 6),
-        _block(60),
-      ],
-    ),
-  );
-}
-
 /// Карточка обещания в ленте: этапы сборки с таймером, по итогу — «готова» или
-/// «не получилось». Тап на широком окне — вернуть панель «собираю».
+/// «не получилось». Сама страница придёт отдельной карточкой — по клику.
 class FluidPageProgressCard extends StatelessWidget {
   final FluidPagePending pending;
   final Color textColor;
-  final VoidCallback? onTap;
 
   const FluidPageProgressCard({
     required this.pending,
     required this.textColor,
-    this.onTap,
     super.key,
   });
 
@@ -347,15 +206,12 @@ class FluidPageProgressCard extends StatelessWidget {
             ],
           );
         }
-        return InkWell(
+        return Padding(
           key: ValueKey('fluid-page-progress-${stage.name}'),
-          onTap: stage.index < FluidPageStage.done.index ? onTap : null,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 320),
-              child: body,
-            ),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 320),
+            child: body,
           ),
         );
       },

@@ -5,7 +5,6 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
 
-import 'package:liza/pages/chat/events/fluid_page_card.dart';
 import 'package:liza/pages/chat/fluid_page_view.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/utils/fluid_page.dart';
@@ -13,7 +12,7 @@ import 'package:liza/utils/fluid_page.dart';
 import 'test_client.dart';
 
 /// Страж «жидкого интерфейса»: события-страницы, доверие к отправителю,
-/// проверка sha256, CSP, пропуск навигации и разовое авто-открытие.
+/// проверка sha256, CSP, пропуск навигации и открытие по клику окном ОС.
 /// ledger:RL-liza-liquid-page
 void main() {
   late Client client;
@@ -174,62 +173,87 @@ void main() {
     });
   });
 
-  group('авто-открытие и свёртка списка', () {
+  group('открытие по клику и свёртка списка', () {
     final manager = MiniAppManager.instance;
-    setUp(manager.closeAll);
-
-    bool isBot(String id) => id == '@bot:example.invalid';
-    final openedAt = DateTime.now();
-    bool decide(Event e, {bool side = true, String? roomId}) =>
-        shouldAutoOpenLiveFluidPage(
-          event: e,
-          roomId: roomId ?? room.id,
-          openedAt: openedAt,
-          sideLayout: side,
-          isBotOrAiUser: isBot,
-        );
-
-    test('живая страница от бота открывается ровно один раз на eventId', () {
-      // AC:RL-liza-liquid-page/19
-      final e = pageEvent(id: r'$auto1');
-      expect(decide(e), isTrue);
-      expect(decide(e), isFalse);
+    setUp(() {
+      manager.closeAll();
+      manager.windowsSupported = true;
+    });
+    tearDown(() {
+      manager.closeAll();
+      manager.windowsSupported = false;
     });
 
-    test(
-      'история / до открытия чата — не открывается, eventId не сжигается',
-      () {
-        // AC:RL-liza-liquid-page/20
-        final old = pageEvent(
-          id: r'$auto2',
-          ts: openedAt.subtract(const Duration(minutes: 5)),
-        );
-        expect(decide(old), isFalse);
-        // Отстающие на несколько секунд часы сервера — всё ещё «живое».
-        final skew = pageEvent(
-          id: r'$auto3',
-          ts: openedAt.subtract(const Duration(seconds: 3)),
-        );
-        expect(decide(skew), isTrue);
-      },
-    );
+    bool isBot(String id) => id == '@bot:example.invalid';
 
-    test(
-      'мультикейс отказа: не side / чужая комната / не бот / не страница',
-      () {
-        // AC:RL-liza-liquid-page/19
-        final fresh = pageEvent(id: r'$auto4');
-        expect(decide(fresh, side: false), isFalse);
-        expect(decide(fresh, roomId: '!other:example.invalid'), isFalse);
-        expect(
-          decide(pageEvent(id: r'$auto5', sender: '@human:example.invalid')),
-          isFalse,
-        );
-        expect(decide(pageEvent(id: r'$auto6', marker: 'none')), isFalse);
-        // Отказы выше eventId не сожгли.
-        expect(decide(fresh), isTrue);
-      },
-    );
+    test('клик по карточке на десктопе с окнами — отдельное окно, справа '
+        'пусто', () {
+      // AC:RL-liza-liquid-page/40
+      manager.openPage(
+        pageEvent(id: r'$w1'),
+        title: 'Цвета',
+        allowDetach: true,
+      );
+      expect(manager.apps, isEmpty, reason: 'панели справа быть не должно');
+      expect(manager.detachedApps.single.kind, MiniAppKind.html);
+      expect(manager.detachedApps.single.appUrl, r'$w1');
+    });
+
+    test('повторный клик — то же окно поднимается, второго нет; другая '
+        'страница — в том же окне', () async {
+      // AC:RL-liza-liquid-page/41
+      final focus = <String>[];
+      final sub = manager.windowFocusRequests.listen(focus.add);
+      manager.openPage(
+        pageEvent(id: r'$w2'),
+        title: 'Цвета',
+        allowDetach: true,
+      );
+      final first = manager.detachedApps.single.contentKey;
+      manager.openPage(
+        pageEvent(id: r'$w2'),
+        title: 'Цвета',
+        allowDetach: true,
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(manager.detachedApps, hasLength(1));
+      expect(manager.detachedApps.single.contentKey, first);
+      expect(focus, contains(kFluidPageAppId));
+      manager.openPage(
+        pageEvent(id: r'$w3'),
+        title: 'Числа',
+        allowDetach: true,
+      );
+      expect(manager.detachedApps, hasLength(1));
+      expect(manager.detachedApps.single.appUrl, r'$w3');
+      expect(manager.detachedApps.single.contentKey, isNot(first));
+      await sub.cancel();
+    });
+
+    test('место выбирается на каждом клике: окно → (PIN) панель → окно', () {
+      // AC:RL-liza-liquid-page/42
+      final e = pageEvent(id: r'$w4');
+      manager.openPage(e, title: 'Цвета', allowDetach: true);
+      expect(manager.detachedApps, hasLength(1));
+      manager.openPage(e, title: 'Цвета', allowDetach: false);
+      expect(manager.detachedApps, isEmpty);
+      expect(manager.activeApp?.kind, MiniAppKind.html);
+      manager.openPage(e, title: 'Цвета', allowDetach: true);
+      expect(manager.apps, isEmpty);
+      expect(manager.detachedApps, hasLength(1));
+    });
+
+    test('без поддержки окон ОС — панель (запасной путь)', () {
+      // AC:RL-liza-liquid-page/42
+      manager.windowsSupported = false;
+      manager.openPage(
+        pageEvent(id: r'$w5'),
+        title: 'Цвета',
+        allowDetach: true,
+      );
+      expect(manager.detachedApps, isEmpty);
+      expect(manager.activeApp?.kind, MiniAppKind.html);
+    });
 
     test('превью списка чатов — название страницы только для бота', () {
       // AC:RL-liza-liquid-page/21
@@ -250,7 +274,12 @@ void main() {
 
     test('растянутый вручную список сбрасывается, когда страница закрыта', () {
       // AC:RL-liza-liquid-page/9
-      manager.openPage(pageEvent(id: r'$open1'), title: 'Цвета');
+      manager.windowsSupported = false;
+      manager.openPage(
+        pageEvent(id: r'$open1'),
+        title: 'Цвета',
+        allowDetach: false,
+      );
       expect(manager.activeApp?.kind, MiniAppKind.html);
       manager.expandChatList();
       expect(manager.chatListExpanded.value, isTrue);

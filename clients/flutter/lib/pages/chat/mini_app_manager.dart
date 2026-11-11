@@ -5,7 +5,6 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/themes.dart';
 import 'package:liza/pages/chat/mini_app_interactive.dart';
-import 'package:liza/utils/fluid_page.dart';
 
 /// Сколько ширины боковая панель оставляет приложению при ПОЛНОМ списке чатов:
 /// порог двух колонок.
@@ -58,8 +57,7 @@ class MiniAppInstance {
   final bool detached;
 
   /// Для [MiniAppKind.html] — событие `m.file` text/html с маркером
-  /// `com.liza.page`; [appUrl] тогда равен его eventId. null — страница ещё
-  /// собирается (панель «собираю», [appUrl] = `pending:<eventId обещания>`).
+  /// `com.liza.page`; [appUrl] тогда равен его eventId.
   final MiniAppKind kind;
   final Event? pageEvent;
 
@@ -183,64 +181,19 @@ class MiniAppManager extends ChangeNotifier {
   void expandChatList() => chatListExpanded.value = true;
   void collapseChatList() => chatListExpanded.value = false;
 
-  /// Хост сейчас раскладывает панель сбоку от чата (широкое окно). Выставляет
-  /// MiniAppOverlay при построении — карточка страницы по нему решает,
-  /// открывать ли её сама.
-  bool sideLayout = false;
-
-  final Set<String> _autoOpenedPages = {};
-
-  /// Страницу этого события ещё не открывали автоматически. Помечает как
-  /// открытую: закрыл вручную — повторно сама не вылезет.
-  bool claimAutoOpen(String eventId) => _autoOpenedPages.add(eventId);
-
-  /// Ход сборки страницы, которую сейчас ждёт панель «собираю» (null — не ждёт).
-  final pageBuild = ValueNotifier<FluidPagePending?>(null);
-
-  /// Обещания, панель которых пользователь закрыл: их страница сама не
-  /// откроется (тапом по карточке — да).
-  final Set<String> _dismissedPending = {};
-
-  static String pendingUrl(String pendingId) => 'pending:$pendingId';
-
-  /// Панель «собираю страницу» справа — сразу по обещанию бота; страница,
-  /// когда придёт, встанет на её место (тот же [kFluidPageAppId]).
-  void openPendingPage(
-    Room room,
-    FluidPagePending pending, {
+  /// Открыть HTML-страницу из события [event] по тапу на карточку в ленте.
+  /// По умолчанию — отдельным окном ОС (заявка Надежды 10.11: «не справа»);
+  /// [allowDetach] = false (пин-код, нет окон) — панелью в окне Лизы.
+  void openPage(
+    Event event, {
     required String title,
-  }) {
-    pageBuild.value = pending;
-    open(
-      appUrl: pendingUrl(pending.id),
-      appId: kFluidPageAppId,
-      appName: title,
-      room: room,
-      allowDetach: false,
-      kind: MiniAppKind.html,
-    );
-  }
-
-  /// Новый этап сборки — только для того обещания, которое ждёт панель.
-  void updatePending(FluidPagePending pending) {
-    if (pageBuild.value?.id == pending.id) pageBuild.value = pending;
-  }
-
-  bool showsPending(String pendingId) => _apps.any(
-    (a) => a.appId == kFluidPageAppId && a.appUrl == pendingUrl(pendingId),
-  );
-
-  bool isPendingDismissed(String pendingId) =>
-      _dismissedPending.contains(pendingId);
-
-  /// Открыть HTML-страницу из события [event] панелью (не окном ОС: страница
-  /// живёт рядом с чатом, чтобы с ботом можно было продолжать переписку).
-  void openPage(Event event, {required String title}) => open(
+    required bool allowDetach,
+  }) => open(
     appUrl: event.eventId,
     appId: kFluidPageAppId,
     appName: title,
     room: event.room,
-    allowDetach: false,
+    allowDetach: allowDetach,
     kind: MiniAppKind.html,
     pageEvent: event,
   );
@@ -291,6 +244,12 @@ class MiniAppManager extends ChangeNotifier {
     final index = _apps.indexWhere((a) => a.appId == appId);
     if (index >= 0) {
       final existing = _apps[index];
+      // Страница выбирает место на каждом клике: окно, открытое до пин-кода,
+      // после его включения уходит в панель, и наоборот. mini App остаётся,
+      // где его оставили (открепил/прикрепил руками).
+      final detached = kind == MiniAppKind.html
+          ? windowsSupported && allowDetach
+          : existing.detached;
       if ((appStartPath.isNotEmpty && appStartPath != existing.appStartPath) ||
           startParam != existing.startParam ||
           botMxid != existing.botMxid ||
@@ -300,7 +259,8 @@ class MiniAppManager extends ChangeNotifier {
           !identical(room.client, existing.room.client) ||
           room.id != existing.room.id ||
           appUrl != existing.appUrl ||
-          kind != existing.kind) {
+          kind != existing.kind ||
+          detached != existing.detached) {
         existing.interactiveState.invalidate();
         _apps[index] = MiniAppInstance(
           appUrl: appUrl,
@@ -315,16 +275,17 @@ class MiniAppManager extends ChangeNotifier {
           botMxid: botMxid,
           joinRequestQueryId: joinRequestQueryId,
           generation: existing.generation + 1,
-          detached: existing.detached,
+          detached: detached,
           kind: kind,
           pageEvent: pageEvent,
         );
       }
-      if (existing.detached) {
+      if (detached) {
         _focusRequests.add(appId);
       } else {
         _activeAppId = appId;
       }
+      _pickDockedActive();
       notifyListeners();
       return;
     }
@@ -380,9 +341,6 @@ class MiniAppManager extends ChangeNotifier {
   void close(String appId) {
     for (final app in _apps.where((a) => a.appId == appId)) {
       app.interactiveState.invalidate();
-      if (app.kind == MiniAppKind.html && app.pageEvent == null) {
-        _dismissedPending.add(app.appUrl.substring('pending:'.length));
-      }
     }
     _apps.removeWhere((a) => a.appId == appId);
     _pickDockedActive();

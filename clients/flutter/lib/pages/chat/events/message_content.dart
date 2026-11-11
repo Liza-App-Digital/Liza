@@ -10,7 +10,6 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/events/poll.dart';
 import 'package:liza/pages/chat/events/video_player.dart';
 import 'package:liza/pages/chat/fluid_page_building_view.dart';
-import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/utils/fluid_page.dart';
 import 'package:liza/utils/formatting_text_controller.dart';
 import 'package:liza/utils/adaptive_bottom_sheet.dart';
@@ -448,14 +447,6 @@ class MessageContent extends StatelessWidget {
               return FluidPageProgressCard(
                 pending: pagePending,
                 textColor: textColor,
-                onTap: () {
-                  if (!MiniAppManager.instance.sideLayout) return;
-                  MiniAppManager.instance.openPendingPage(
-                    event.room,
-                    pagePending,
-                    title: L10n.of(context).fluidPageBuilding,
-                  );
-                },
               );
             }
             if (event.content.containsKey(storyRefKey)) {

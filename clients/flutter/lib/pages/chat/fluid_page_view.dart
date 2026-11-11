@@ -5,20 +5,28 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/fluid_page.dart';
 
+/// Документ страницы из события: скачать (в E2EE — расшифровать), сверить
+/// sha256 и размер, обернуть в CSP.
+Future<String> loadFluidPageDocument(Event event) async =>
+    fluidPageDocument(await loadFluidPageHtml(event));
+
 /// Статичная HTML-страница — ответ ИИ-бота («жидкий интерфейс»).
 ///
-/// Намеренно НЕ часть mini App: нет JS-мостов, нет initData, нет сети. Файл
-/// скачивается клиентом (в E2EE расшифровывается), сверяется с sha256 из
-/// маркера и грузится через `initialData` под CSP из [fluidPageDocument];
+/// Намеренно НЕ часть mini App: нет JS-мостов, нет initData, нет сети.
+/// Документ (уже с CSP) отдаёт [loadDocument]: в панели — прямо из события,
+/// в отдельном окне ОС — запросом к главному окну (у окна нет Matrix-клиента).
 /// JavaScript в WebView выключен, любая навигация отменяется.
 class FluidPageView extends StatefulWidget {
-  final Event event;
+  /// Какая страница показана. Сменился — документ грузится заново, а ответ на
+  /// прежний запрос отбрасывается (окно ОС одно, в него приходит следующая).
+  final String pageKey;
+  final Future<String> Function() loadDocument;
 
-  const FluidPageView({required this.event, super.key});
-
-  /// Подмена скачивания в widget-тестах.
-  @visibleForTesting
-  static Future<String> Function(Event event)? debugLoader;
+  const FluidPageView({
+    required this.pageKey,
+    required this.loadDocument,
+    super.key,
+  });
 
   /// Подмена WebView в widget-тестах: он там не поднимается. Получает
   /// готовый документ (с CSP).
@@ -31,60 +39,91 @@ class FluidPageView extends StatefulWidget {
 }
 
 class _FluidPageViewState extends State<FluidPageView> {
-  late Future<String> _document;
+  String? _document;
+  Object? _error;
+  int _request = 0;
 
   @override
   void initState() {
     super.initState();
-    _document = _load();
+    _load();
   }
 
-  Future<String> _load() async {
-    final loader = FluidPageView.debugLoader ?? loadFluidPageHtml;
-    return fluidPageDocument(await loader(widget.event));
+  @override
+  void didUpdateWidget(FluidPageView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.pageKey == widget.pageKey) return;
+    _document = null;
+    _error = null;
+    _load();
+  }
+
+  void _retry() {
+    setState(() => _error = null);
+    _load();
+  }
+
+  Future<void> _load() async {
+    final request = ++_request;
+    try {
+      final document = await widget.loadDocument();
+      if (!mounted || request != _request) return;
+      setState(() => _document = document);
+    } catch (e) {
+      Logs().w('FluidPageView: $e');
+      if (!mounted || request != _request) return;
+      setState(() => _error = e);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<String>(
-      future: _document,
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          Logs().w('FluidPageView: ${snapshot.error}');
-          return Center(
-            key: const ValueKey('fluid-page-error'),
-            child: Text(L10n.of(context).fluidPageUnavailable),
-          );
-        }
-        final document = snapshot.data;
-        if (document == null) {
-          return const Center(
-            key: ValueKey('fluid-page-loading'),
-            child: CircularProgressIndicator.adaptive(),
-          );
-        }
-        final debugBuilder = FluidPageView.debugWebViewBuilder;
-        if (debugBuilder != null) return debugBuilder(context, document);
-        return ColoredBox(
-          color: Colors.white,
-          child: InAppWebView(
-            key: const ValueKey('fluid-page-webview'),
-            initialData: InAppWebViewInitialData(
-              data: document,
-              baseUrl: WebUri('about:blank'),
+    if (_error != null) {
+      final l10n = L10n.of(context);
+      return Center(
+        key: const ValueKey('fluid-page-error'),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          spacing: 12,
+          children: [
+            Text(l10n.fluidPageUnavailable),
+            TextButton(
+              key: const ValueKey('fluid-page-retry'),
+              onPressed: _retry,
+              child: Text(l10n.retry),
             ),
-            initialSettings: fluidPageWebViewSettings(),
-            // Первая загрузка initialData идёт как about:blank — её пропускаем
-            // (CANCEL на всё глушит и саму страницу, см. howItWoks/miniApps/
-            // widgets.md); всё остальное, включая ссылки внутри страницы, — нет.
-            shouldOverrideUrlLoading: (controller, action) async =>
-                fluidPageNavigationAllowed(action.request.url?.toString())
-                ? NavigationActionPolicy.ALLOW
-                : NavigationActionPolicy.CANCEL,
-            onCreateWindow: (controller, action) async => false,
-          ),
-        );
-      },
+          ],
+        ),
+      );
+    }
+    final document = _document;
+    if (document == null) {
+      return const Center(
+        key: ValueKey('fluid-page-loading'),
+        child: CircularProgressIndicator.adaptive(),
+      );
+    }
+    final debugBuilder = FluidPageView.debugWebViewBuilder;
+    if (debugBuilder != null) return debugBuilder(context, document);
+    return ColoredBox(
+      color: Colors.white,
+      child: InAppWebView(
+        // Новый документ — новый WebView: initialData читается один раз.
+        key: ValueKey('fluid-page-webview-${widget.pageKey}'),
+        initialData: InAppWebViewInitialData(
+          data: document,
+          baseUrl: WebUri('about:blank'),
+        ),
+        initialSettings: fluidPageWebViewSettings(),
+        // Первая загрузка initialData идёт как about:blank — её пропускаем
+        // (CANCEL на всё глушит и саму страницу, см. howItWoks/miniApps/
+        // widgets.md); всё остальное, включая ссылки внутри страницы, — нет.
+        shouldOverrideUrlLoading: (controller, action) async =>
+            fluidPageNavigationAllowed(action.request.url?.toString())
+            ? NavigationActionPolicy.ALLOW
+            : NavigationActionPolicy.CANCEL,
+        onCreateWindow: (controller, action) async => false,
+      ),
     );
   }
 }

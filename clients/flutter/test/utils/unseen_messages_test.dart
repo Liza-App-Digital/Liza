@@ -166,6 +166,18 @@ void main() {
     });
   });
 
+  group('Room.hasUnseenMessages — залипшая точка у прочитанной комнаты', () {
+    test('AC:RL-badge-receipt-based/8 квитанция на lastEvent, но её ts старше '
+        'ts события (бот-алерт, сдвиг часов): hasUnseenMessages — false '
+        '(точка списка чатов не залипает)', () {
+      final room = newRoom();
+      final last = msg(room, ts: 50000);
+      room.lastEvent = last;
+      setReceipt(room, eventId: last.eventId, ts: 40000);
+      expect(room.hasUnseenMessages, isFalse);
+    });
+  });
+
   group('Room.hasUnseenMessages — Tier1/Tier2 (частичная квитанция)', () {
     test(
       'AC:RL-read-receipt-viewport-based/11 частичная квитанция: ts новее '

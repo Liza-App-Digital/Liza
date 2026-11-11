@@ -175,3 +175,97 @@ Future<String> loadFluidPageHtml(
   }
   return utf8.decode(bytes, allowMalformed: true);
 }
+
+/// Фото, вшитое в страницу (`<img src="data:…">`).
+class FluidPageImage {
+  final Uint8List bytes;
+  final String alt;
+
+  const FluidPageImage({required this.bytes, required this.alt});
+}
+
+/// Превью страницы для ленты: её фото и первый абзац текста.
+class FluidPagePreview {
+  final List<FluidPageImage> images;
+  final String summary;
+
+  const FluidPagePreview({required this.images, required this.summary});
+
+  static const empty = FluidPagePreview(images: [], summary: '');
+}
+
+/// Сколько фото страницы показываем в превью (бот вшивает не больше 4).
+const int kFluidPagePreviewMaxImages = 4;
+
+final _imgTag = RegExp(r'<img\b[^>]*>', caseSensitive: false);
+final _dataSrc = RegExp(
+  r'''\bsrc\s*=\s*["']data:image/(?:jpeg|png|webp);base64,([A-Za-z0-9+/=\s]+)["']''',
+  caseSensitive: false,
+);
+final _altAttr = RegExp(r'''\balt\s*=\s*(["'])(.*?)\1''', caseSensitive: false);
+final _paragraphOpen = RegExp(r'<p\b[^>]*>', caseSensitive: false);
+final _paragraphClose = RegExp(r'</p\s*>', caseSensitive: false);
+
+/// Тела абзацев `<p …>…</p>` одним проходом. Ленивый dotAll-regex на странице
+/// с незакрытыми `<p>` для каждого из них досматривал до конца документа
+/// (квадратично на сотнях КБ); здесь каждый символ просматривается O(1) раз.
+Iterable<String> _paragraphs(String html) sync* {
+  var from = 0;
+  while (true) {
+    final open = _firstFrom(_paragraphOpen, html, from);
+    if (open == null) return;
+    final close = _firstFrom(_paragraphClose, html, open.end);
+    if (close == null) return;
+    yield html.substring(open.end, close.start);
+    from = close.end;
+  }
+}
+
+Match? _firstFrom(RegExp re, String s, int start) {
+  final it = re.allMatches(s, start).iterator;
+  return it.moveNext() ? it.current : null;
+}
+
+final _anyTag = RegExp(r'<[^>]+>');
+
+String _htmlText(String html) => html
+    .replaceAll(_anyTag, ' ')
+    .replaceAll('&nbsp;', ' ')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&amp;', '&')
+    .replaceAll(RegExp(r'\s+'), ' ')
+    .trim();
+
+/// Фото и первый содержательный абзац из HTML страницы. Битые/чужие картинки
+/// (не data:-URI jpeg/png/webp) пропускаются — сеть в странице закрыта CSP,
+/// внешних src там быть не может.
+FluidPagePreview parseFluidPagePreview(String html) {
+  final images = <FluidPageImage>[];
+  for (final tag in _imgTag.allMatches(html)) {
+    if (images.length == kFluidPagePreviewMaxImages) break;
+    final src = _dataSrc.firstMatch(tag[0]!);
+    if (src == null) continue;
+    final Uint8List bytes;
+    try {
+      bytes = base64.decode(src[1]!.replaceAll(RegExp(r'\s'), ''));
+    } on FormatException {
+      continue;
+    }
+    if (bytes.isEmpty) continue;
+    final alt = _altAttr.firstMatch(tag[0]!)?[2] ?? '';
+    images.add(FluidPageImage(bytes: bytes, alt: _htmlText(alt)));
+  }
+  var summary = '';
+  for (final body in _paragraphs(html)) {
+    final text = _htmlText(body);
+    // Подпись под фото («Фото: автор, лицензия») — не содержание страницы.
+    if (text.length >= 40 && !text.startsWith('Фото:')) {
+      summary = text;
+      break;
+    }
+  }
+  return FluidPagePreview(images: images, summary: summary);
+}

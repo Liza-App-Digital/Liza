@@ -4,6 +4,7 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/themes.dart';
 import 'package:liza/utils/news_audience.dart';
+import 'package:liza/utils/unseen_messages.dart';
 
 class UnreadBubble extends StatelessWidget {
   final Room room;
@@ -17,7 +18,9 @@ class UnreadBubble extends StatelessWidget {
     final newsHiddenTail = room.hasNewsAudienceHiddenTail;
     final unread = room.isUnread && !newsHiddenTail;
     final hasNotifications = room.notificationCount > 0 && !newsHiddenTail;
-    final hasNewMessages = room.hasNewMessages && !newsHiddenTail;
+    // Порядковый hasUnseenMessages, а не SDK-hasNewMessages: тот сравнивает ts
+    // КВИТАНЦИИ с ts события и залипает точкой у прочитанной комнаты.
+    final hasNewMessages = room.hasUnseenMessages && !newsHiddenTail;
     final unreadBubbleSize = unread || hasNewMessages
         ? room.notificationCount > 0
               ? 20.0

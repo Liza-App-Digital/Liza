@@ -28,6 +28,10 @@ Future<bool> waitForBotLinkMembership(
     } on MatrixException catch (error) {
       if (!isCurrent() || error.errcode != 'M_NOT_FOUND') return false;
     } on TimeoutException {
+      // Таймер усекает Duration до целых миллисекунд и срабатывает раньше
+      // Stopwatch: без этой проверки последний срез бюджета порождал второй
+      // GET с остатком <1 мс.
+      if (budget == remaining) return false;
       // Медленная сеть: пробуем снова, пока не вышел общий бюджет.
     }
     final pause = timeout - elapsed.elapsed;

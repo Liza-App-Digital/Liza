@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
-import 'package:liza/pages/chat/fluid_page_building_view.dart';
 import 'package:liza/pages/chat/fluid_page_view.dart';
 import 'package:liza/pages/chat/mini_app_host_api.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
@@ -251,7 +250,6 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     final mode = miniAppLayoutModeFor(size.width, tablet: tablet);
     // Свежий снимок темы — для отдельных окон ОС, которые откроются потом.
     MiniAppWindows.instance.theme = Theme.of(context);
-    _manager.sideLayout = mode == MiniAppLayoutMode.side;
     // Режим сменился посреди перетаскивания границы (поворот, ширина окна) —
     // ручка размонтирована и onEnd не придёт: не оставляем висеть щит.
     if (mode == MiniAppLayoutMode.sheet && _resizing) {
@@ -559,12 +557,11 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
                   child: debugBuilder(context, app),
                 )
               : app.kind == MiniAppKind.html
-              ? app.pageEvent == null
-                    ? FluidPageBuildingView(
-                        key: _keyFor(app),
-                        pendingId: app.appUrl.substring('pending:'.length),
-                      )
-                    : FluidPageView(key: _keyFor(app), event: app.pageEvent!)
+              ? FluidPageView(
+                  key: _keyFor(app),
+                  pageKey: app.contentKey,
+                  loadDocument: () => loadFluidPageDocument(app.pageEvent!),
+                )
               : MiniAppWebViewContent(
                   key: _keyFor(app),
                   appUrl: app.appUrl,

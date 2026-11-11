@@ -16,6 +16,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_host_api.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_overlay.dart';
+import 'package:liza/pages/chat/fluid_page_view.dart';
 import 'package:liza/pages/chat/mini_app_web_view.dart';
 import 'package:liza/utils/monitoring.dart';
 import 'package:liza/widgets/app_lock.dart';
@@ -67,6 +68,10 @@ class MiniAppWindowConfig {
   final bool dark;
   final int seedColor;
 
+  /// Жидкая страница ([MiniAppKind.html]): окно рисует статичный документ,
+  /// запрошенный у главного окна, а не mini App.
+  final MiniAppKind kind;
+
   const MiniAppWindowConfig({
     required this.appId,
     required this.appUrl,
@@ -82,6 +87,7 @@ class MiniAppWindowConfig {
     required this.contentKey,
     required this.dark,
     required this.seedColor,
+    this.kind = MiniAppKind.miniApp,
   });
 
   factory MiniAppWindowConfig.of(MiniAppInstance app, ThemeData? theme) =>
@@ -100,6 +106,7 @@ class MiniAppWindowConfig {
         contentKey: app.contentKey,
         dark: theme?.brightness == Brightness.dark,
         seedColor: (theme?.colorScheme.primary ?? Colors.indigo).toARGB32(),
+        kind: app.kind,
       );
 
   factory MiniAppWindowConfig.fromJson(Map<String, Object?> json) =>
@@ -118,6 +125,8 @@ class MiniAppWindowConfig {
         contentKey: json['content_key'] as String,
         dark: json['dark'] as bool,
         seedColor: json['seed_color'] as int,
+        kind:
+            MiniAppKind.values.asNameMap()[json['kind']] ?? MiniAppKind.miniApp,
       );
 
   Map<String, Object?> toJson() => {
@@ -135,6 +144,7 @@ class MiniAppWindowConfig {
     'content_key': contentKey,
     'dark': dark,
     'seed_color': seedColor,
+    'kind': kind.name,
   };
 }
 
@@ -405,6 +415,13 @@ class MiniAppWindows {
         );
       case 'fetchInitData':
         return _hostFor(appId, args).fetchInitData();
+      case 'fetchPageDocument':
+        final event = _manager.detachedApps
+            .where((a) => a.appId == appId)
+            .firstOrNull
+            ?.pageEvent;
+        if (event == null) throw StateError('нет страницы для окна $appId');
+        return loadFluidPageDocument(event);
       case 'sendData':
         final content = jsonDecode(args['content'] as String);
         await _hostFor(
@@ -488,11 +505,12 @@ class RemoteMiniAppHostApi
             'account_user_id': accountUserId,
             ...?args,
           })
-          .timeout(
-            method == 'interactive'
-                ? const Duration(seconds: 100)
-                : _rpcTimeout,
-          );
+          .timeout(switch (method) {
+            'interactive' => const Duration(seconds: 100),
+            // Скачать и расшифровать до 1,5 МБ — дольше обычного RPC.
+            'fetchPageDocument' => const Duration(seconds: 45),
+            _ => _rpcTimeout,
+          });
 
   @override
   Future<String> fetchInitData() async =>
@@ -505,6 +523,11 @@ class RemoteMiniAppHostApi
   @override
   Future<String> createInviteLink(String? startPath) async =>
       (await _call<String>('createInviteLink', {'start_path': startPath}))!;
+
+  /// Документ жидкой страницы (с CSP): у окна нет Matrix-клиента, событие
+  /// скачивает и расшифровывает главное окно.
+  Future<String> fetchPageDocument() async =>
+      (await _call<String>('fetchPageDocument'))!;
 
   Future<void> attach(String? startPath) =>
       _call<void>('attach', {'start_path': startPath});
@@ -552,11 +575,12 @@ final bool miniAppWindowFrameless =
     defaultTargetPlatform == TargetPlatform.windows;
 
 /// Единственная шапка отдельного окна: название, «Прикрепить к Лизе», крестик.
+/// Без [onAttach] кнопки «Прикрепить» нет (жидкая страница живёт в окне).
 class MiniAppWindowHeader extends StatelessWidget {
   final String title;
   final String attachTooltip;
   final String closeTooltip;
-  final VoidCallback onAttach;
+  final VoidCallback? onAttach;
   final VoidCallback onClose;
   final VoidCallback onDragStart;
 
@@ -564,7 +588,7 @@ class MiniAppWindowHeader extends StatelessWidget {
     required this.title,
     required this.attachTooltip,
     required this.closeTooltip,
-    required this.onAttach,
+    this.onAttach,
     required this.onClose,
     required this.onDragStart,
     super.key,
@@ -600,18 +624,19 @@ class MiniAppWindowHeader extends StatelessWidget {
               ),
             ),
           ),
-          IconButton(
-            key: const ValueKey('miniapp-window-attach'),
-            tooltip: attachTooltip,
-            // Обратный «Открепить» из шапки панели: тот же значок, повёрнутый.
-            icon: ExcludeSemantics(
-              child: Transform.rotate(
-                angle: math.pi,
-                child: const Icon(Icons.open_in_new, size: 20),
+          if (onAttach != null)
+            IconButton(
+              key: const ValueKey('miniapp-window-attach'),
+              tooltip: attachTooltip,
+              // Обратный «Открепить» из шапки панели: тот же значок, повёрнутый.
+              icon: ExcludeSemantics(
+                child: Transform.rotate(
+                  angle: math.pi,
+                  child: const Icon(Icons.open_in_new, size: 20),
+                ),
               ),
+              onPressed: onAttach,
             ),
-            onPressed: onAttach,
-          ),
           IconButton(
             key: const ValueKey('miniapp-window-close'),
             tooltip: closeTooltip,
@@ -808,23 +833,31 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
                       title: _config.appName,
                       attachTooltip: l10n.miniAppAttach,
                       closeTooltip: l10n.close,
-                      onAttach: () => _attach(l10n),
+                      onAttach: _config.kind == MiniAppKind.html
+                          ? null
+                          : () => _attach(l10n),
                       onClose: _close,
                       onDragStart: _startDrag,
                     ),
                     Divider(height: 1, color: colorScheme.outlineVariant),
                     Expanded(
-                      child: MiniAppWebViewContent(
-                        key: _contentKey,
-                        appUrl: _config.appUrl,
-                        appId: _config.appId,
-                        appName: _config.appName,
-                        host: _host,
-                        roomId: _config.roomId,
-                        appType: _config.appType,
-                        appStartPath: _config.appStartPath,
-                        onClose: _close,
-                      ),
+                      child: _config.kind == MiniAppKind.html
+                          ? FluidPageView(
+                              key: ValueKey(_config.contentKey),
+                              pageKey: _config.contentKey,
+                              loadDocument: _host.fetchPageDocument,
+                            )
+                          : MiniAppWebViewContent(
+                              key: _contentKey,
+                              appUrl: _config.appUrl,
+                              appId: _config.appId,
+                              appName: _config.appName,
+                              host: _host,
+                              roomId: _config.roomId,
+                              appType: _config.appType,
+                              appStartPath: _config.appStartPath,
+                              onClose: _close,
+                            ),
                     ),
                   ],
                 ),

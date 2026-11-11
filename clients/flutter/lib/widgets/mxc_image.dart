@@ -161,6 +161,23 @@ class MxcImage extends StatefulWidget {
       oldW.uri != newW.uri ||
       oldW.event?.eventId != newW.event?.eventId ||
       oldW.cacheKey != newW.cacheKey;
+
+  // Доступ к процессному LRU для стража RL-mxc-avatar-bad-bytes: живой Client
+  // в widget-тесте вешает прогон, поэтому байты засеваются ДО монтирования.
+  @visibleForTesting
+  static void seedImageCache(String key, Uint8List data) =>
+      _MxcImageState._imageDataCache[key] = data;
+
+  @visibleForTesting
+  static void evictImageCache(String key) =>
+      _MxcImageState._imageDataCache.remove(key);
+
+  @visibleForTesting
+  static List<String> imageCacheKeys() =>
+      _MxcImageState._imageDataCache.keys.toList();
+
+  @visibleForTesting
+  static void clearImageCache() => _MxcImageState._imageDataCache.clear();
 }
 
 /// Классификатор причины сдачи загрузки для сигнала `[media-stuck]` (ЗАКРЫТЫЙ
@@ -269,6 +286,20 @@ class _MxcImageState extends State<MxcImage> {
 
   Uint8List? _imageDataNoCache;
 
+  // Свои показанные байты при заданном cacheKey. Процессный LRU (50) общий на
+  // всё приложение: длинный список чатов вытесняет из него аватарки ленты
+  // сториз, а keep-alive лента перестраивается на каждый sync — без своей
+  // ссылки build видел null и рисовал человечка навсегда (перезагрузка только
+  // из initState). Надежда/Рома 09.11. В LRU обратно НЕ кладём: иначе каждый
+  // rebuild ленты вытеснял бы чужие записи.
+  Uint8List? _ownData;
+  String? _ownKey;
+
+  void _dropOwnData() {
+    _ownData = null;
+    _ownKey = null;
+  }
+
   // true после исчерпания ретраев: рендерим tap-to-retry вместо вечного
   // спиннера/блюра. Сбрасывается при ручном повторе.
   bool _failed = false;
@@ -285,8 +316,13 @@ class _MxcImageState extends State<MxcImage> {
       // Promote to MRU: remove + re-insert keeps key at tail.
       _imageDataCache.remove(cacheKey);
       _imageDataCache[cacheKey] = data;
+      // Байты мог положить соседний виджет (тогда _load не запускался) —
+      // запоминаем их как свои, чтобы пережить вытеснение из LRU.
+      _ownData = data;
+      _ownKey = cacheKey;
+      return data;
     }
-    return data;
+    return _ownKey == cacheKey ? _ownData : null;
   }
 
   set _imageData(Uint8List? data) {
@@ -296,6 +332,8 @@ class _MxcImageState extends State<MxcImage> {
       _imageDataNoCache = data;
       return;
     }
+    _ownData = data;
+    _ownKey = cacheKey;
     _imageDataCache.remove(cacheKey);
     _imageDataCache[cacheKey] = data;
     while (_imageDataCache.length > _imageDataCacheMaxEntries) {
@@ -600,6 +638,7 @@ class _MxcImageState extends State<MxcImage> {
         if (!await client.database.deleteFile(mxc)) return;
         if (!mounted) return;
         _imageDataNoCache = null;
+        _dropOwnData();
         final cacheKey = widget.cacheKey;
         if (cacheKey != null) _imageDataCache.remove(cacheKey);
         setState(() {});
@@ -613,11 +652,20 @@ class _MxcImageState extends State<MxcImage> {
   // uri-путь (аватарки): байты с валидным magic, но не декодируются (усечённые).
   // Убираем запись из процессного LRU (ключ захвачен ДО отложенного вызова:
   // innerSize/кольцо сторис меняют cacheKey) — следующий показ перекачает.
+  // Свою копию сбрасываем сразу (иначе битые байты держались бы до dispose), а
+  // этот State переводим в терминальный сбой: перекачка из того же дискового
+  // кэша вернула бы те же байты и зациклила декод. Повторный сброс в postframe:
+  // build между errorBuilder и этим кадром снова запомнил бы битые байты из LRU.
   void _evictUndecodableUriImage() {
     final key = widget.cacheKey;
     if (key == null || widget.uri == null) return;
+    if (_ownKey == key) _dropOwnData();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _imageDataCache.remove(key);
+      if (_ownKey == key) _dropOwnData();
+      if (mounted && !_failed && widget.cacheKey == key) {
+        setState(() => _failed = true);
+      }
     });
   }
 
@@ -639,6 +687,7 @@ class _MxcImageState extends State<MxcImage> {
     if (MxcImage.attachmentIdentityChanged(oldWidget, widget)) {
       setState(() {
         _imageDataNoCache = null;
+        _dropOwnData();
         _failed = false;
       });
       WidgetsBinding.instance.addPostFrameCallback((_) {

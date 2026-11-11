@@ -10,6 +10,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_web_view.dart';
 import 'package:liza/pages/chat_list/knock_request_badge.dart';
 import 'package:liza/pages/chat_list/unread_bubble.dart';
+import 'package:liza/utils/unseen_messages.dart';
 import 'package:liza/utils/bot_miniapp_registry.dart';
 import 'package:liza/utils/miniapp_room.dart';
 import 'package:liza/widgets/mini_app_open_pill.dart';
@@ -276,7 +277,7 @@ class ChatListItem extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           softWrap: false,
                           style: TextStyle(
-                            fontWeight: unread || room.hasNewMessages
+                            fontWeight: unread || room.hasUnseenMessages
                                 ? FontWeight.w500
                                 : null,
                           ),
@@ -489,7 +490,7 @@ class ChatListItem extends StatelessWidget {
                               maxLines: room.notificationCount >= 1 ? 2 : 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                color: unread || room.hasNewMessages
+                                color: unread || room.hasUnseenMessages
                                     ? theme.colorScheme.onSurface
                                     : theme.colorScheme.outline,
                               ),

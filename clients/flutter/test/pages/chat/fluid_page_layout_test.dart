@@ -11,7 +11,8 @@ import 'package:liza/widgets/layouts/two_column_layout.dart';
 
 import '../../utils/test_client.dart';
 
-/// Страж свёртки списка чатов под открытой HTML-страницей: на РЕАЛЬНОМ
+/// Страж свёртки списка чатов под HTML-страницей в ЗАПАСНОЙ панели (нет окон
+/// ОС / включён PIN) и пустой правой части при окне ОС: на РЕАЛЬНОМ
 /// `MiniAppOverlay` + `TwoColumnLayout` (контент страницы подменён — WebView
 /// в widget-тесте не поднимается).
 /// ledger:RL-liza-liquid-page
@@ -88,7 +89,7 @@ void main() {
       final compact = LizaThemes.navRailWidth + 1 + kCompactChatListWidth;
       expect(listWidth(tester), full);
 
-      manager.openPage(pageEvent(), title: 'Цвета');
+      manager.openPage(pageEvent(), title: 'Цвета', allowDetach: false);
       await tester.pumpAndSettle();
       expect(listWidth(tester), compact);
 
@@ -111,6 +112,25 @@ void main() {
         full,
         reason: 'закрытие страницы возвращает список',
       );
+    },
+  );
+
+  testWidgets(
+    'окно ОС по умолчанию: справа ни панели, ни свёртки списка, чат на месте',
+    (tester) async {
+      // AC:RL-liza-liquid-page/40
+      manager.windowsSupported = true;
+      addTearDown(() => manager.windowsSupported = false);
+      await pumpHost(tester);
+      manager.openPage(pageEvent(), title: 'Цвета', allowDetach: true);
+      await tester.pumpAndSettle();
+      expect(manager.detachedApps, hasLength(1));
+      expect(find.byKey(const ValueKey('content-liza-page')), findsNothing);
+      expect(
+        listWidth(tester),
+        LizaThemes.columnWidth + LizaThemes.navRailWidth,
+      );
+      expect(contentInits, 0);
     },
   );
 
@@ -138,12 +158,12 @@ void main() {
     (tester) async {
       // AC:RL-liza-liquid-page/9
       await pumpHost(tester);
-      manager.openPage(pageEvent(), title: 'Цвета');
+      manager.openPage(pageEvent(), title: 'Цвета', allowDetach: false);
       await tester.pumpAndSettle();
       manager.expandChatList();
       manager.closeAll();
       await tester.pumpAndSettle();
-      manager.openPage(pageEvent(), title: 'Цвета');
+      manager.openPage(pageEvent(), title: 'Цвета', allowDetach: false);
       await tester.pumpAndSettle();
       expect(
         listWidth(tester),
@@ -158,7 +178,7 @@ void main() {
     (tester) async {
       // AC:RL-liza-liquid-page/10
       await pumpHost(tester);
-      manager.openPage(pageEvent(), title: 'Цвета');
+      manager.openPage(pageEvent(), title: 'Цвета', allowDetach: false);
       await tester.pumpAndSettle();
       for (final filled in [false, true]) {
         manager.panelFilled.value = filled;
@@ -178,7 +198,7 @@ void main() {
     (tester) async {
       // AC:RL-liza-liquid-page/11
       await pumpHost(tester);
-      manager.openPage(pageEvent(), title: 'Цвета');
+      manager.openPage(pageEvent(), title: 'Цвета', allowDetach: false);
       await tester.pumpAndSettle();
       manager.expandChatList();
       await tester.pumpAndSettle();

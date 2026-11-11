@@ -1,5 +1,6 @@
 // Шапка отдельного окна mini App: единственная панель, без системной дубли.
 // ledger:RL-miniapp-detached-window
+// ledger:RL-liza-liquid-page
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -103,4 +104,33 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('miniapp-window-close')));
     expect(drag, 1);
   });
+
+  // AC:RL-liza-liquid-page/46 — окно жидкой страницы: без «Прикрепить», только
+  // крестик; длинное название не ломает шапку.
+  for (final width in [360.0, 1100.0]) {
+    testWidgets('окно страницы без «Прикрепить» ($width)', (tester) async {
+      tester.view.physicalSize = Size(width, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      var closed = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MiniAppWindowHeader(
+              title: 'Сравнение тарифов связи ' * 4,
+              attachTooltip: 'Прикрепить к Лизе',
+              closeTooltip: 'Закрыть',
+              onClose: () => closed++,
+              onDragStart: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.byKey(const ValueKey('miniapp-window-attach')), findsNothing);
+      expect(find.byType(IconButton), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('miniapp-window-close')));
+      expect(closed, 1);
+      expect(tester.takeException(), isNull);
+    });
+  }
 }

@@ -23,10 +23,8 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/channel_subscribe_bar.dart';
 import 'package:liza/pages/chat/chat_view.dart';
 import 'package:liza/pages/chat/event_info_dialog.dart';
-import 'package:liza/pages/chat/events/fluid_page_card.dart';
 import 'package:liza/pages/chat/events/message.dart';
 import 'package:liza/pages/chat/events/message_context_menu.dart';
-import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/start_poll_bottom_sheet.dart';
 import 'package:liza/pages/chat_details/chat_details.dart';
 import 'package:liza/utils/adaptive_bottom_sheet.dart';
@@ -785,40 +783,6 @@ class ChatController extends State<ChatPageWithRoom>
           ),
         )
         .listen(_onOwnEcho);
-    // Страница-ответ ИИ открывается справа сама по приходу события, а не по
-    // постройке карточки: под длинной лентой карточка за экраном не строится.
-    if (!PlatformInfos.isLinux && !PlatformInfos.isWeb) {
-      final openedAt = DateTime.now();
-      final matrix = Matrix.of(context);
-      _fluidPageSubscription = client.onTimelineEvent.stream
-          .where(
-            (event) => shouldAutoOpenLiveFluidPage(
-              event: event,
-              roomId: roomId,
-              openedAt: openedAt,
-              sideLayout: MiniAppManager.instance.sideLayout,
-              isBotOrAiUser: matrix.isBotOrAiUser,
-            ),
-          )
-          .listen(_onFluidPage);
-      // Обещание страницы — панель «собираю» с этапами справа сразу, не ждём
-      // готовой страницы (до минуты).
-      _fluidPendingSubscription = client.onTimelineEvent.stream.listen((event) {
-        final pending = liveFluidPagePending(
-          event: event,
-          roomId: roomId,
-          openedAt: openedAt,
-          isBotOrAiUser: matrix.isBotOrAiUser,
-        );
-        if (pending == null || !mounted) return;
-        applyLiveFluidPagePending(
-          pending,
-          event: event,
-          sideLayout: MiniAppManager.instance.sideLayout,
-          title: L10n.of(context).fluidPageBuilding,
-        );
-      });
-    }
     // Действие человека в этом чате (отправка, реакция, кнопка бота) —
     // доказательство внимания: квитанция уходит сразу, и из окна без фокуса
     // (заявка №60). Реакция сама ни прокрутки, ни квитанции не вызывает.
@@ -1115,18 +1079,6 @@ class ChatController extends State<ChatPageWithRoom>
   bool _pendingScrollDownAfterEcho = false;
 
   StreamSubscription<Event>? _ownEchoSubscription;
-
-  StreamSubscription<Event>? _fluidPageSubscription;
-  StreamSubscription<Event>? _fluidPendingSubscription;
-
-  void _onFluidPage(Event event) {
-    if (!mounted) return;
-    final title = fluidPageTitle(event);
-    MiniAppManager.instance.openPage(
-      event,
-      title: title.isEmpty ? L10n.of(context).fluidPageOpen : title,
-    );
-  }
 
   StreamSubscription<String>? _humanInputSubscription;
 
@@ -1471,8 +1423,6 @@ class ChatController extends State<ChatPageWithRoom>
     timeline = null;
     discussionTimeline?.cancelSubscriptions();
     discussionTimeline = null;
-    _fluidPageSubscription?.cancel();
-    _fluidPendingSubscription?.cancel();
     _humanInputSubscription?.cancel();
     // Парно к addObserver в initState: без этого каждый закрытый чат оставался
     // lifecycle-слушателем и на каждом `resumed` звал setReadMarker (спасал
