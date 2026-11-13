@@ -14,6 +14,7 @@ REASONS = frozenset(
         "unregistered",
         "provider_unavailable",
         "connection_failure",
+        "provider_timeout",
         "invalid_request",
         "unauthorized",
         "sender_mismatch",
@@ -24,6 +25,7 @@ REASONS = frozenset(
         "invalid_response",
         "unexpected_error",
         "retry_exhausted",
+        "deduplicated",
     }
 )
 
@@ -73,3 +75,43 @@ class PushOutcome:
                 sort_keys=True,
             ),
         )
+
+
+# M6 (спека 2026-11-12-push-sync-industry-alignment): момент отправки пуша Sygnal'ом
+# в payload (флаг `sent_timestamp`, мс эпохи). Устройство пишет его в журнал, и
+# подтверждение несёт `s` — приёмник считает задержку «отправлено → дошло».
+SENT_MS_KEY = "liza_sent_ms"
+
+
+def _hash128(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+
+
+def emit_apns_id(
+    log: NotificationLoggerAdapter,
+    pushkey: str,
+    event_id: Optional[str],
+    apns_id: str,
+    apns_unique_id: Optional[str],
+    stable: bool,
+    status: Optional[int],
+) -> None:
+    """Отдельная строка, чтобы набор ключей PUSH_OUTCOME (его читает
+    push_fleet_report) не менялся. apns-id — не PII: случайный или UUIDv5
+    от токена, обратно не разворачивается."""
+    log.info(
+        "PUSH_APNS_ID %s",
+        json.dumps(
+            {
+                "pushkey_hash": _hash128(pushkey),
+                "event_hash": _hash128(event_id) if event_id else None,
+                "hash_version": "sha256-128",
+                "apns_id": apns_id,
+                "apns_unique_id": apns_unique_id,
+                "stable": stable,
+                "status": status,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+    )

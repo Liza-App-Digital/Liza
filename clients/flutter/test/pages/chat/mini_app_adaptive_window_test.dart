@@ -122,10 +122,12 @@ void main() {
         MiniAppLayoutMode.sheet,
         MiniAppLayoutMode.side,
       ]);
-      for (final w in const [390.0, 1000.0, 1200.0, 1280.0]) {
+      for (final w in const [390.0, 600.0, 679.0]) {
         expect(miniAppLayoutModeFor(w), MiniAppLayoutMode.sheet, reason: '$w');
       }
-      expect(miniAppLayoutModeFor(1281), MiniAppLayoutMode.side);
+      for (final w in const [680.0, 900.0, 1200.0, 1280.0, 1281.0]) {
+        expect(miniAppLayoutModeFor(w), MiniAppLayoutMode.side, reason: '$w');
+      }
       expect(miniAppLayoutModeFor(1440), MiniAppLayoutMode.side);
       expect(miniAppLayoutModeFor(1920, tablet: true), MiniAppLayoutMode.sheet);
     });
@@ -207,11 +209,7 @@ void main() {
       },
     );
 
-    for (final size in const [
-      Size(390, 844),
-      Size(1000, 800),
-      Size(1200, 800),
-    ]) {
+    for (final size in const [Size(390, 844), Size(600, 800)]) {
       testWidgets('${size.width.toInt()}: на весь экран, кнопки режима нет', (
         tester,
       ) async {
@@ -489,6 +487,60 @@ void main() {
       },
     );
 
+    // Текущее поведение, о котором спросила Надежда 09.11 («можно открыть два
+    // окна»): решение отложено (plans/1011/07-miniapp-two-windows). Сменит
+    // продукт число окон — этот тест меняется осознанно вместе с кодом.
+    test(
+      'разные mini App — по окну ОС на каждый, один и тот же — одно',
+      () async {
+        // AC:RL-miniapp-detached-window/46
+        manager.windowsSupported = true;
+        final focus = <String>[];
+        final sub = manager.windowFocusRequests.listen(focus.add);
+        openShop();
+        openCafe();
+        expect(manager.detachedApps.map((a) => a.appId), ['shop', 'cafe']);
+        expect(manager.hasApps, isFalse, reason: 'в окне Лизы ничего нет');
+
+        openCafe();
+        openShop();
+        await Future<void>.delayed(Duration.zero);
+        expect(manager.detachedApps.map((a) => a.appId), ['shop', 'cafe']);
+        expect(focus, ['cafe', 'shop'], reason: 'повтор поднимает своё окно');
+        await sub.cancel();
+      },
+    );
+
+    test('прикрепить одно из двух окон: второе остаётся окном; оба '
+        'прикреплены — видно последнее, закрытие показывает первое', () {
+      // AC:RL-miniapp-detached-window/47
+      manager.windowsSupported = true;
+      openShop();
+      openCafe();
+      manager.attach('shop');
+      expect(manager.apps.map((a) => a.appId), ['shop']);
+      expect(manager.detachedApps.map((a) => a.appId), ['cafe']);
+
+      manager.attach('cafe');
+      expect(manager.detachedApps, isEmpty);
+      expect(manager.apps.map((a) => a.appId), ['shop', 'cafe']);
+      expect(manager.activeApp?.appId, 'cafe');
+
+      manager.close('cafe');
+      expect(manager.activeApp?.appId, 'shop');
+    });
+
+    test('один прикреплён панелью — второй открывается окном ОС', () {
+      // AC:RL-miniapp-detached-window/48
+      manager.windowsSupported = true;
+      openShop();
+      manager.attach('shop');
+      openCafe();
+      expect(manager.apps.map((a) => a.appId), ['shop']);
+      expect(manager.activeApp?.appId, 'shop');
+      expect(manager.detachedApps.map((a) => a.appId), ['cafe']);
+    });
+
     test('закрытие окна ОС закрывает только его app', () {
       // AC:RL-miniapp-detached-window/3
       manager.windowsSupported = true;
@@ -594,6 +646,63 @@ void main() {
     });
   });
 
+  group('Окно Лизы не на весь экран: боковая панель и в узком окне', () {
+    // AC:RL-miniapp-adaptive-window/50
+    test('clamp: приложение остаётся одноколоночным и не уже 360', () {
+      for (final w in const [700.0, 900.0, 1200.0, 1280.0]) {
+        for (final want in const [100.0, 440.0, 5000.0]) {
+          final pw = clampMiniAppPanelWidth(want, w);
+          expect(pw, greaterThanOrEqualTo(kMiniAppMinPanelWidth), reason: '$w');
+          expect(w - pw, greaterThanOrEqualTo(kMiniAppMinNarrowChildWidth));
+          expect(w - pw, lessThan(kMiniAppMinChildWidth), reason: '$w');
+        }
+      }
+    });
+
+    for (final width in const [900.0, 1200.0]) {
+      testWidgets('${width.toInt()}: справа панель с бегунком, чат виден', (
+        tester,
+      ) async {
+        // AC:RL-miniapp-adaptive-window/50
+        await pumpHost(tester, Size(width, 800));
+        openShop();
+        await tester.pumpAndSettle();
+
+        final pw = clampMiniAppPanelWidth(kMiniAppDefaultPanelWidth, width);
+        final rect = panelRect(tester);
+        expect(rect.right, width);
+        expect(rect.width, pw);
+        expect(rect.left, greaterThan(0));
+        expect(homeSize!.width, width - pw);
+        expect(
+          find.byKey(const ValueKey('miniapp-host-divider')),
+          findsOneWidget,
+        );
+        expect(homeInits, 1);
+      });
+    }
+
+    testWidgets('границу можно тянуть, панель не вылетает за clamp', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/50
+      await pumpHost(tester, const Size(900, 800));
+      openShop();
+      await tester.pumpAndSettle();
+      final handle = find.byKey(const ValueKey('miniapp-host-divider'));
+      final g = await tester.startGesture(tester.getCenter(handle));
+      await g.moveBy(const Offset(80, 0));
+      await tester.pump();
+      await g.up();
+      await tester.pumpAndSettle();
+      expect(manager.panelFilled.value, isFalse);
+      expect(
+        panelRect(tester).width,
+        clampMiniAppPanelWidth(kMiniAppDefaultPanelWidth - 80, 900),
+      );
+    });
+  });
+
   group('Планшет — как на ПК, без двойного экрана', () {
     for (final size in const [
       Size(1366, 1024),
@@ -625,7 +734,8 @@ void main() {
 
     test('телефон и узкое окно — по-прежнему по ширине', () {
       // AC:RL-miniapp-detached-window/5 AC:RL-miniapp-adaptive-window/48
-      expect(miniAppLayoutModeFor(1100), MiniAppLayoutMode.sheet);
+      expect(miniAppLayoutModeFor(600), MiniAppLayoutMode.sheet);
+      expect(miniAppLayoutModeFor(1100), MiniAppLayoutMode.side);
       expect(miniAppLayoutModeFor(1440), MiniAppLayoutMode.side);
       expect(miniAppLayoutModeFor(1366, tablet: true), MiniAppLayoutMode.sheet);
     });

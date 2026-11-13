@@ -25,7 +25,7 @@ from google.auth._default_async import load_credentials_from_file
 from google.oauth2._credentials_async import Credentials
 from opentracing import Span, logs, tags
 from prometheus_client import Counter, Gauge, Histogram
-from twisted.internet.defer import Deferred, DeferredSemaphore
+from twisted.internet.defer import Deferred, DeferredSemaphore, ensureDeferred
 from twisted.web.client import FileBodyProducer, HTTPConnectionPool, readBody
 from twisted.web.http_headers import Headers
 from twisted.web.iweb import IResponse
@@ -38,7 +38,8 @@ from sygnal._clean_body import (
     media_caption,
     media_type_label,
 )
-from sygnal._push_outcomes import PushOutcome
+from sygnal._push_outcomes import SENT_MS_KEY, PushOutcome
+from sygnal._sent_cache import SENT_CACHE_TTL_SECONDS, SentCache
 from sygnal.exceptions import (
     NotificationDispatchException,
     NotificationQuotaDispatchException,
@@ -84,9 +85,14 @@ logger = logging.getLogger(__name__)
 
 GCM_URL = b"https://fcm.googleapis.com/fcm/send"
 GCM_URL_V1 = "https://fcm.googleapis.com/v1/projects/{ProjectID}/messages:send"
-MAX_TRIES = 3
-RETRY_DELAY_BASE = 10
+# Р4 спеки 2026-11-12: весь путь до FCM укладывается в 9 с, чтобы ответ успел
+# вернуться в Synapse раньше таймаута маршрута Envoy. Длинная пауза внутри Sygnal
+# бессмысленна: Synapse всё равно повторит запрос сам, со своей отсрочкой.
+MAX_TRIES = 2
+RETRY_DELAY_BASE = 0.5
 RETRY_DELAY_BASE_QUOTA_EXCEEDED = 60
+REQUEST_TIMEOUT_SECONDS = 4.0
+DISPATCH_BUDGET_SECONDS = 9.0
 MAX_BYTES_PER_FIELD = 1024
 MAX_FIREBASE_MESSAGE_SIZE = 4096
 
@@ -127,6 +133,9 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
     Pushkin that relays notifications to Google/Firebase Cloud Messaging.
     """
 
+    # Флаг по умолчанию — на классе: тесты собирают pushkin без __init__.
+    sent_timestamp = False
+
     UNDERSTOOD_CONFIG_FIELDS = {
         "type",
         "api_key",
@@ -136,6 +145,9 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
         "project_id",
         "service_account_file",
         "send_badge_counts",
+        "counts_priority_normal",
+        "success_cache_ttl",
+        "sent_timestamp",
     } | ConcurrencyLimitedPushkin.UNDERSTOOD_CONFIG_FIELDS
 
     def __init__(self, name: str, sygnal: "Sygnal", config: Dict[str, Any]) -> None:
@@ -154,6 +166,14 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
         )
 
         self.connection_semaphore = DeferredSemaphore(self.max_connections)
+        self.counts_priority_normal = self.get_config(
+            "counts_priority_normal", bool, False
+        )
+        self.sent_timestamp = self.get_config("sent_timestamp", bool, False)
+        self.sent_cache = SentCache(
+            self.get_config("success_cache_ttl", int, SENT_CACHE_TTL_SECONDS),
+            sygnal.reactor.seconds,
+        )
         self.http_pool.maxPersistentPerHost = self.max_connections
 
         tls_client_options_factory = ClientTLSOptionsFactory()
@@ -264,13 +284,21 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
         try:
             with SEND_TIME_HISTOGRAM.time():
                 with ACTIVE_REQUESTS_GAUGE.track_inprogress():
-                    response = await self.http_agent.request(
-                        b"POST",
-                        url,
-                        headers=Headers(headers),
-                        bodyProducer=body_producer,
-                    )
-                    response_text = (await readBody(response)).decode()
+
+                    async def send() -> Tuple[IResponse, str]:
+                        response = await self.http_agent.request(
+                            b"POST",
+                            url,
+                            headers=Headers(headers),
+                            bodyProducer=body_producer,
+                        )
+                        return response, (await readBody(response)).decode()
+
+                    # Без дедлайна зависший FCM держал запрос Synapse дольше
+                    # 15 с маршрута Envoy (инцидент 11.11, pushes.md §24).
+                    request = ensureDeferred(send())
+                    request.addTimeout(REQUEST_TIMEOUT_SECONDS, self.sygnal.reactor)
+                    response, response_text = await request
         except Exception as exception:
             raise TemporaryNotificationDispatchException(
                 "GCM request failure"
@@ -579,6 +607,17 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
         # span_tags = {"pushkeys": pushkeys}
         span_tags = {"gcm_num_devices": len(pushkeys)}
 
+        sent_key = (
+            self.sent_cache.key(n, device)
+            if self.api_version is APIVersion.V1
+            else None
+        )
+        if self.sent_cache.seen(sent_key):
+            PushOutcome(
+                log, "fcm", self.name, device.pushkey, n.event_id, 0, False
+            ).emit("skipped", "deduplicated")
+            return []
+
         with self.sygnal.tracer.start_span(
             "gcm_dispatch", tags=span_tags, child_of=context.opentracing_span
         ) as span_parent:
@@ -600,6 +639,12 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
             elif len(data) == 0:
                 log.warning("Discarding notification since it contains no data.")
                 return []
+            # M6: момент отправки (строкой — FCM v1 data только строки).
+            if self.sent_timestamp and n.event_id:
+                data = {
+                    **data,
+                    SENT_MS_KEY: str(int(self.sygnal.reactor.seconds() * 1000)),
+                }
 
             headers = {
                 "User-Agent": ["sygnal"],
@@ -619,11 +664,18 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
             # пользователя в фоне пропадают уведомления групповых чатов. Для
             # мессенджера каждое сообщение должно будить устройство, поэтому
             # игнорируем n.prio и форсим high.
+            # Р1/Ф0.5: пуш без события (счётчик, снятие баннера) ничего не
+            # показывает и не обязан будить устройство в Doze — под флагом шлём
+            # normal и не тратим квоту high-priority, которой Android режет
+            # видимые пуши давно неактивного приложения.
+            priority = "high"
+            if self.counts_priority_normal and not n.event_id:
+                priority = "normal"
             if self.api_version is APIVersion.Legacy:
-                body["priority"] = "high"
+                body["priority"] = priority
             elif self.api_version is APIVersion.V1:
                 android = body.get("android", {})
-                android["priority"] = "high"
+                android["priority"] = priority
                 # LABA-1891: гибридный notification-блок для Android.
                 # data-only пуш показывает уведомление, только если ОС разбудит
                 # наш Flutter-isolate. После долгого простоя Android держит
@@ -650,6 +702,7 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
                 body = {}
                 body["message"] = new_body
 
+            started = self.sygnal.reactor.seconds()
             for retry_number in range(0, MAX_TRIES):
                 # This has to happen inside the retry loop since `pushkeys` can be modified in the
                 # event of a failure that warrants a retry.
@@ -673,30 +726,33 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
 
                     if len(pushkeys) == 0:
                         break
-                except TemporaryNotificationDispatchException as exc:
-                    retry_delay = RETRY_DELAY_BASE * (2**retry_number)
+                except (
+                    TemporaryNotificationDispatchException,
+                    NotificationQuotaDispatchException,
+                ) as exc:
+                    if isinstance(exc, NotificationQuotaDispatchException):
+                        retry_delay = RETRY_DELAY_BASE_QUOTA_EXCEEDED
+                    else:
+                        retry_delay = RETRY_DELAY_BASE * (2**retry_number)
                     if exc.custom_retry_delay is not None:
                         retry_delay = exc.custom_retry_delay
 
-                    log.warning(
-                        "Temporary failure, will retry in %d seconds",
-                        retry_delay,
+                    remaining = DISPATCH_BUDGET_SECONDS - (
+                        self.sygnal.reactor.seconds() - started
                     )
-
-                    span_parent.log_kv(
-                        {"event": "temporary_fail", "retrying_in": retry_delay}
-                    )
-
-                    await twisted_sleep(
-                        retry_delay, twisted_reactor=self.sygnal.reactor
-                    )
-                except NotificationQuotaDispatchException as exc:
-                    retry_delay = RETRY_DELAY_BASE_QUOTA_EXCEEDED * (2**retry_number)
-                    if exc.custom_retry_delay is not None:
-                        retry_delay = exc.custom_retry_delay
+                    last_try = retry_number == MAX_TRIES - 1
+                    if last_try or retry_delay + REQUEST_TIMEOUT_SECONDS > remaining:
+                        # Ждать дольше бюджета нельзя: Envoy оборвёт запрос
+                        # Synapse, и тот повторит его уже с отсрочкой. Честный
+                        # 503 сразу даёт тот же повтор без лишних секунд.
+                        self._emit_exhausted(log, n, pushkeys, retry_number)
+                        raise TemporaryNotificationDispatchException(
+                            "FCM dispatch budget exhausted",
+                            custom_retry_delay=exc.custom_retry_delay,
+                        ) from exc
 
                     log.warning(
-                        "Quota exceeded, will retry in %d seconds",
+                        "Temporary failure, will retry in %s seconds",
                         retry_delay,
                     )
 
@@ -709,19 +765,30 @@ class GcmPushkin(ConcurrencyLimitedPushkin):
                     )
 
             if len(pushkeys) > 0:
-                for key in pushkeys:
-                    PushOutcome(
-                        log,
-                        "fcm",
-                        self.name,
-                        key,
-                        n.event_id,
-                        MAX_TRIES - 1,
-                        not n.event_id and not n.type,
-                    ).emit("error", "retry_exhausted")
+                self._emit_exhausted(log, n, pushkeys, MAX_TRIES - 1)
+            elif not failed:
+                self.sent_cache.remember(sent_key)
             # Count the number of failed devices.
             span_parent.set_tag("gcm_num_failed", len(failed))
             return failed
+
+    def _emit_exhausted(
+        self,
+        log: NotificationLoggerAdapter,
+        n: Notification,
+        pushkeys: List[str],
+        attempt: int,
+    ) -> None:
+        for key in pushkeys:
+            PushOutcome(
+                log,
+                "fcm",
+                self.name,
+                key,
+                n.event_id,
+                attempt,
+                not n.event_id and not n.type,
+            ).emit("error", "retry_exhausted")
 
     @staticmethod
     def _build_data(

@@ -9,7 +9,14 @@ import android.content.Context
 
 class FcmPushService : FcmSharedIsolateService() {
     override fun onMessageReceived(message: RemoteMessage) {
-        NativePushDiagnostics.received(applicationContext, message.data["event_id"])
+        val eventId = message.data["event_id"]
+        NativePushDiagnostics.received(
+            applicationContext, eventId, NativePushDiagnostics.sentMs(message.data["liza_sent_ms"]))
+        // Р5: повтор того же события не будит Dart — второго звука нет.
+        if (!PushEventDedup.firstDelivery(applicationContext, eventId)) {
+            NativePushDiagnostics.duplicate(applicationContext, eventId)
+            return
+        }
         super.onMessageReceived(message)
     }
 

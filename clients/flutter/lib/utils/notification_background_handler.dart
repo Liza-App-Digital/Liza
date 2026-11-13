@@ -11,6 +11,7 @@ import 'package:matrix/matrix.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/utils/android_room_notification.dart';
 import 'package:liza/utils/client_download_content_extension.dart';
 import 'package:liza/utils/client_manager.dart';
 import 'package:liza/utils/composer_draft.dart';
@@ -239,13 +240,22 @@ Future<void> notificationTap(
                         rounded: true,
                       )
                       .timeout(const Duration(seconds: 3));
-            final notificationId = pushNotificationId(
-              client.clientName,
-              room.id,
+            // Переписка комнаты: id = хэш последнего события, тег = комната
+            // (Р5); у сборок до него — id по комнате без тега.
+            final conversation = androidRoomConversation(
+              active: await FlutterLocalNotificationsPlugin()
+                  .getActiveNotifications(),
+              ownClientName: client.clientName,
+              roomId: room.id,
             );
+            if (conversation == null) return;
+            final notificationId = conversation.id;
             final messagingStyleInformation =
                 await AndroidFlutterLocalNotificationsPlugin()
-                    .getActiveNotificationMessagingStyle(notificationId);
+                    .getActiveNotificationMessagingStyle(
+                      notificationId,
+                      tag: conversation.tag,
+                    );
             if (messagingStyleInformation == null) return;
             l10n ??= await lookupL10n(PlatformDispatcher.instance.locale);
             messagingStyleInformation.messages?.add(
@@ -273,6 +283,7 @@ Future<void> notificationTap(
                   category: AndroidNotificationCategory.message,
                   shortcutId: room.id,
                   styleInformation: messagingStyleInformation,
+                  tag: conversation.tag,
                   groupKey: room.id,
                   playSound: false,
                   enableVibration: false,

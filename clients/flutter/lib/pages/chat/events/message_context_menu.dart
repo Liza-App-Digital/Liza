@@ -15,6 +15,7 @@ import 'package:liza/pages/chat/events/reply_content.dart';
 import 'package:liza/pages/chat/events/xl_buttons_content.dart';
 import 'package:liza/utils/adaptive_bottom_sheet.dart';
 import 'package:liza/utils/chat_topology.dart';
+import 'package:liza/pages/chat/tg_widget/tg_widget_bubble.dart';
 import 'package:liza/utils/copy_media_eligibility.dart';
 import 'package:liza/utils/file_description.dart';
 import 'package:liza/utils/fluid_page.dart';
@@ -189,6 +190,9 @@ class _MessageContextMenu extends StatelessWidget {
     // .no_forwards) — прячем пункты, которые копируют/пересылают/сохраняют
     // содержимое наружу. Модераторов и админов канала (PL >= 50) не ограничиваем.
     final contentProtected = controller.room.isContentProtected;
+    // Виджет Telegram — защищённый контент, пока на сервере выключен scope
+    // `forwarding` (D7): ни пересылки, ни копирования.
+    final widgetProtected = isProtectedTgWidget(event);
 
     void close() => Navigator.of(context).pop();
 
@@ -248,6 +252,7 @@ class _MessageContextMenu extends StatelessWidget {
       hasCaption: displayEventForCopy.fileDescription != null,
     );
     if (!contentProtected &&
+        !widgetProtected &&
         !isBadEncrypted &&
         !event.redacted &&
         !isFluidPageEvent(event) &&
@@ -342,7 +347,7 @@ class _MessageContextMenu extends StatelessWidget {
       );
     }
 
-    if (!contentProtected && !isBadEncrypted) {
+    if (!contentProtected && !widgetProtected && !isBadEncrypted) {
       actions.add(
         _MenuAction(
           icon: Icons.forward_outlined,

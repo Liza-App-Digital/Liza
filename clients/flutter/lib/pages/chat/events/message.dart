@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import 'package:liza/utils/news_poll.dart';
 import 'package:liza/pages/chat/events/media_caption.dart';
+import 'package:liza/pages/chat/tg_widget/tg_widget_bubble.dart';
+import 'package:liza/pages/chat/tg_widget/tg_widget_model.dart';
 import 'package:matrix/matrix.dart';
 import 'package:swipe_to_action/swipe_to_action.dart';
 
@@ -225,6 +227,9 @@ class Message extends StatelessWidget {
         : MainAxisAlignment.start;
 
     final displayEvent = event.getDisplayEvent(timeline);
+    // Виджет Telegram: код и подпись — из ИСХОДНОГО события, состояние — из
+    // правок (их внутри разбирает сам пузырь), поэтому смотрим на `event`.
+    final tgWidget = TgWidgetBlock.fromEvent(event);
     const hardCorner = Radius.circular(4);
     const roundedCorner = Radius.circular(AppConfig.borderRadius);
     final borderRadius = BorderRadius.only(
@@ -315,7 +320,8 @@ class Message extends StatelessWidget {
         mt != 'com.liza.miniapp.choice' &&
         mt != 'com.liza.miniapp.list' &&
         mt != 'com.liza.miniapp.data' &&
-        mt != newsPollMsgType;
+        mt != newsPollMsgType &&
+        tgWidget == null;
     // В посте канала время рисует ТОЛЬКО строка статистики (ChannelPostStatsRow,
     // Liza-стиль). Гасим его во ВСЕХ путях размещения сразу — иначе оно
     // задваивается. После выноса времени текста в правый нижний угол
@@ -329,6 +335,7 @@ class Message extends StatelessWidget {
         !timeInChannelStatsRow &&
         (mediaOverlayTime ||
             rendersAsText ||
+            tgWidget != null ||
             (mediaCaption == null &&
                 (mt == MessageTypes.Audio || mt == MessageTypes.File)));
     // Гейт канала здесь ОБЯЗАТЕЛЕН и не следует из contentPlacesTime: тот для
@@ -404,7 +411,10 @@ class Message extends StatelessWidget {
     // Единый футер под общим `IntrinsicWidth` (reply+текст+футер) выравнивается
     // по правому краю ВСЕГО пузыря, а «изменено» встаёт в ту же строку.
     final textCornerFooter = contentPlacesTime && rendersAsText;
+    // Правка виджета (`editMessageWidgetData`) — тихая смена состояния, а не
+    // редактирование текста: метку «изменено» не показываем (D5).
     final isEdited =
+        tgWidget == null &&
         !isBotDraft(event, displayEvent) &&
         event.hasAggregatedEvents(timeline, RelationshipTypes.edit);
     // Футер текста — Row во всю ширину пузыря: «изменено» (карандаш + время
@@ -559,27 +569,38 @@ class Message extends StatelessWidget {
       ],
     );
 
-    final content = MessageContent(
-      displayEvent,
-      textColor: textColor,
-      linkColor: linkColor,
-      onInfoTab: onInfoTab,
-      borderRadius: borderRadius,
-      timeline: timeline,
-      selected: selected,
-      longPressSelect: longPressSelect,
-      selectedEventIds: selectedEventIds,
-      onSelect: onSelect,
-      // Голос/файл/текст-карточки → время строкой в правом нижнем углу
-      // (MessageContent сам размещает); медиа без подписи → плашка-оверлей.
-      // ТЕКСТ (textCornerFooter) время НЕ размещает внутри контента — его кладёт
-      // единый футер пузыря (textCornerFooterWidget), поэтому здесь null.
-      trailingTime: !contentPlacesTime || textCornerFooter
-          ? null
-          : mediaOverlayTime
-          ? messageFooter(overlay: true)
-          : messageFooter(overlay: false),
-    );
+    final content = tgWidget != null
+        ? TgWidgetBubble(
+            event: event,
+            timeline: timeline,
+            ownMessage: ownMessage,
+            textColor: textColor,
+            linkColor: linkColor,
+            trailingTime: timeInChannelStatsRow
+                ? null
+                : messageFooter(overlay: !tgWidget.hasCaption),
+          )
+        : MessageContent(
+            displayEvent,
+            textColor: textColor,
+            linkColor: linkColor,
+            onInfoTab: onInfoTab,
+            borderRadius: borderRadius,
+            timeline: timeline,
+            selected: selected,
+            longPressSelect: longPressSelect,
+            selectedEventIds: selectedEventIds,
+            onSelect: onSelect,
+            // Голос/файл/текст-карточки → время строкой в правом нижнем углу
+            // (MessageContent сам размещает); медиа без подписи → плашка-оверлей.
+            // ТЕКСТ (textCornerFooter) время НЕ размещает внутри контента — его кладёт
+            // единый футер пузыря (textCornerFooterWidget), поэтому здесь null.
+            trailingTime: !contentPlacesTime || textCornerFooter
+                ? null
+                : mediaOverlayTime
+                ? messageFooter(overlay: true)
+                : messageFooter(overlay: false),
+          );
 
     final resetAnimateIn = this.resetAnimateIn;
     var animateIn = this.animateIn;

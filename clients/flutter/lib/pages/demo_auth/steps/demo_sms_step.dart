@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/demo_auth/demo_auth_flow.dart';
 import 'package:liza/pages/demo_auth/resend_countdown_format.dart';
+import 'package:liza/pages/demo_auth/sms_code_source.dart';
+import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/pages/demo_auth/widgets/code_input.dart';
 import 'package:liza/pages/demo_auth/widgets/demo_auth_scaffold.dart';
 import 'package:liza/pages/demo_auth/widgets/otp_actions_row.dart';
@@ -16,9 +18,14 @@ import 'package:liza/pages/demo_auth/widgets/support_dialog.dart';
 /// сервер (`resend_limit_reached`) — при его исчерпании каркас экрана
 /// сам заменяет текст ошибки кнопкой выхода в поддержку.
 class DemoSmsStep extends StatefulWidget {
-  const DemoSmsStep({super.key, required this.controller});
+  const DemoSmsStep({super.key, required this.controller, this.smsCodeSource});
 
   final DemoAuthFlowController controller;
+
+  /// Источник кода из входящей СМС. По умолчанию — системный диалог на
+  /// Android, на остальных платформах его нет (iOS подставляет код сама
+  /// через `oneTimeCode` у ячейки).
+  final SmsCodeSource? smsCodeSource;
 
   @override
   State<DemoSmsStep> createState() => _DemoSmsStepState();
@@ -35,10 +42,39 @@ class _DemoSmsStepState extends State<DemoSmsStep> {
   /// Эпоха серверного значения, по которой отсчёт уже запущен.
   int _seenEpoch = -1;
 
+  final _feed = CodeInputFeed();
+  SmsCodeSource? _smsSource;
+
+  /// Номер ожидания: опоздавший ответ от прежней регистрации игнорируется.
+  int _listenGeneration = 0;
+
   @override
   void initState() {
     super.initState();
+    _smsSource =
+        widget.smsCodeSource ??
+        (PlatformInfos.isAndroid ? AndroidSmsCodeSource() : null);
     _syncCountdown();
+  }
+
+  /// Ждём СМС только пока код реально ушёл СМС: для письма, входа по паролю
+  /// и во время проверки системный диалог человеку не нужен.
+  Future<void> _listenForSms() async {
+    final source = _smsSource;
+    final generation = ++_listenGeneration;
+    if (source == null) return;
+    await source.cancel();
+    final controller = widget.controller;
+    if (!mounted ||
+        generation != _listenGeneration ||
+        controller.passwordLogin ||
+        controller.smsCodeSentByEmail) {
+      return;
+    }
+    final code = await source.next();
+    if (code == null || !mounted || generation != _listenGeneration) return;
+    if (widget.controller.isLoading) return;
+    _feed.push(code);
   }
 
   @override
@@ -50,6 +86,8 @@ class _DemoSmsStepState extends State<DemoSmsStep> {
   @override
   void dispose() {
     _timer?.cancel();
+    _listenGeneration++;
+    _smsSource?.cancel();
     super.dispose();
   }
 
@@ -68,6 +106,7 @@ class _DemoSmsStepState extends State<DemoSmsStep> {
     }
     if (controller.resendEpoch == _seenEpoch) return;
     _seenEpoch = controller.resendEpoch;
+    _listenForSms();
     final fromServer = controller.resendAvailableIn;
     if (fromServer == null) {
       _startCountdown();
@@ -238,6 +277,7 @@ class _DemoSmsStepState extends State<DemoSmsStep> {
             // коды на оба канала. С пятью ячейками последняя цифра просто
             // некуда было ввести.
             length: 6,
+            feed: _feed,
             enabled: !controller.isLoading,
             onCompleted: controller.submitSmsCode,
           ),

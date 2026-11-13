@@ -218,7 +218,7 @@ class ChatSettingsPopupMenuState extends State<ChatSettingsPopupMenu> {
               ),
             ),
             // Только в DM с ЖИВЫМ ассистентом Лизой. Гейт по полному mxid, а не
-            // по `isAiUser`: роль `ai` носят и @gpt, @deepseek, @botfather,
+            // по `isAiUser`: роль `ai` носят и @botfather,
             // @liza-news, @cup — пункт «MCP-подключения» всплыл бы у них всех.
             // `MatrixState.lizaMxid` — геттер, а не литерал: на локальном
             // стенде (`liza.local`) mxid другой. Витрина MCP — только для

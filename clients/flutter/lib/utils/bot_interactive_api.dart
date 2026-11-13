@@ -135,6 +135,9 @@ class RegisteredBot {
 
   bool get supportsInteractive => data['system'] != true;
 
+  /// Бот подписан на inline-запросы. Старый шлюз поля не отдаёт — тогда как раньше.
+  bool get supportsInlineQueries => data['supports_inline_queries'] != false;
+
   /// Только подсказка при приглашении: ни один флаг не назначает Matrix PL.
   bool requestsAdministratorRights({required bool isChannel}) {
     final defaults = data['default_administrator_rights'];

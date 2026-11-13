@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import unittest
+from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -14,6 +15,7 @@ import opentracing
 from aioapns.common import NotificationResult, PushType
 from twisted.web.http_headers import Headers
 
+from sygnal._sent_cache import SentCache
 from sygnal.apnspushkin import ApnsPushkin
 from sygnal.exceptions import (
     NotificationDispatchException,
@@ -64,13 +66,20 @@ class ProviderOutcomeTest(unittest.IsolatedAsyncioTestCase):
     def pushkin(self, cls, version=None):
         pushkin = object.__new__(cls)
         tracer = opentracing.Tracer()
+        clock = SimpleNamespace(seconds=lambda: 0.0)
         Pushkin.__init__(
-            pushkin, "test.app", SimpleNamespace(tracer=tracer, reactor=None), {}
+            pushkin, "test.app", SimpleNamespace(tracer=tracer, reactor=clock), {}
         )
+        pushkin.sent_cache = SentCache(0, clock.seconds)
         if cls is ApnsPushkin:
             pushkin.push_type = PushType.ALERT
+            pushkin.stable_apns_id = False
+            pushkin.collapse_by_event = False
+            pushkin.alert_clearing = False
+            pushkin._unique_ids = OrderedDict()
         else:
             pushkin.api_version = version
+            pushkin.counts_priority_normal = False
             pushkin.base_request_body = {}
             pushkin._get_auth_header = AsyncMock(return_value="private auth")
         return pushkin
@@ -84,7 +93,10 @@ class ProviderOutcomeTest(unittest.IsolatedAsyncioTestCase):
                 result = await pushkin._dispatch_notification_unlimited(
                     n, n.devices[0], context
                 )
-            except NotificationDispatchException:
+            except (
+                NotificationDispatchException,
+                TemporaryNotificationDispatchException,
+            ):
                 # Как внешний HTTP-handler: traceback тоже не должен раскрывать ответ.
                 logging.getLogger("sygnal.test").exception("Dispatch failed")
                 result = None
@@ -186,7 +198,9 @@ class ProviderOutcomeTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(
                 all(x["clearing"] and x["event_hash"] is None for x in outcomes)
             )
-            self.assertEqual(sleep.call_args.args[0], 10)
+            # APNs: короткая фиксированная пауза, весь dispatch < таймаута Envoy
+            # (RL-sygnal-egress-deadlines AC-7).
+            self.assertEqual(sleep.call_args.args[0], ApnsPushkin.RETRY_DELAY)
             request = pushkin._send_notification.call_args.args[0]
             self.assertEqual(request.push_type, PushType.BACKGROUND)
             self.assertEqual(request.message["aps"], {"content-available": 1})
@@ -246,7 +260,7 @@ class ProviderOutcomeTest(unittest.IsolatedAsyncioTestCase):
                 first = (
                     (
                         SimpleNamespace(
-                            code=code, headers=Headers({b"retry-after": [b"7"]})
+                            code=code, headers=Headers({b"retry-after": [b"3"]})
                         ),
                         BODY + TOKEN,
                     )
@@ -272,7 +286,8 @@ class ProviderOutcomeTest(unittest.IsolatedAsyncioTestCase):
                     ["attempt", "retryable", "attempt", "accepted"],
                 )
                 self.assertEqual([x["attempt"] for x in outcomes], [0, 0, 1, 1])
-                self.assertEqual(sleep.call_args.args[0], 7 if code else 10)
+                # Retry-After 3 с + лимит запроса 4 с укладываются в бюджет 9 с (Р4).
+                self.assertEqual(sleep.call_args.args[0], 3 if code else 0.5)
 
     async def test_legacy_per_device_outcomes_and_malformed_response(self):
         """AC:RL-push-provider-outcomes/3 AC:RL-push-provider-outcomes/4 AC:RL-push-provider-outcomes/5"""
@@ -329,10 +344,13 @@ class ProviderOutcomeTest(unittest.IsolatedAsyncioTestCase):
                 target = "sygnal.gcmpushkin.twisted_sleep"
             with patch(target, new_callable=AsyncMock):
                 result, outcomes = await self.dispatch(pushkin, self.notification())
-            self.assertEqual(result, None if cls is ApnsPushkin else [])
+            # С 12.11 (Р4) исчерпание FCM — тоже исключение: HTTP-слой
+            # отвечает Synapse 503, и тот повторяет со своей отсрочкой.
+            self.assertIsNone(result)
             self.assertEqual(outcomes[-1]["reason"], "retry_exhausted")
             self.assertEqual(
-                [x["attempt"] for x in outcomes if x["outcome"] == "attempt"], [0, 1, 2]
+                [x["attempt"] for x in outcomes if x["outcome"] == "attempt"],
+                [0, 1],
             )
 
 

@@ -125,6 +125,10 @@ class ChatInputRow extends StatelessWidget {
                             ),
                           ),
                         )
+                      // Виджет Telegram под защитой (scope `forwarding`
+                      // выключен или `protect_content`) — «Переслать» не даём.
+                      else if (controller.selectionHasProtectedWidget)
+                        const SizedBox.shrink()
                       else if (!controller.room.isContentProtected)
                         SizedBox(
                           height: height,

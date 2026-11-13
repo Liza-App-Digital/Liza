@@ -690,9 +690,9 @@ def test_subscribe_pair_skips_if_both_are_ai():
     api = _FakeApi()
     mod = _make_module(api)
     api.account_data_manager.mark_as_ai("@liza:local.test")
-    api.account_data_manager.mark_as_ai("@gpt:local.test")
+    api.account_data_manager.mark_as_ai("@xl_bot:local.test")
     api.memberships.clear()
-    asyncio.run(mod.subscribe_pair("@liza:local.test", "@gpt:local.test"))
+    asyncio.run(mod.subscribe_pair("@liza:local.test", "@xl_bot:local.test"))
     assert api.memberships == []
 
 

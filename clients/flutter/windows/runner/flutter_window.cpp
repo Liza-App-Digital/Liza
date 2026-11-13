@@ -100,7 +100,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     std::optional<LRESULT> result =
         flutter_controller_->HandleTopLevelWindowProc(hwnd, message, wparam,
                                                       lparam);
-    if (result) {
+    // window_manager сам отвечает на WM_GETMINMAXINFO, и без этого исключения
+    // минимум окна Лизы из Win32Window до окна не доходил (проба MAINMIN 13.11).
+    if (result && message != WM_GETMINMAXINFO) {
       return *result;
     }
   }

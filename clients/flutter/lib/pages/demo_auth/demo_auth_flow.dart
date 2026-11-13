@@ -5,6 +5,7 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/demo_auth/demo_auth_service.dart';
+import 'package:liza/pages/demo_auth/sms_code_source.dart';
 import 'package:liza/pages/demo_auth/steps/demo_email_code_step.dart';
 import 'package:liza/pages/demo_auth/steps/demo_select_server_step.dart';
 import 'package:liza/pages/demo_auth/steps/demo_sms_step.dart';
@@ -73,6 +74,7 @@ class DemoAuthFlow extends StatefulWidget {
     this.addMultiAccount = false,
     this.service,
     this.onAuthenticated,
+    this.smsCodeSource,
   });
 
   final String phone;
@@ -93,6 +95,10 @@ class DemoAuthFlow extends StatefulWidget {
   /// Обычный путь логинит Matrix-клиент ниже; callback позволяет проверить
   /// auth-proxy flow без живого Matrix-сервера.
   final Future<void> Function(DemoAuthTokens tokens)? onAuthenticated;
+
+  /// Подмена источника кода из СМС — только для тестов (плагин на хосте не
+  /// работает). В приложении null: шаг берёт системный источник сам.
+  final SmsCodeSource? smsCodeSource;
 
   @override
   State<DemoAuthFlow> createState() => DemoAuthFlowController();
@@ -544,7 +550,10 @@ class DemoAuthFlowController extends State<DemoAuthFlow> {
         // не скачет, когда шаг сменится на конкретный.
         return DemoAuthStartingStep(controller: this);
       case DemoAuthStep.sms:
-        return DemoSmsStep(controller: this);
+        return DemoSmsStep(
+          controller: this,
+          smsCodeSource: widget.smsCodeSource,
+        );
       case DemoAuthStep.emailCode:
         return DemoEmailCodeStep(controller: this);
       case DemoAuthStep.selectServer:

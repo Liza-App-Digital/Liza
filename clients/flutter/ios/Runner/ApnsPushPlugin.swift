@@ -127,8 +127,27 @@ public class ApnsPushPlugin: NSObject, FlutterPlugin {
         case "saveCredentials":
             let args = call.arguments as? [String: String]
             let defaults = UserDefaults(suiteName: lizaAppGroup())
-            defaults?.set(args?["homeserverUrl"], forKey: "homeserverUrl")
-            defaults?.set(args?["accessToken"], forKey: "accessToken")
+            // Р2: токен по client_name — NSE/фоновая чистка ходят в /notifications
+            // от имени аккаунта-адресата пуша, а не «текущего».
+            if let cn = args?["clientName"], !cn.isEmpty {
+                defaults?.set(args?["homeserverUrl"], forKey: "homeserverUrl.\(cn)")
+                defaults?.set(args?["accessToken"], forKey: "accessToken.\(cn)")
+            }
+            if args?["legacy"] != "false" {
+                defaults?.set(args?["homeserverUrl"], forKey: "homeserverUrl")
+                defaults?.set(args?["accessToken"], forKey: "accessToken")
+            }
+            result(true)
+        case "removeCredentials":
+            // Выход из аккаунта: токен вышедшего не должен оставаться в App Group.
+            let args = call.arguments as? [String: Any]
+            if let cn = args?["clientName"] as? String {
+                ReadBannerSweep.forgetCredentials(
+                    clientName: cn,
+                    remaining: args?["remaining"] as? [String] ?? [],
+                    defaults: UserDefaults(suiteName: lizaAppGroup())
+                )
+            }
             result(true)
         case "setActiveRoom":
             // Открытый на экране чат (Dart шлёт null при уходе с чата или в фон).

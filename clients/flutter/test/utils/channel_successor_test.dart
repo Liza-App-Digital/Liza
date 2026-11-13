@@ -9,8 +9,10 @@ void main() {
     test('боты и поддержка — сервисные', () {
       for (final id in [
         '@liza:bots.liza.ru',
-        '@gpt:bots.liza.ru',
-        '@deepseek:bots.liza.ru',
+        // Зарегистрированный Bot API бот — по точному домену ботов.
+        '@shop_bot:bots.liza.ru',
+        // Известный сервис по localpart на другом инстансе.
+        '@liza:dev.liza.laba.prodamus.tech',
         '@support:nadezhda.liza.ru',
       ]) {
         expect(isServiceAccountId(id), isTrue, reason: id);

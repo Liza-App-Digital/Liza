@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:matrix/matrix.dart';
 
 import '../pages/stories/story_viewer.dart';
+import 'push_probe_api.dart';
 import 'push_tap_target.dart';
 
 /// Открыт ли просмотрщик сторис, поднятый тапом уведомления. Гейт против
@@ -27,6 +28,8 @@ void navigatePushTap({
   required String roomId,
   String? eventId,
 }) {
+  // Тестовый пуш «Проверки уведомлений» (Р8): комната синтетическая.
+  if (isTestPushEvent(eventId)) return;
   final target = resolvePushTapTarget(client, roomId, eventId);
   switch (target) {
     case RoomTapTarget(:final routePath):

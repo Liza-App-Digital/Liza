@@ -43,7 +43,7 @@ class StoriesMembershipModule:
             # localpart-ы AI-ботов, которых не подписываем на сторисы.
             # Работает и для ботов на другом инстансе (@liza на prod-synapse).
             "ai_bot_localparts": list(
-                config.get("ai_bot_localparts", ["liza", "gpt", "deepseek"])
+                config.get("ai_bot_localparts", ["liza"])
             ),
         }
 
@@ -152,7 +152,7 @@ class StoriesMembershipModule:
         """Проверить, является ли юзер AI-ботом (не подписывается на сторисы).
 
         Два признака:
-        1. localpart в списке известных AI-ботов (liza/gpt/deepseek) - работает
+        1. localpart в списке известных AI-ботов (liza) - работает
            и для УДАЛЁННЫХ ботов (они живут на другом инстансе, например @liza
            на prod-synapse, и их роль через локальный account_data не прочитать).
         2. роль ai в user_roles (account_data) - для локальных юзеров с ролью ai,

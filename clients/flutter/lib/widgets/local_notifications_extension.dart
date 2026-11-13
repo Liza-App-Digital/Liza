@@ -17,6 +17,8 @@ import 'package:liza/utils/client_download_content_extension.dart';
 import 'package:liza/utils/forced_list_artifact.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_locals.dart';
 import 'package:liza/utils/news_audience.dart';
+import 'package:liza/utils/push_acks.dart';
+import 'package:liza/utils/push_banner_id.dart';
 import 'package:liza/utils/push_client_resolver.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/push_helper.dart';
@@ -33,13 +35,17 @@ import 'package:liza/widgets/matrix.dart';
 const _localNotificationMaxAge = Duration(minutes: 5);
 
 extension LocalNotificationsExtension on MatrixState {
-  void _journalLocal(PushReason reason, Event event) => PushJournal.instance.record(
-    PushStage.local,
-    reason: reason,
-    eventId: event.eventId,
-    roomId: event.room.id,
-    state: WidgetsBinding.instance.lifecycleState,
-  );
+  void _journalLocal(PushReason reason, Event event) {
+    PushJournal.instance.record(
+      PushStage.local,
+      reason: reason,
+      eventId: event.eventId,
+      roomId: event.room.id,
+      state: WidgetsBinding.instance.lifecycleState,
+    );
+    final outcome = localAckOutcome(reason);
+    if (outcome != null) PushAckLog.instance.record(event.eventId, outcome);
+  }
 
   static final html.AudioElement _audioPlayer = html.AudioElement()
     ..src = 'assets/assets/sounds/notification.ogg'
@@ -289,6 +295,33 @@ extension LocalNotificationsExtension on MatrixState {
       // у пользователя не отличить от «был, но снят при открытии чата»
       // (разбор 2026-09-28, `pushes.md` §22). Метод async-void: необработанная
       // ошибка plugin.show раньше не попадала в лог вовсе.
+      // Р3 за флагом: нативный запрос с ID = apns-collapse-id события —
+      // опоздавший APNs заменит этот баннер, а не добавит второй. `null` (канал
+      // недоступен) → обычный путь плагина ниже, баннер не теряем.
+      final apns = backgroundPush?.apns;
+      if (macosUnifiedBannerId && apns != null) {
+        final outcome = await apns.showBanner(
+          identifier: pushBannerId(roomClient.clientName, event.eventId),
+          title: title,
+          body: body,
+          roomId: roomId,
+          eventId: event.eventId,
+          clientName: roomClient.clientName,
+          attachmentPath: avatarPath,
+        );
+        if (outcome != null) {
+          Logs().v('[Push] Native local banner: $outcome', event.eventId);
+          _journalLocal(
+            switch (outcome) {
+              'shown' => PushReason.shown,
+              'skipped' => PushReason.apnsHandled,
+              _ => PushReason.failed,
+            },
+            event,
+          );
+          return;
+        }
+      }
       try {
         await plugin.show(
           // id со скоупом аккаунта: у двух своих аккаунтов в одной комнате

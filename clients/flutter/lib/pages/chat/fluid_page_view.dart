@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/pages/chat/events/fluid_page_web_frame.dart';
 import 'package:liza/utils/fluid_page.dart';
 
 /// Документ страницы из события: скачать (в E2EE — расшифровать), сверить
@@ -105,6 +107,14 @@ class _FluidPageViewState extends State<FluidPageView> {
     }
     final debugBuilder = FluidPageView.debugWebViewBuilder;
     if (debugBuilder != null) return debugBuilder(context, document);
+    if (kIsWeb) {
+      // Web: InAppWebView — iframe без песочницы, в origin приложения. Здесь —
+      // sandbox без скриптов и same-origin; ссылки уходят в новую вкладку.
+      return ColoredBox(
+        color: Colors.white,
+        child: fluidPageWebFrame(fluidPageLinksInNewTab(document)),
+      );
+    }
     return ColoredBox(
       color: Colors.white,
       child: InAppWebView(

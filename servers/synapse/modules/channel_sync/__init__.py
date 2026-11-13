@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 _CHAT_TYPE_KEY = "com.liza.chat.type"
 _CHANNEL_TYPE = "channel"
-_AI_LOCALPARTS = frozenset({"liza", "gpt", "deepseek"})
+_AI_LOCALPARTS = frozenset({"liza"})
 
 
 class ChannelSyncModule:

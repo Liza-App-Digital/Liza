@@ -18,6 +18,7 @@ import 'package:liza/pages/chat/company_subscribe_banner.dart';
 import 'package:liza/pages/chat/encryption_button.dart';
 import 'package:liza/pages/chat/pinned_events.dart';
 import 'package:liza/pages/chat/reply_display.dart';
+import 'package:liza/utils/call_link.dart';
 import 'package:liza/utils/account_config.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/localized_exception_extension.dart';
@@ -213,10 +214,8 @@ class ChatView extends StatelessWidget {
           ),
         Builder(
           builder: (context) {
-            final callUrl =
-                controller.room.getState('io.element.call_link')?.content['url']
-                    as String?;
-            if (callUrl == null || callUrl.isEmpty) {
+            final callUrl = CallLink.urlOf(controller.room);
+            if (callUrl == null) {
               return const SizedBox.shrink();
             }
             return IconButton(

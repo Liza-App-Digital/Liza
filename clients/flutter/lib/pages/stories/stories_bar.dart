@@ -82,6 +82,19 @@ class _StoriesBarState extends State<StoriesBar>
   /// последней активности.
   final Map<String, DateTime> _onlineSince = {};
 
+  /// Роли (ai → шестиугольник) грузятся асинхронно: без подписки тайл бота
+  /// оставался круглым до следующей перезагрузки ленты.
+  ValueNotifier<int>? _rolesVersion;
+
+  /// Кому уже запрошена роль за жизнь ленты: префетч при старте берёт только
+  /// DM-партнёров, а автор-бот сторис может им не быть. Запрос — один раз на
+  /// id, иначе сбой сервера ролей повторялся бы на каждом sync.
+  final Set<String> _rolesRequested = {};
+
+  void _onRolesChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void initState() {
     super.initState();
@@ -99,6 +112,8 @@ class _StoriesBarState extends State<StoriesBar>
       _syncSub = client.onSync.stream.listen((_) => _scheduleReload());
       _seedOnline(client);
       _presenceSub = client.onPresenceChanged.stream.listen(_onPresence);
+      _rolesVersion = Matrix.of(context).userRoleService.rolesVersion
+        ..addListener(_onRolesChanged);
     });
   }
 
@@ -141,6 +156,7 @@ class _StoriesBarState extends State<StoriesBar>
     _syncSub?.cancel();
     _presenceSub?.cancel();
     _reloadDebounce?.cancel();
+    _rolesVersion?.removeListener(_onRolesChanged);
     _scrollController.dispose();
     super.dispose();
   }
@@ -178,6 +194,24 @@ class _StoriesBarState extends State<StoriesBar>
       _dmActivity = activity;
       _dmCandidates = _collectDmCandidates(client);
     });
+    _requestRoles([
+      for (final room in rooms) ?client.storyOwnerOf(room),
+      for (final d in _dmCandidates) d.userId,
+    ]);
+  }
+
+  void _requestRoles(Iterable<String> userIds) {
+    final fresh = userIds.where(_rolesRequested.add).toList();
+    if (fresh.isEmpty) return;
+    unawaited(
+      Matrix.of(context).userRoleService.refreshIfStale(fresh).catchError((
+        Object e,
+      ) {
+        // Повторить со следующей загрузкой ленты, а не никогда.
+        _rolesRequested.removeAll(fresh);
+        Logs().w('[StoriesBar] роли авторов не загружены', e);
+      }),
+    );
   }
 
   /// Личные чаты-кандидаты без сети: время — по последнему событию комнаты.
@@ -320,6 +354,8 @@ class _StoriesBarState extends State<StoriesBar>
                 mxContent: client.myAvatarFromState(),
                 name: client.userID?.localpart ?? client.userID,
                 size: StoriesBar.avatarSize,
+                isHexagonal:
+                    client.userID != null && matrix.isAiUser(client.userID!),
                 storyRing: myRing == StoryRingState.none ? null : myRing,
               ),
               // Баг №3: тап по аватарке-кольцу открывает просмотр если есть
@@ -364,6 +400,11 @@ class _StoriesBarState extends State<StoriesBar>
                           ? channelRoom.getLocalizedDisplayname()
                           : client.storyOwnerName(room, owner),
                       size: StoriesBar.avatarSize,
+                      // Бот — сотой, как везде (Роман 13.11); канал — круг.
+                      isHexagonal:
+                          channelRoom == null &&
+                          owner != null &&
+                          matrix.isAiUser(owner),
                       storyRing: ring == StoryRingState.none ? null : ring,
                     ),
                     onTap: () => _openViewer(room.id),
@@ -425,6 +466,7 @@ class _FrequentContactTile extends StatelessWidget {
               : client.storyOwnerAvatar(room, contact.userId),
           name: name,
           size: StoriesBar.avatarSize,
+          isHexagonal: Matrix.of(context).isAiUser(contact.userId),
         ),
         onTap: () => context.go('/rooms/${contact.roomId}'),
         onlineDotKey: online ? ValueKey('onlineDot:${contact.userId}') : null,

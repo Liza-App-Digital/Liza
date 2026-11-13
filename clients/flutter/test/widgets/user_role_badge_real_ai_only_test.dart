@@ -1,7 +1,7 @@
 // ignore_for_file: depend_on_referenced_packages
 //
 // Страж RL-bot-ai-badge-real-ai-only: плашка роли `ai` рядом с именем.
-//   • localpart ∈ {liza,gpt,deepseek} → каталожный тег «ИИ»;
+//   • localpart ∈ {liza} (gpt/deepseek выведены 2026-11-13) → каталожный тег «ИИ»;
 //   • прочие носители роли `ai` (боты BotFather, /newbot, @support, @cup,
 //     вручную помеченные люди) → зелёная плашка «Бот» (клиентский L10n-текст);
 //   • роль `user` / роль не загружена → плашки нет.
@@ -84,16 +84,15 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  // AC-1: настоящий AI (liza/gpt/deepseek) → «ИИ», не «Бот». ∀ хоумсерверам
+  // AC-1: настоящий AI (liza) → «ИИ», не «Бот». ∀ хоумсерверам
   // (сверка по localpart). AC:RL-bot-ai-badge-real-ai-only/1
-  testWidgets('AC-1: настоящий AI (liza/gpt/deepseek) → «ИИ» ∀ хоумсерверам',
+  testWidgets('AC-1: настоящий AI (liza) → «ИИ» ∀ хоумсерверам',
       (tester) async {
     const realAi = <String>[
       '@liza:bots.liza.ru',
-      '@gpt:bots.liza.ru',
-      '@deepseek:bots.liza.ru',
       '@liza:liza.local',
-      '@deepseek:dev.liza.laba.prodamus.tech',
+      '@liza:dev.liza.laba.prodamus.tech',
+      '@liza:liza.cyber-agro.ru',
     ];
     for (final userId in realAi) {
       await pumpBadge(tester, userId, 'ai');
@@ -112,6 +111,9 @@ void main() {
     const nonAiBots = <String>[
       '@coolbot:bots.liza.ru', // пользовательский /newbot
       '@botfather:bots.liza.ru',
+      // Бывшие ИИ, выведены 2026-11-13: роль ai у остатков → «Бот».
+      '@gpt:bots.liza.ru',
+      '@deepseek:bots.liza.ru',
       '@support:bots.liza.ru', // продакт: показывать как обычного бота
       '@cup:liza.cyber-agro.ru', // не ходит в OpenRouter
       '@ivan:company.example', // человек с ролью ai вручную

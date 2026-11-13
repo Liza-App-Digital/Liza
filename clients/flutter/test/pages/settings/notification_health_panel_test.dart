@@ -36,6 +36,10 @@ class _MatrixState extends liza.MatrixState {
   }
 }
 
+// Секция «Проверка уведомлений» без сети: этот страж — про факты здоровья,
+// pusher'ы проверяет notification_checkup_test.
+Future<List<Pusher>?> _noPushers(Client _) async => null;
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {
@@ -97,7 +101,11 @@ void main() {
             body: SingleChildScrollView(
               child: Column(
                 children: [
-                  NotificationHealthPanel(health: health, compact: compact),
+                  NotificationHealthPanel(
+                    health: health,
+                    compact: compact,
+                    loadPushers: _noPushers,
+                  ),
                   if (twoPanels)
                     NotificationHealthPanel(health: health, compact: true),
                 ],

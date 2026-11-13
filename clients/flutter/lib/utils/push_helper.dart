@@ -16,6 +16,8 @@ import 'package:path_provider/path_provider.dart';
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
+import 'package:liza/utils/android_read_sweep.dart';
+import 'package:liza/utils/android_room_notification.dart';
 import 'package:liza/utils/app_badge.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/l10n/l10n.dart';
@@ -28,6 +30,7 @@ import 'package:liza/utils/news_audience.dart';
 import 'package:liza/utils/notification_background_handler.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/push_client_resolver.dart';
+import 'package:liza/utils/push_probe_api.dart';
 import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/utils/screen_lock_state.dart';
 import 'package:liza/utils/strip_matrix_mentions.dart';
@@ -70,6 +73,11 @@ const pushClientNameKey = 'client_name';
 
 /// Ключ capability в `default_payload` pusher-а: клиент умеет тихий
 /// clearing-пуш «почисти шторку» (howItWoks/pushes.md §21).
+/// Сборка с `com.apple.developer.usernotifications.filtering` у iOS NSE
+/// (`LIZA_NSE_FILTERING=1` в профиле аккаунта → dart-define в build-ios.sh).
+/// Без одобрения Apple — false: ключ в entitlements без права ломает подпись.
+const nseFilteringEnabled = bool.fromEnvironment('LIZA_NSE_FILTERING');
+
 const pushClearCapabilityKey = 'liza_clear_v';
 
 /// Маркер clearing-пуша в payload (ставит Sygnal).
@@ -159,7 +167,18 @@ Future<void> pushHelper(
       ),
     );
     if (!transient) rethrow;
+  } finally {
+    await _awaitAndroidSweeps();
   }
+}
+
+final _pendingAndroidSweeps = <Future<int>>[];
+
+Future<void> _awaitAndroidSweeps() async {
+  if (_pendingAndroidSweeps.isEmpty) return;
+  final pending = List.of(_pendingAndroidSweeps);
+  _pendingAndroidSweeps.clear();
+  await Future.wait(pending);
 }
 
 Future<void> _tryPushHelper(
@@ -223,10 +242,39 @@ Future<void> _tryPushHelper(
         ReadableForeground.full,
   );
 
+  // Тестовый пуш «Проверки уведомлений» (Р8): события и комнаты нет, получение
+  // уже записал нативный журнал. Иначе поиск события упал бы в аварийный
+  // баннер «Новое сообщение».
+  if (isTestPushEvent(notification.eventId)) {
+    Logs().v('[Push] Test push received, nothing to show.');
+    return;
+  }
+
   final event = await client.getEventByPushNotification(
     notification,
     storeInDatabase: false,
   );
+
+  // Р2 (Android): попутная чистка прочитанного на другом устройстве — на
+  // каждом data-пуше, параллельно показу (не задерживает баннер). Ждём её в
+  // pushHelper перед выходом: фоновый isolate может уснуть сразу после.
+  // Комнату пуша с событием не трогаем; пуш «только счётчик» её снимает.
+  if (!kIsWeb && Platform.isAndroid) {
+    final ownName = client.clientName;
+    _pendingAndroidSweeps.add(
+      sweepReadAndroidBanners(
+        client: client,
+        plugin: flutterLocalNotificationsPlugin,
+        clientCount: allClients.length,
+        otherClients: allClients
+            .where((c) => c.clientName != ownName)
+            .toList(),
+        currentRoomId: notification.eventId == null
+            ? null
+            : notification.roomId,
+      ),
+    );
+  }
 
   if (event == null) {
     // LABA-2354: различаем ДВА разных случая, оба дают event == null.
@@ -277,13 +325,16 @@ Future<void> _tryPushHelper(
             ? null
             : LizaPushPayload.fromString(rawPayload).clientName;
         if (ownerName != null && ownerName != ownClientName) continue;
-        final room = client.rooms.singleWhereOrNull(
-          (room) =>
-              pushNotificationId(ownClientName, room.id) == notificationId ||
-              // legacy id без скоупа аккаунта (уведомления прежней сборки)
-              room.id.hashCode == notificationId,
+        // Комната — из payload или тега (Android: id = хэш события, тег =
+        // комната; баннер Play Services — только тег), иначе по id прежней
+        // сборки (`pushNotificationId` / legacy `roomId.hashCode`).
+        final roomId = androidNotificationRoom(
+          activeNotification,
+          ownClientName: ownClientName,
+          roomIds: client.rooms.map((r) => r.id),
         );
-        // При мультиаккаунте уведомление без payload и без совпавшей комнаты —
+        final room = roomId == null ? null : client.getRoomById(roomId);
+        // При мультиаккаунте уведомление без payload и без своей комнаты —
         // неизвестного владельца: не гасим (консервативно).
         if (room == null && ownerName == null && allClients.length > 1) {
           continue;
@@ -293,7 +344,10 @@ Future<void> _tryPushHelper(
         // (stories/обсуждение канала) тоже гасим — её нельзя открыть и
         // «прочитать», иначе баннер завис бы неснимаемым, как фантомный бейдж.
         if (room == null || !room.countsTowardAppBadge) {
-          flutterLocalNotificationsPlugin.cancel(notificationId);
+          flutterLocalNotificationsPlugin.cancel(
+            notificationId,
+            tag: activeNotification.tag,
+          );
         }
       }
     }
@@ -427,7 +481,24 @@ Future<void> _tryPushHelper(
     _logAvatarFailure(e, s);
   }
 
-  final id = pushNotificationId(client.clientName, notification.roomId);
+  // Android (Р5): id = хэш события, тег = комната. Повтор события заменяет то
+  // же уведомление; переписку MessagingStyle («одно уведомление на чат»)
+  // переносим из прежнего уведомления комнаты и снимаем его после показа.
+  final id = PlatformInfos.isAndroid
+      ? pushEventNotificationId(client.clientName, event.eventId)
+      : pushNotificationId(client.clientName, notification.roomId);
+  AndroidNotificationKey? previousConversation;
+  if (PlatformInfos.isAndroid) {
+    try {
+      previousConversation = androidRoomConversation(
+        active: await flutterLocalNotificationsPlugin.getActiveNotifications(),
+        ownClientName: client.clientName,
+        roomId: event.room.id,
+      );
+    } catch (e) {
+      Logs().v('[Push] Active notifications unavailable: $e');
+    }
+  }
 
   final senderName = event.senderFromMemoryOrFallback.calcDisplayname();
   // Show notification
@@ -445,11 +516,17 @@ Future<void> _tryPushHelper(
     ),
   );
 
-  final messagingStyleInformation = PlatformInfos.isAndroid
-      ? await AndroidFlutterLocalNotificationsPlugin()
-            .getActiveNotificationMessagingStyle(id)
-      : null;
-  messagingStyleInformation?.messages?.add(newMessage);
+  final messagingStyleInformation = previousConversation == null
+      ? null
+      : await AndroidFlutterLocalNotificationsPlugin()
+            .getActiveNotificationMessagingStyle(
+              previousConversation.id,
+              tag: previousConversation.tag,
+            );
+  // То же событие второй раз — переписка его уже содержит.
+  if (previousConversation?.id != id) {
+    messagingStyleInformation?.messages?.add(newMessage);
+  }
 
   final roomName = event.room.getLocalizedDisplayname(MatrixLocals(l10n));
 
@@ -491,6 +568,7 @@ Future<void> _tryPushHelper(
     number: AppBadge.visibleUnreadCount(badgeClient),
     category: AndroidNotificationCategory.message,
     shortcutId: event.room.id,
+    tag: event.room.id,
     styleInformation:
         messagingStyleInformation ??
         MessagingStyleInformation(
@@ -615,6 +693,12 @@ Future<void> _tryPushHelper(
       event.eventId,
     ).toString(),
   );
+  if (previousConversation != null && previousConversation.id != id) {
+    await flutterLocalNotificationsPlugin.cancel(
+      previousConversation.id,
+      tag: previousConversation.tag,
+    );
+  }
   Logs().v('Push helper has been completed!');
 }
 

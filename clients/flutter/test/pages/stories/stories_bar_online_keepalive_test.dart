@@ -13,7 +13,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/stories/stories_bar.dart';
 import 'package:liza/utils/stories/frequent_contacts.dart';
-import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/matrix.dart';
 import '../../utils/test_client.dart';
 
@@ -82,6 +81,7 @@ void main() {
   }
 
   void setOnline(String id, int agoMs) {
+    // ignore: deprecated_member_use
     client.presences[id] = CachedPresence(
       PresenceType.online,
       agoMs,

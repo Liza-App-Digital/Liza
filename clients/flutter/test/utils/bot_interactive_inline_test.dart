@@ -120,6 +120,41 @@ void main() {
     },
   );
 
+  testWidgets(
+    'бот без inline-подписки: запроса нет, индикатор гаснет, отправка свободна',
+    (tester) async {
+      // Смоук @liza 13.11: «@Liza текст» в начале строки крутил индикатор и не отправлялся.
+      final client = await setup(tester);
+      final requests = <http.Request>[];
+      final api = BotInteractiveApi(
+        client,
+        transport: MockClient((request) async {
+          requests.add(request);
+          return response({
+            'registered': true,
+            'mxid': '@liza:hs',
+            'supports_inline_queries': false,
+          });
+        }),
+      );
+      final controller = BotInlineController(
+        api: api,
+        roomId: '!room:hs',
+        send: (c, txid) async => r'$sent',
+      );
+      controller.update('@liza скажи что-нибудь');
+      expect(controller.loading, isTrue);
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.pump();
+      await tester.pump();
+      expect(controller.loading, isFalse);
+      expect(controller.recognisedBot, isFalse);
+      expect(controller.results, isEmpty);
+      expect(requests.where((r) => r.url.path.endsWith('/query')), isEmpty);
+      controller.dispose();
+    },
+  );
+
   testWidgets('stale создание и dispose отменяют query; никакой отправки', (
     tester,
   ) async {

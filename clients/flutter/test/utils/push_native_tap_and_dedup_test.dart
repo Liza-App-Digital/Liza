@@ -276,5 +276,44 @@ void main() {
 
       expect(cancelled, [_room]);
     }, skip: _appleOnly);
+
+    // ledger:RL-push-read-banner-sweep
+    // AC:RL-push-read-banner-sweep/5
+    // Р2 L2 на холодном старте: решение только ПОСЛЕ первого sync.
+    test('запуск: первый sync показал «прочитано» → баннер снят', () async {
+      final done = push.cancelDeliveredAfterFirstSync(
+        delivered: () async => delivered,
+        cancel: (r) async => cancelled.add(r),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(cancelled, isEmpty, reason: 'до sync решения нет');
+      await _syncRoom(a, notificationCount: 0);
+      expect(await done, [_room]);
+      expect(cancelled, [_room]);
+    });
+
+    // AC:RL-push-read-banner-sweep/6
+    // Red-proof инварианта «по таймауту не чистим»: стор до sync не знает
+    // свежего события и счёл бы комнату прочитанной.
+    test('запуск: sync не пришёл за окно → ничего не снимаем', () async {
+      await _syncRoom(a, notificationCount: 0);
+      final dropped = await push.cancelDeliveredAfterFirstSync(
+        wait: const Duration(milliseconds: 100),
+        delivered: () async => delivered,
+        cancel: (r) async => cancelled.add(r),
+      );
+      expect(dropped, isEmpty);
+      expect(cancelled, isEmpty);
+    });
+
+    test('запуск: первый sync — комната непрочитана → баннер остаётся', () async {
+      final done = push.cancelDeliveredAfterFirstSync(
+        delivered: () async => delivered,
+        cancel: (r) async => cancelled.add(r),
+      );
+      await _syncRoom(a, notificationCount: 2);
+      expect(await done, isEmpty);
+      expect(cancelled, isEmpty);
+    });
   });
 }

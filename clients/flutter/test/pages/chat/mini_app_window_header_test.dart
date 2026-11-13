@@ -1,6 +1,7 @@
 // Шапка отдельного окна mini App: единственная панель, без системной дубли.
 // ledger:RL-miniapp-detached-window
 // ledger:RL-liza-liquid-page
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -133,4 +134,156 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+
+  Future<void> pumpFull(
+    WidgetTester tester, {
+    required double width,
+    bool maximized = false,
+    VoidCallback? onToggle,
+    ValueChanged<MiniAppWindowEdge>? onResize,
+    VoidCallback? onDrag,
+    VoidCallback? onClose,
+  }) async {
+    tester.view.physicalSize = Size(width, 600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MiniAppWindowHeader(
+            title: 'Очень длинное название мини-приложения ' * 4,
+            attachTooltip: 'Прикрепить к Лизе',
+            closeTooltip: 'Закрыть',
+            maximizeTooltip: 'Развернуть на весь экран',
+            restoreTooltip: 'Восстановить размер',
+            onAttach: () {},
+            onClose: onClose ?? () {},
+            onDragStart: onDrag ?? () {},
+            onToggleMaximize: onToggle ?? () {},
+            onResizeStart: onResize,
+            maximized: maximized,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // AC:RL-miniapp-detached-window/29 — «увеличить можно весь экран»: ∀ {360,
+  // 1100} × {обычное, развёрнутое} кнопка «Развернуть/Восстановить» стоит между
+  // «Прикрепить» и крестиком, значок и подсказка по состоянию, переполнения нет.
+  for (final width in [360.0, 1100.0]) {
+    for (final maximized in [false, true]) {
+      testWidgets('AC-29 кнопка развернуть ($width, maximized=$maximized)', (
+        tester,
+      ) async {
+        var toggles = 0;
+        await pumpFull(
+          tester,
+          width: width,
+          maximized: maximized,
+          onToggle: () => toggles++,
+        );
+        expect(find.byType(IconButton), findsNWidgets(3));
+        final attachX = tester
+            .getCenter(find.byKey(const ValueKey('miniapp-window-attach')))
+            .dx;
+        final maxX = tester
+            .getCenter(find.byKey(const ValueKey('miniapp-window-maximize')))
+            .dx;
+        final closeX = tester
+            .getCenter(find.byKey(const ValueKey('miniapp-window-close')))
+            .dx;
+        expect(attachX < maxX && maxX < closeX, isTrue);
+        expect(
+          find.byIcon(maximized ? Icons.filter_none : Icons.crop_square),
+          findsOneWidget,
+        );
+        expect(
+          find.byTooltip(
+            maximized ? 'Восстановить размер' : 'Развернуть на весь экран',
+          ),
+          findsOneWidget,
+        );
+        await tester.tap(find.byKey(const ValueKey('miniapp-window-maximize')));
+        expect(toggles, 1);
+        expect(tester.takeException(), isNull);
+      });
+    }
+  }
+
+  // AC:RL-miniapp-detached-window/29 — двойной клик по названию разворачивает;
+  // одиночные клики (и два далёких по времени) — перетаскивание.
+  testWidgets('AC-29 двойной клик по названию — развернуть, не drag', (
+    tester,
+  ) async {
+    var toggles = 0, drags = 0;
+    await pumpFull(
+      tester,
+      width: 1100,
+      onToggle: () => toggles++,
+      onDrag: () => drags++,
+    );
+    final title = find.byKey(const ValueKey('miniapp-window-drag'));
+    final at = tester.getCenter(title);
+    final g1 = await tester.startGesture(at, kind: PointerDeviceKind.mouse);
+    await g1.up();
+    await tester.pump(const Duration(milliseconds: 100));
+    final g2 = await tester.startGesture(at, kind: PointerDeviceKind.mouse);
+    await g2.up();
+    expect([toggles, drags], [1, 1]);
+    await tester.pump(const Duration(seconds: 1));
+    final g3 = await tester.startGesture(at, kind: PointerDeviceKind.mouse);
+    await g3.up();
+    expect([toggles, drags], [1, 2]);
+  });
+
+  // AC:RL-miniapp-detached-window/28 — верхний край (Windows): полоса 5 dp над
+  // шапкой тянет окно вверх, углы — по диагонали; у развёрнутого окна полосы
+  // нет; клик ниже полосы — не ресайз (кнопки и название работают).
+  testWidgets('AC-28 верхняя полоса ресайза', (tester) async {
+    final edges = <MiniAppWindowEdge>[];
+    var closes = 0;
+    await pumpFull(
+      tester,
+      width: 1100,
+      onResize: edges.add,
+      onClose: () => closes++,
+    );
+    final header = tester.getRect(find.byType(MiniAppWindowHeader));
+    Future<void> clickAt(Offset p) async {
+      final g = await tester.startGesture(p, kind: PointerDeviceKind.mouse);
+      await g.up();
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    await clickAt(Offset(header.center.dx, header.top + 2));
+    await clickAt(Offset(header.left + 2, header.top + 2));
+    await clickAt(Offset(header.right - 2, header.top + 2));
+    expect(edges, [
+      MiniAppWindowEdge.top,
+      MiniAppWindowEdge.topLeft,
+      MiniAppWindowEdge.topRight,
+    ]);
+    await clickAt(Offset(header.center.dx, header.top + 10));
+    await tester.tap(find.byKey(const ValueKey('miniapp-window-close')));
+    expect(edges.length, 3);
+    expect(closes, 1);
+
+    await pumpFull(tester, width: 1100, maximized: true, onResize: edges.add);
+    expect(
+      find.byKey(const ValueKey('miniapp-window-resize-top')),
+      findsNothing,
+    );
+    await clickAt(Offset(header.center.dx, header.top + 2));
+    expect(edges.length, 3);
+  });
+
+  // macOS: без onResizeStart полосы нет совсем (края тянет сама AppKit).
+  testWidgets('AC-28 без onResizeStart полосы нет', (tester) async {
+    await pumpFull(tester, width: 1100);
+    expect(
+      find.byKey(const ValueKey('miniapp-window-resize-top')),
+      findsNothing,
+    );
+  });
 }

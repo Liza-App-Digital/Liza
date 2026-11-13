@@ -35,7 +35,7 @@ class UserRoleService {
   /// mxid, поэтому одинаково работает на bots.liza.ru / liza.local / dev / компаниях.
   /// Завёл новый AI-инстанс (liza-new-server/liza-company) с новым localpart —
   /// добавь его И сюда, И в серверный `_AI_LOCALPARTS`.
-  static const Set<String> realAiLocalparts = {'liza', 'gpt', 'deepseek'};
+  static const Set<String> realAiLocalparts = {'liza'};
 
   /// True, если localpart [userId] принадлежит настоящему AI-боту.
   static bool isRealAiLocalpart(String userId) =>

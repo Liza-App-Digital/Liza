@@ -16,6 +16,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:matrix/matrix.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 
+import 'package:liza/utils/call_link.dart';
 import 'package:liza/utils/news_poll.dart';
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/config/themes.dart';
@@ -52,6 +53,7 @@ import 'package:liza/utils/resend_failed_media.dart';
 import 'package:liza/utils/upload_progress_tracker.dart';
 import 'package:liza/utils/unseen_messages.dart';
 import 'package:liza/pages/chat/events/audio_autoplay_service.dart';
+import 'package:liza/pages/chat/tg_widget/tg_widget_bubble.dart';
 import 'package:liza/utils/matrix_sdk_extensions/event_extension.dart';
 import 'package:liza/utils/matrix_sdk_extensions/filtered_timeline_extension.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_file_extension.dart';
@@ -1003,6 +1005,7 @@ class ChatController extends State<ChatPageWithRoom>
       // посторонней перерисовки (LABA-2541). Defense-in-depth к тому, что тип
       // флага теперь в importantStateEvents.
       setState(() {});
+      _syncCallLink();
     } catch (e, s) {
       // Показать ошибку закрытому чату негде — только пробросить в отчёт.
       if (mounted) {
@@ -1014,6 +1017,13 @@ class ChatController extends State<ChatPageWithRoom>
       // квитанции навсегда (рецидив LABA-1894 — бейдж не гаснет).
       _openPositioningPending = false;
     }
+  }
+
+  /// Трубка «Ссылка на созвон» в шапке читает room state, который локально мог
+  /// потеряться (partial-комната, откат сервера) — сверяем с сервером, не чаще
+  /// раза в несколько минут на комнату ([CallLink.sync]).
+  Future<void> _syncCallLink() async {
+    if (await CallLink.sync(room) && mounted) setState(() {});
   }
 
   /// Потолок батчей догрузки при пустой ленте (LABA-1898): защита от «в первом
@@ -2101,6 +2111,9 @@ class ChatController extends State<ChatPageWithRoom>
   /// `message_context_menu.dart`: на медиа без подписи копировалась бы
   /// generic-заглушка («Отправил картинку»), а не содержимое.
   bool get canCopySelectedEvents => selectedEvents.any((event) {
+    // Защищённый виджет Telegram копировать нельзя (D7); смешанное выделение
+    // дополнительно отсекает сам copyEventsAction.
+    if (isProtectedTgWidget(event)) return false;
     // Гейт считаем на DISPLAY-событии — как и само копирование
     // (`_getSelectedEventString`/`copyEvent`), иначе у отредактированной подписи
     // гейт и действие смотрели бы на разные версии `body`.
@@ -2111,9 +2124,14 @@ class ChatController extends State<ChatPageWithRoom>
     );
   });
 
+  /// Есть ли среди выделенных виджет, который сейчас нельзя выносить (D7).
+  bool get selectionHasProtectedWidget =>
+      selectedEvents.any(isProtectedTgWidget);
+
   void copyEventsAction() {
     // Гейт в самом методе, а не только на кнопке: новая точка вызова
     // (горячая клавиша, меню, другой экран) иначе снова обошла бы запрет.
+    if (selectionHasProtectedWidget) return;
     if (room.isContentProtected) return;
     unawaited(
       Clipboard.setData(ClipboardData(text: _getSelectedEventString())),
@@ -2294,6 +2312,7 @@ class ChatController extends State<ChatPageWithRoom>
   void forwardEventsAction() async {
     // Гейт в самом методе, а не только на кнопке (см. copyEventsAction).
     if (room.isContentProtected) return;
+    if (selectionHasProtectedWidget) return;
     if (_blockedByUpdate()) return;
     if (selectedEvents.isEmpty) return;
     final timeline = this.timeline;
@@ -2693,6 +2712,7 @@ class ChatController extends State<ChatPageWithRoom>
   void copyEvent(Event event) {
     // Гейт в самом методе, а не только на пункте меню (см. copyEventsAction).
     if (room.isContentProtected) return;
+    if (isProtectedTgWidget(event)) return;
     final timeline = this.timeline;
     if (timeline == null) return;
     unawaited(
@@ -2767,6 +2787,7 @@ class ChatController extends State<ChatPageWithRoom>
   }
 
   Future<void> forwardEvent(Event event) async {
+    if (isProtectedTgWidget(event)) return;
     if (_blockedByUpdate()) return;
     final timeline = this.timeline;
     if (timeline == null) return;

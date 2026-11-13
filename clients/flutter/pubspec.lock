@@ -9,6 +9,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "91.0.0"
+  adaptive_number:
+    dependency: transitive
+    description:
+      name: adaptive_number
+      sha256: "3a567544e9b5c9c803006f51140ad544aedc79604fd4f3f2c1380003f97c1d77"
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.0"
   alchemist:
     dependency: "direct dev"
     description:
@@ -385,6 +393,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.8.1"
+  ed25519_edwards:
+    dependency: "direct dev"
+    description:
+      name: ed25519_edwards
+      sha256: f3c3b109a0e470ee35f6346a155cab290578660852237fce10df6bbd92758534
+      url: "https://pub.dev"
+    source: hosted
+    version: "0.3.2"
   emoji_picker_flutter:
     dependency: "direct main"
     description:
@@ -2033,6 +2049,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.0.0"
+  smart_auth:
+    dependency: "direct main"
+    description:
+      name: smart_auth
+      sha256: a536423c50d71e9a311d16027346634d0deadd07dafc5b5606b46719cf6fb2b6
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.2.0"
   source_map_stack_trace:
     dependency: transitive
     description:

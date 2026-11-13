@@ -14,6 +14,9 @@ const _notUi = {
   'lib/config/routes.dart',
   'lib/pages/settings/settings.dart',
   'lib/pages/auth_select/auth_select.dart',
+  // Роль фильтрует список чатов (чип «Каналы», скрытые комнаты); метку рисует
+  // сам чип в chat_list_filter_row.dart.
+  'lib/pages/chat_list/chat_list.dart',
   'lib/utils/user_role_service.dart',
   'lib/widgets/matrix.dart',
   'lib/widgets/if_developer.dart',

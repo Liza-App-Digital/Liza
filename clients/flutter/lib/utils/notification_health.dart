@@ -232,7 +232,10 @@ abstract final class NativePushDiagnostics {
             'nseCompleted',
             'nseExpired',
             'nseError',
+            'nseSwept',
             'fcmReceived',
+            'fcmDuplicate',
+            'nseSuppressed',
             'token',
             'diagnosticLoss',
           }.contains(s)) {
@@ -258,6 +261,11 @@ abstract final class NativePushDiagnostics {
       final value = item['value'];
       if (value is int && value >= 0 && value <= 2147483647) {
         entry['value'] = value;
+      }
+      // M6: момент отправки Sygnal'ом (`liza_sent_ms`), мс эпохи.
+      final sent = item['sent'];
+      if (sent is int && sent > 0 && sent <= nowMs + 86400000) {
+        entry['sent'] = sent;
       }
       final size = utf8.encode(jsonEncode(entry)).length;
       if (bytes + size > 128 * 1024) break;

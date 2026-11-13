@@ -8,11 +8,13 @@ class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
     self.contentViewController = flutterViewController
-    self.minSize = NSSize(width: 480, height: 400)
+    // Окно Лизы не сжимается «в строку» (Надежда 13.11). Синхронно с
+    // WM_GETMINMAXINFO в windows/runner/win32_window.cpp.
+    self.minSize = NSSize(width: 480, height: 520)
     self.setFrameAutosaveName("MainFlutterWindow")
 
     let restored = self.setFrameUsingName(self.frameAutosaveName)
-    if !restored || self.frame.width < 480 || self.frame.height < 400 {
+    if !restored || self.frame.width < 480 || self.frame.height < 520 {
       self.setFrame(NSRect(x: 0, y: 0, width: 960, height: 700), display: true)
       self.center()
     }
@@ -50,8 +52,11 @@ class MainFlutterWindow: NSWindow {
 /// (канал `liza/miniapp_window`, см. mini_app_window.dart). Свой канал, а не
 /// window_manager: тот ставит себя делегатом окна и умеет terminate.
 class MiniAppWindowPlugin: NSObject, FlutterPlugin {
-  /// Позиция и размер окна запоминаются между открытиями и запусками.
-  private static let frameName = "LizaMiniAppWindow"
+  /// Геометрия окна в pt (заявка 13.11: «должен открываться большим»,
+  /// минимум ~800×600). Синхронно с windows/runner/mini_app_window_channel.cpp.
+  /// Размер не запоминается: autosave тащил в каждое окно размер прошлого.
+  private static let defaultSize = NSSize(width: 1100, height: 820)
+  private static let minimumSize = NSSize(width: 800, height: 600)
 
   private weak var registrar: FlutterPluginRegistrar?
   private var channel: FlutterMethodChannel?
@@ -80,6 +85,7 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
       "closed": closed || window == nil,
       "visible": window?.isVisible == true && NSApp.isActive,
       "minimized": window?.isMiniaturized == true,
+      "maximized": window?.isZoomed == true,
       "focused": window?.isKeyWindow == true && NSApp.isActive,
       "main_focused": NSApp.isActive && NSApp.windows.contains {
         $0 is MainFlutterWindow && $0.isKeyWindow && $0.isVisible && !$0.isMiniaturized
@@ -164,7 +170,7 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
       result(visibility())
     case "present":
       window.title = args?["title"] as? String ?? ""
-      window.minSize = NSSize(width: 360, height: 480)
+      window.minSize = MiniAppWindowPlugin.fit(MiniAppWindowPlugin.minimumSize)
       if args?["frameless"] as? Bool == true {
         // .titled/.resizable остаются (borderless не становится key-окном):
         // контент заезжает под прозрачный titlebar, светофор прячем.
@@ -175,12 +181,7 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
           window.standardWindowButton(button)?.isHidden = true
         }
       }
-      if !window.setFrameUsingName(MiniAppWindowPlugin.frameName) {
-        window.setFrame(MiniAppWindowPlugin.defaultFrame(), display: false)
-      }
-      // Автосохранение — только у одного окна с этим именем; у второго
-      // одновременно открытого mini App вызов просто вернёт false.
-      window.setFrameAutosaveName(MiniAppWindowPlugin.frameName)
+      window.setFrame(MiniAppWindowPlugin.defaultFrame(), display: false)
       MiniAppWindowPlugin.focus(window)
       result(nil)
     case "setTitle":
@@ -189,6 +190,18 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
     case "focus":
       MiniAppWindowPlugin.focus(window)
       result(nil)
+    case "geometry":
+      // Контент, минимум и рабочая область в pt — для нативного стража.
+      let area = window.screen?.visibleFrame ?? MiniAppWindowPlugin.screenArea()
+      result([
+        "width": window.frame.width, "height": window.frame.height,
+        "minWidth": window.minSize.width, "minHeight": window.minSize.height,
+        "areaWidth": area.width, "areaHeight": area.height,
+        "maximized": window.isZoomed,
+      ])
+    case "toggleMaximize":
+      window.zoom(nil)
+      result(window.isZoomed)
     case "startDrag":
       if let event = NSApp.currentEvent { window.performDrag(with: event) }
       result(nil)
@@ -208,14 +221,26 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
     NSApp.activate(ignoringOtherApps: true)
   }
 
-  /// Большое окно по центру экрана, на котором стоит Лиза.
-  private static func defaultFrame() -> NSRect {
+  /// Видимая область экрана, на котором стоит Лиза.
+  private static func screenArea() -> NSRect {
     let main = NSApp.windows.first { $0 is MainFlutterWindow }
     let screen = main?.screen ?? NSScreen.main ?? NSScreen.screens.first
-    let area = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-    let width = min(1100, area.width * 0.9)
-    let height = min(820, area.height * 0.9)
+    return screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+  }
+
+  /// Не больше 90% экрана: на маленьком экране минимум иначе не влезает.
+  private static func fit(_ size: NSSize) -> NSSize {
+    let area = screenArea()
+    return NSSize(width: min(size.width, area.width * 0.9),
+                  height: min(size.height, area.height * 0.9))
+  }
+
+  /// Большое окно по центру экрана, на котором стоит Лиза.
+  private static func defaultFrame() -> NSRect {
+    let area = screenArea()
+    let size = fit(defaultSize)
     return NSRect(
-      x: area.midX - width / 2, y: area.midY - height / 2, width: width, height: height)
+      x: area.midX - size.width / 2, y: area.midY - size.height / 2,
+      width: size.width, height: size.height)
   }
 }

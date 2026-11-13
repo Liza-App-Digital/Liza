@@ -830,6 +830,7 @@ abstract final class Monitoring {
     required String platform,
     DateTime? settingsObservedAt,
     String nativeJournalStatus = 'unknown',
+    Map<String, Object>? acks,
   }) {
     final bounded = <Map<String, Object?>>[];
     var bytes = 0;
@@ -879,6 +880,7 @@ abstract final class Monitoring {
       'settings_observed_at': settingsObservedAt?.toUtc().toIso8601String(),
       'accounts': bounded,
       'native_journal': boundedNative.reversed.toList(),
+      'acks': ?acks,
       'coverage': {
         'accounts_total': accounts.length,
         'accounts_included': bounded.length,
@@ -921,6 +923,7 @@ abstract final class Monitoring {
     DateTime? now,
     bool force = false,
     bool Function()? canSend,
+    Map<String, Object>? acks,
   }) async {
     if (!_active && _pushOutbox == null) {
       pushReportStatus.value = PushReportStatus.disabled;
@@ -943,6 +946,7 @@ abstract final class Monitoring {
             nativeJournalStatus: nativeJournalStatus,
             settingsObservedAt: settingsObservedAt,
             platform: platform,
+            acks: acks,
           ),
         },
         at,

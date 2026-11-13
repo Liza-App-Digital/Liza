@@ -29,12 +29,19 @@ class _MatrixWithClient extends MatrixState {
 
   @override
   SharedPreferences get store => prefs;
+
+  /// Роль ai без сервера ролей: тест сам решает, кто бот.
+  final Set<String> aiIds = {};
+
+  @override
+  bool isAiUser(String userId) => aiIds.contains(userId);
 }
 
 Finder _tile(String userId) => find.byKey(ValueKey('frequentContact:$userId'));
 
 void main() {
   late Client client;
+  late _MatrixWithClient matrix;
 
   setUp(FrequentContactsCache.instance.reset);
 
@@ -97,7 +104,7 @@ void main() {
       await addDm('@liza:bots.liza.ru', 30, ageMin: 90);
       await addDm('@helper:example.invalid', 9);
     });
-    final matrix = _MatrixWithClient(client, prefs);
+    matrix = _MatrixWithClient(client, prefs);
     final router = GoRouter(
       routes: [
         GoRoute(
@@ -197,6 +204,35 @@ void main() {
       '/rooms/$bobRoom',
     );
     expect(find.text('room:$bobRoom'), findsOneWidget);
+    await teardown(tester);
+  });
+
+  testWidgets('бот среди частых — сотой, человек — кругом; роль, '
+      'догруженная после показа ленты, перерисовывает тайл', (tester) async {
+    // ledger:RL-stories-bar-frequent-contacts
+    await pumpBar(tester);
+    Avatar avatarOf(String id) => tester.widget<Avatar>(
+      find.descendant(of: _tile(id), matching: find.byType(Avatar)),
+    );
+    // Роль ещё не пришла: форма по кэшу — круг.
+    expect(avatarOf('@shop_bot:bots.liza.ru').isHexagonal, isFalse);
+
+    matrix.aiIds.add('@shop_bot:bots.liza.ru');
+    matrix.userRoleService.rolesVersion.value++;
+    await tester.pump();
+    // AC:RL-stories-bar-frequent-contacts/9
+    expect(
+      avatarOf('@shop_bot:bots.liza.ru').isHexagonal,
+      isTrue,
+      reason: 'бот с ролью ai в ленте сторис — сотой, как везде',
+    );
+    for (final id in [
+      '@helper:example.invalid',
+      '@bob:example.invalid',
+      '@carol:example.invalid',
+    ]) {
+      expect(avatarOf(id).isHexagonal, isFalse, reason: '$id — человек');
+    }
     await teardown(tester);
   });
 }

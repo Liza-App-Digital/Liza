@@ -4616,6 +4616,10 @@
   "@miniAppDetach": {},
   "miniAppAttach": "Прикрепить к Лизе",
   "@miniAppAttach": {},
+  "miniAppMaximize": "Развернуть на весь экран",
+  "@miniAppMaximize": {},
+  "miniAppRestore": "Восстановить размер",
+  "@miniAppRestore": {},
   "miniAppMoveDuringPayment": "Дождитесь окончания оплаты",
   "@miniAppMoveDuringPayment": {},
   "chatListExpand": "Развернуть список чатов",
@@ -5434,6 +5438,31 @@
   "notificationHealthRefresh": "Обновить состояние",
   "notificationHealthSettingsFailed": "Не удалось открыть настройки ОС. Откройте настройки устройства и найдите уведомления Liza.",
   "notificationHealthActionFailed": "Не удалось выполнить действие. Повторите попытку.",
+  "notificationCheckupTitle": "Проверка уведомлений",
+  "notificationCheckupAllClear": "На этом устройстве проблем не найдено.",
+  "notificationCheckupPermissionDenied": "Система запрещает уведомления Лизы.",
+  "notificationCheckupAlertsHidden": "Уведомления приходят без баннеров.",
+  "notificationCheckupPusherMissing": "Это устройство не получает пуши.",
+  "notificationCheckupAccountMuted": "Уведомления выключены в настройках аккаунта.",
+  "notificationCheckupSecondCopy": "На этом устройстве стоит ещё одна Лиза — удалите старую.",
+  "notificationCheckupOutdated": "Есть новая версия Лизы — обновите, чтобы получить последние исправления уведомлений.",
+  "notificationCheckupBattery": "Система может усыплять Лизу. Разрешите работу в фоне; на Xiaomi, Huawei и Honor включите также автозапуск.",
+  "notificationCheckupMacSleep": "Пока Мак спит, Apple хранит только последнее уведомление.",
+  "notificationCheckupReconnect": "Подключить заново",
+  "notificationCheckupEnable": "Включить",
+  "notificationCheckupUpdate": "Обновить",
+  "notificationTestPushSend": "Отправить тестовый пуш",
+  "notificationTestPushRunning": "Ждём тестовый пуш…",
+  "notificationTestPushDelivered": "Пуш дошёл за {seconds} с.",
+  "notificationTestPushTimedOut": "Пуш не дошёл за 60 с.",
+  "notificationTestPushRejected": "Сервер не принял запрос на тестовый пуш.",
+  "@notificationTestPushDelivered": {
+    "placeholders": {
+      "seconds": {
+        "type": "String"
+      }
+    }
+  },
   "notificationLocalTestExplanation": "Только локальное уведомление. Доставка через APNs/FCM не проверяется.",
   "@notificationHealthObservedAt": {
     "placeholders": {
@@ -5499,5 +5528,52 @@
   "botJoinRequestCheck": "Пройти проверку бота",
   "botJoinRequestJoin": "Вступить в чат",
   "botJoinRequestDeclined": "Заявка на вступление отклонена.",
-  "botRequestsPermissions": "Бот запрашивает права управления чатом."
+  "botRequestsPermissions": "Бот запрашивает права управления чатом.",
+  "chatCapsuleUnpublish": "Снять с публикации",
+  "@chatCapsuleUnpublish": {},
+  "chatCapsuleArchive": "В архив",
+  "@chatCapsuleArchive": {},
+  "chatCapsuleRestore": "Вернуть из архива",
+  "@chatCapsuleRestore": {},
+  "chatCapsuleArchiveConfirm": "Переместить капсулу в архив?",
+  "@chatCapsuleArchiveConfirm": {},
+  "chatCapsuleNoPermission": "Недостаточно прав",
+  "@chatCapsuleNoPermission": {},
+  "chatCapsulesUnavailable": "Сервис капсул недоступен",
+  "@chatCapsulesUnavailable": {},
+  "chatCapsuleNoFolder": "У чата нет папки для публикации",
+  "@chatCapsuleNoFolder": {},
+  "widgetStart": "Запустить",
+  "@widgetStart": {
+    "description": "Кнопка запуска виджета непроверенного бота"
+  },
+  "widgetStopped": "Виджет остановлен",
+  "@widgetStopped": {
+    "description": "Плашка поверх виджета, остановленного сторожем"
+  },
+  "widgetNotSupported": "Виджеты не поддерживаются на этом устройстве",
+  "@widgetNotSupported": {
+    "description": "Пометка под подписью виджета на Linux"
+  },
+  "widgetLoading": "Загрузка виджета",
+  "@widgetLoading": {
+    "description": "Подпись заглушки виджета для экранного диктора"
+  },
+  "widgetLinkName": "Ссылка из виджета",
+  "@widgetLinkName": {
+    "description": "Имя ссылки из виджета в диалоге подтверждения"
+  },
+  "widgetOpenInApp": "Откройте виджет в приложении Liza",
+  "@widgetOpenInApp": {
+    "description": "Пометка под подписью виджета непроверенного бота в веб-версии"
+  },
+  "widgetCopied": "Скопировано: {text}",
+  "@widgetCopied": {
+    "description": "Тост после copyText из виджета, показывает скопированный текст",
+    "placeholders": {
+      "text": {
+        "type": "String"
+      }
+    }
+  }
 }

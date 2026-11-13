@@ -17,7 +17,7 @@ from synapse_modules.access_admin._logic import (
     power_from_content,
 )
 
-BOT_LOCALPARTS = frozenset({"liza", "gpt", "deepseek", "bot_father", "botfather"})
+BOT_LOCALPARTS = frozenset({"liza", "bot_father", "botfather"})
 
 
 class LevelFromPowerTestCase(unittest.TestCase):

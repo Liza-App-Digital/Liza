@@ -7,18 +7,28 @@
 #
 # Originally licensed under the Apache License, Version 2.0:
 # <http://www.apache.org/licenses/LICENSE-2.0>.
-from typing import Any, Dict
+import base64
+import hashlib
+import json
+from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
+from uuid import uuid5
 
 from aioapns.common import NotificationResult, PushType
 
 from sygnal import apnstruncate
-from sygnal.apnspushkin import ApnsPushkin
+from sygnal._sent_cache import SentCache
+from sygnal.apnspushkin import (
+    STABLE_APNS_NAMESPACE,
+    ApnsPushkin,
+    collapse_id_for_event,
+)
 
 from tests import testutils
 
 PUSHKIN_ID = "com.example.apns"
 PUSHKIN_ID_WITH_PUSH_TYPE = "com.example.apns.push_type"
+PUSHKIN_ID_IDENTITY = "com.example.apns.identity"
 
 TEST_CERTFILE_PATH = "/path/to/my/certfile.pem"
 
@@ -90,6 +100,11 @@ class ApnsTestCase(testutils.TestCase):
         # see https://github.com/python/mypy/issues/2427
         test_pushkin._send_notification = self.apns_pushkin_snotif  # type: ignore[assignment] # noqa: E501
         test_pushkin_push_type._send_notification = self.apns_pushkin_snotif  # type: ignore[assignment] # noqa: E501
+        self.get_test_pushkin(PUSHKIN_ID_IDENTITY)._send_notification = self.apns_pushkin_snotif  # type: ignore[assignment] # noqa: E501
+        # Тесты формы payload шлют одно и то же событие много раз подряд;
+        # память об отправленном проверяется отдельно на PUSHKIN_ID_IDENTITY.
+        for legacy in (test_pushkin, test_pushkin_push_type):
+            legacy.sent_cache = SentCache(0, legacy.sygnal.reactor.seconds)
 
     def get_test_pushkin(self, name: str) -> ApnsPushkin:
         test_pushkin = self.sygnal.pushkins[name]
@@ -103,6 +118,14 @@ class ApnsTestCase(testutils.TestCase):
             "type": "apns",
             "certfile": TEST_CERTFILE_PATH,
             "push_type": "alert",
+        }
+        config["apps"][PUSHKIN_ID_IDENTITY] = {
+            "type": "apns",
+            "certfile": TEST_CERTFILE_PATH,
+            "stable_apns_id": True,
+            "collapse_by_event": True,
+            "alert_clearing": True,
+            "sent_timestamp": True,
         }
 
     def test_payload_truncation(self) -> None:
@@ -704,3 +727,200 @@ class ApnsTestCase(testutils.TestCase):
             for shape, notif in self._all_payload_shapes(device).items():
                 req = self._sent_request(notif)
                 self.assertEqual(1, req.message["aps"]["mutable-content"], shape)
+
+    # ------------------------------------------------------------------
+    # ledger:RL-apns-stable-identity — Р2/Р5 спеки 2026-11-12: один apns-id на все
+    # повторы одного события, collapse-id по событию, память об отправленном.
+    # ------------------------------------------------------------------
+
+    def _identity_device(
+        self, client_name: str = "acc1", pushkey: str = "spqr", **extra: Any
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "client_name": client_name,
+            "platform": "ios",
+            "aps": {"mutable-content": 1, "sound": "liza_ding.aiff"},
+        }
+        payload.update(extra)
+        return {
+            "app_id": PUSHKIN_ID_IDENTITY,
+            "pushkey": pushkey,
+            "pushkey_ts": 42,
+            "data": {"default_payload": payload},
+        }
+
+    def _sent_requests(self, *notifications: Dict[str, Any], status: str = "200") -> List[Any]:
+        method = self.apns_pushkin_snotif
+        method.reset_mock()
+        method.side_effect = testutils.make_async_magic_mock(
+            NotificationResult("notID", status)
+        )
+        for notification in notifications:
+            self._request(notification)
+        return [call.args[0] for call in method.call_args_list]
+
+    def test_retries_of_one_event_share_apns_id(self) -> None:
+        """AC:RL-apns-stable-identity/1 — все попытки одного события на одном
+        устройстве и аккаунте несут один apns-id."""
+        requests = self._sent_requests(
+            self._make_dummy_notification([self._identity_device()]), status="503"
+        )
+        self.assertEqual(2, len(requests))
+        self.assertEqual(requests[0].notification_id, requests[1].notification_id)
+        expected = str(
+            uuid5(STABLE_APNS_NAMESPACE, "spqr|acc1|$qTOWWTEL48yPm3uT-gdNhFcoHxfKbZuqRVnnWWSkGBs")
+        )
+        self.assertEqual(expected, requests[0].notification_id)
+
+    def test_two_accounts_on_one_token_get_different_ids(self) -> None:
+        """AC:RL-apns-stable-identity/2 — один токен, два аккаунта: разные
+        apns-id и collapse-id, оба пуша уходят."""
+        requests = self._sent_requests(
+            self._make_dummy_notification([self._identity_device("acc1")]),
+            self._make_dummy_notification([self._identity_device("acc2")]),
+        )
+        self.assertEqual(2, len(requests))
+        self.assertNotEqual(requests[0].notification_id, requests[1].notification_id)
+        self.assertNotEqual(requests[0].collapse_key, requests[1].collapse_key)
+
+    def test_two_pushkeys_get_two_requests(self) -> None:
+        """AC:RL-apns-stable-identity/3 — два устройства аккаунта: две отправки."""
+        requests = self._sent_requests(
+            self._make_dummy_notification(
+                [self._identity_device(pushkey="spqr"), self._identity_device(pushkey="c3BxcnNwcXI=")]
+            )
+        )
+        self.assertEqual(2, len(requests))
+        self.assertNotEqual(requests[0].notification_id, requests[1].notification_id)
+
+    def test_collapse_id_is_hash_of_account_and_event(self) -> None:
+        """AC:RL-apns-stable-identity/4 — collapse-id = base64url(sha256(
+        client_name|event_id)) без '=' (≤ 64 байт); клиент macOS считает так же."""
+        (req,) = self._sent_requests(
+            self._make_dummy_notification([self._identity_device()])
+        )
+        digest = hashlib.sha256(
+            b"acc1|$qTOWWTEL48yPm3uT-gdNhFcoHxfKbZuqRVnnWWSkGBs"
+        ).digest()
+        expected = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+        self.assertEqual(expected, req.collapse_key)
+        self.assertLessEqual(len(req.collapse_key.encode()), 64)
+
+    def test_collapse_id_matches_client_vector(self) -> None:
+        """AC:RL-apns-stable-identity/4 — тот же вектор закреплён в
+        clients/flutter/test/utils/push_banner_id_test.dart (pushBannerId):
+        поменял формулу с одной стороны — красный тест с другой."""
+        self.assertEqual(
+            "oMxqDcgZXOmFx8QMvUrQcMLQcSVSyb_uwEHFR7y3Hqs",
+            collapse_id_for_event("Liza-1", "$abc:liza.ru"),
+        )
+
+    def test_counts_and_clearing_have_no_identity_and_no_dedup(self) -> None:
+        """AC:RL-apns-stable-identity/5 — счётчики и снятие: без collapse-id и
+        без памяти, каждый повтор уходит."""
+        device = self._identity_device(liza_clear_v=1)
+        notif = self._make_dummy_notification_badge_only([device])
+        requests = self._sent_requests(notif, notif)
+        self.assertEqual(2, len(requests))
+        for req in requests:
+            self.assertIsNone(req.collapse_key)
+
+    def test_repeat_of_accepted_event_is_not_sent_again(self) -> None:
+        """AC:RL-apns-stable-identity/6 AC:RL-push-sent-dedupe/1 — повтор
+        Synapse того же события в течение 10 минут после принятия APNs не
+        даёт второго звука."""
+        notif = self._make_dummy_notification([self._identity_device()])
+        requests = self._sent_requests(notif, notif)
+        self.assertEqual(1, len(requests))
+
+    def test_rejected_event_is_not_remembered(self) -> None:
+        """AC:RL-push-sent-dedupe/6 — неудачная отправка не запоминается,
+        повтор Synapse уходит."""
+        notif = self._make_dummy_notification([self._identity_device()])
+        requests = self._sent_requests(notif, notif, status="503")
+        self.assertEqual(4, len(requests))
+
+    def test_flags_off_keep_previous_request(self) -> None:
+        """AC:RL-apns-stable-identity/7 — флаги выключены: случайный apns-id на
+        каждую попытку, без collapse-id (как в 3acae450)."""
+        device = self._identity_device()
+        device["app_id"] = PUSHKIN_ID
+        requests = self._sent_requests(
+            self._make_dummy_notification([device]), status="503"
+        )
+        self.assertEqual(2, len(requests))
+        self.assertNotEqual(requests[0].notification_id, requests[1].notification_id)
+        for req in requests:
+            self.assertIsNone(req.collapse_key)
+
+    def test_apns_id_line_has_unique_id_and_no_private_data(self) -> None:
+        """AC:RL-apns-stable-identity/8 — строка PUSH_APNS_ID несёт apns-id,
+        apns-unique-id и хэши, но не токен и не event_id."""
+        pushkin = self.get_test_pushkin(PUSHKIN_ID_IDENTITY)
+        device = self._identity_device()
+        stable = str(
+            uuid5(STABLE_APNS_NAMESPACE, "spqr|acc1|$qTOWWTEL48yPm3uT-gdNhFcoHxfKbZuqRVnnWWSkGBs")
+        )
+        pushkin._remember_unique_id(stable, "a8f2a2f6-4d27-41e0-8ba0-6d7e2a9b1c11")
+        with self.assertLogs("sygnal.apnspushkin", level="INFO") as captured:
+            self._sent_requests(self._make_dummy_notification([device]))
+        lines = [r.getMessage() for r in captured.records if "PUSH_APNS_ID " in r.getMessage()]
+        self.assertEqual(1, len(lines))
+        record = json.loads(lines[0].split("PUSH_APNS_ID ", 1)[1])
+        self.assertEqual(stable, record["apns_id"])
+        self.assertEqual("a8f2a2f6-4d27-41e0-8ba0-6d7e2a9b1c11", record["apns_unique_id"])
+        self.assertTrue(record["stable"])
+        self.assertNotIn("spqr", lines[0])
+        self.assertNotIn("$qTOWWTEL48yPm3uT", lines[0])
+
+    # ------------------------------------------------------------------
+    # ledger:RL-push-clearing-alert-v2 — Р3 спеки: видимое снятие только по
+    # liza_clear_v=2 и флагу alert_clearing, только iOS.
+    # ------------------------------------------------------------------
+
+    # ledger:RL-push-test-sender-and-acks — M6: момент отправки в payload.
+    def test_sent_timestamp_in_event_push_under_flag(self) -> None:
+        """AC:RL-push-test-sender-and-acks/8 — флаг sent_timestamp: у пуша с
+        событием liza_sent_ms = время отправки (мс); у снятия — нет; без флага —
+        нет."""
+        self.reactor.advance(1_700_000_000)
+        (req,) = self._sent_requests(self._make_dummy_notification([self._identity_device()]))
+        self.assertEqual(int(self.reactor.seconds() * 1000), req.message["liza_sent_ms"])
+        clearing = self._make_dummy_notification_badge_only([self._identity_device(liza_clear_v=1)])
+        (clear_req,) = self._sent_requests(clearing)
+        self.assertNotIn("liza_sent_ms", clear_req.message)
+        plain = self._identity_device()
+        plain["app_id"] = PUSHKIN_ID
+        (off,) = self._sent_requests(self._make_dummy_notification([plain]))
+        self.assertNotIn("liza_sent_ms", off.message)
+
+    def test_alert_clearing_for_v2_ios(self) -> None:
+        """AC:RL-push-clearing-alert-v2/1 — v2 + флаг: alert с запасным текстом,
+        mutable-content, бейдж, push_type alert, prio 10."""
+        device = self._identity_device(liza_clear_v=2)
+        notif = self._make_dummy_notification_badge_only([device])
+        notif["notification"]["counts"] = {"unread": 4}
+        (req,) = self._sent_requests(notif)
+        self.assertEqual(PushType.ALERT, req.push_type)
+        self.assertEqual(10, req.priority)
+        self.assertEqual(
+            {"alert": {"body": "Новые сообщения прочитаны"}, "mutable-content": 1, "badge": 4},
+            req.message["aps"],
+        )
+        self.assertEqual(2, req.message["liza_clear"])
+        self.assertEqual({"unread": 4}, req.message["counts"])
+
+    def test_alert_clearing_falls_back_to_background(self) -> None:
+        """AC:RL-push-clearing-alert-v2/2 — флаг выключен, macOS или v1 →
+        прежний тихий background-пуш."""
+        off = self._identity_device(liza_clear_v=2)
+        off["app_id"] = PUSHKIN_ID
+        mac = self._identity_device(liza_clear_v=2, platform="macos")
+        v1 = self._identity_device(liza_clear_v=1)
+        for device in (off, mac, v1):
+            notif = self._make_dummy_notification_badge_only([device])
+            (req,) = self._sent_requests(notif)
+            self.assertEqual(PushType.BACKGROUND, req.push_type)
+            self.assertEqual({"content-available": 1}, req.message["aps"])
+            self.assertEqual(1, req.message["liza_clear"])
+

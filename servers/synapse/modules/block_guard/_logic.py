@@ -64,8 +64,6 @@ BLOCKED_MESSAGE = "Пользователь ограничил круг обще
 
 DEFAULT_SERVICE_LOCALPARTS = (
     "liza",
-    "gpt",
-    "deepseek",
     "bot_father",
     "botfather",
     "support",

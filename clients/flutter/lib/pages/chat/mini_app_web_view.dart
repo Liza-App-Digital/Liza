@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:matrix/matrix.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart' as url_launcher;
 
@@ -14,7 +16,9 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_host_api.dart';
 import 'package:liza/pages/chat/mini_app_interactive.dart';
 import 'package:liza/pages/chat/mini_app_contact.dart';
+import 'package:liza/pages/chat/mini_app_frame_messages.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
+import 'package:liza/pages/chat/mini_app_permissions.dart';
 import 'package:liza/pages/chat/mini_app_window.dart';
 import 'package:liza/utils/bot_miniapp_registry.dart';
 import 'package:liza/utils/miniapp_start_path.dart';
@@ -160,6 +164,8 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   // pull-доставки в shell-iframe через window.__shell.provideInitData (Фаза 1).
   String? _signedInitData;
   bool get _isThirdParty => widget.appType == 'third_party';
+  bool get _mayUseMicrophone =>
+      miniAppMayUseMicrophone(appId: widget.appId, appType: widget.appType);
   bool _isReady = false;
   bool _isLoading = true;
   bool _hasError = false;
@@ -509,20 +515,52 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
   @override
   void initState() {
     super.initState();
+    _startLoadTimer();
     _resolveUrl();
-    Future.delayed(const Duration(seconds: 15), () {
+  }
+
+  /// Холодный старт WebView2 на Windows + init_data через RPC окна легко
+  /// съедают 15 с, поэтому предел шире; таймер перезапускается на каждой
+  /// попытке («Повторить»), а не живёт от первого initState.
+  static const _loadTimeout = Duration(seconds: 30);
+  Timer? _loadTimer;
+  final Stopwatch _loadWatch = Stopwatch();
+  bool _timedOut = false;
+
+  void _startLoadTimer() {
+    _loadTimer?.cancel();
+    _timedOut = false;
+    _loadWatch
+      ..reset()
+      ..start();
+    _loadStage('start');
+    _loadTimer = Timer(_loadTimeout, () {
       if (mounted && !_isReady && _isLoading) {
+        _loadStage('timeout');
         setState(() {
           _isLoading = false;
           _hasError = true;
+          _timedOut = true;
           _errorMessage = L10n.of(context).miniAppLoadTimeout;
         });
       }
     });
   }
 
+  /// Этапы открытия в liza.log: start → init_data → webview_created →
+  /// load_start → load_stop/ready. По разрывам видно, что именно долгое.
+  void _loadStage(String stage) {
+    Logs().i(
+      '[MiniApp:${widget.appId}] load $stage +${_loadWatch.elapsedMilliseconds}ms',
+    );
+  }
+
+  void Function()? _stopFrameMessages;
+
   @override
   void dispose() {
+    _stopFrameMessages?.call();
+    _loadTimer?.cancel();
     _invalidateDocument();
     _controller = null;
     super.dispose();
@@ -600,6 +638,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
       // сессиями. Свежесть index.html обеспечивают cacheEnabled:false +
       // clearCache:true в InAppWebViewSettings.
       final url = await _buildInitDataUrl();
+      _loadStage('init_data');
       if (mounted) {
         setState(() => _resolvedUrl = url);
       }
@@ -1400,7 +1439,12 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
       _isLoading = true;
       _isReady = false;
     });
-    _controller?.reload();
+    _startLoadTimer();
+    if (_resolvedUrl == null) {
+      _resolveUrl();
+    } else {
+      _controller?.reload();
+    }
   }
 
   @override
@@ -1619,9 +1663,22 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
         cacheEnabled: false,
         clearCache: true,
         useShouldOverrideUrlLoading: true,
+        // Web: доступ к микрофону iframe делегируется атрибутом allow.
+        iframeAllow: _mayUseMicrophone ? 'microphone' : null,
       ),
       onWebViewCreated: (controller) {
         _controller = controller;
+        _loadStage('webview_created');
+        if (kIsWeb) {
+          // На Web addJavaScriptHandler не реализован (бросает
+          // UnimplementedError): события страницы идут через postMessage.
+          final origin = Uri.parse(_resolvedUrl!).origin;
+          _stopFrameMessages?.call();
+          _stopFrameMessages = listenMiniAppFrameMessages(origin, (raw) {
+            if (mounted) _handleJsEvent(raw);
+          });
+          return;
+        }
         controller.addJavaScriptHandler(
           handlerName: 'LizaWebAppHandler',
           callback: (args) {
@@ -1652,6 +1709,7 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
         );
       },
       onLoadStart: (controller, url) {
+        _loadStage('load_start');
         _invalidateDocument();
         _currentUrl = url?.toString();
       },
@@ -1676,10 +1734,15 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
         // Надёжно снимаем загрузочный спиннер, когда страница загрузилась — не
         // зависим ТОЛЬКО от web_app_ready (служебный кабинет/чужой app может не
         // вызвать ready() идеально, иначе спиннер крутится вечно).
-        if (mounted && _isLoading) {
+        _loadStage('load_stop');
+        if (mounted && (_isLoading || _timedOut)) {
+          // Страница доехала после ложного таймаута — снимаем ошибку.
+          _loadTimer?.cancel();
           setState(() {
             _isLoading = false;
             _isReady = true;
+            _hasError = false;
+            _timedOut = false;
           });
         }
         await _activateDocument(controller, url);
@@ -1694,19 +1757,35 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
         }
       },
       onReceivedError: (controller, request, error) {
-        if (request.isForMainFrame == true) {
+        if (request.isForMainFrame == true && mounted) {
+          // Настоящая ошибка перекрывает таймаут: иначе поздний load_stop
+          // (Android/Windows шлют его после ошибки) снял бы её как «доехало».
+          _loadTimer?.cancel();
           setState(() {
             _isLoading = false;
             _hasError = true;
+            _timedOut = false;
             _errorMessage = error.description;
           });
         }
       },
       onPermissionRequest: (controller, request) async {
-        return PermissionResponse(
+        var action = miniAppPermissionDecision(
+          appId: widget.appId,
+          appType: widget.appType,
+          appUrl: widget.appUrl,
+          requestOrigin: request.origin,
           resources: request.resources,
-          action: PermissionResponseAction.DENY,
         );
+        // Android WebView отдаёт микрофон странице, только если у приложения
+        // уже есть runtime-право RECORD_AUDIO; iOS/macOS спрашивают сами.
+        if (action == PermissionResponseAction.GRANT &&
+            !kIsWeb &&
+            defaultTargetPlatform == TargetPlatform.android &&
+            !await Permission.microphone.request().isGranted) {
+          action = PermissionResponseAction.DENY;
+        }
+        return PermissionResponse(resources: request.resources, action: action);
       },
       onCreateWindow: (controller, createWindowAction) async {
         // third_party: чужой window.open игнорируем (могла бы угнать навигацию).

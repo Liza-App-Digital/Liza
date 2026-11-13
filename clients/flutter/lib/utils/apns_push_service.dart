@@ -249,17 +249,43 @@ class ApnsPushService {
 
   /// Save homeserver URL and access token to shared App Group container
   /// so the Notification Service Extension can download avatars.
+  ///
+  /// [clientName] → ключи `homeserverUrl.<clientName>`/`accessToken.<clientName>`:
+  /// NSE снимает прочитанные баннеры токеном аккаунта-адресата пуша (Р2 L1),
+  /// а не токеном «текущего» аккаунта. [legacy] — дополнительно писать ключи
+  /// без суффикса (аватар в NSE и сборки NSE без поддержки суффиксов).
   Future<void> saveCredentials({
     required String homeserverUrl,
     required String accessToken,
+    String? clientName,
+    bool legacy = true,
   }) async {
     try {
       await _channel.invokeMethod('saveCredentials', {
         'homeserverUrl': homeserverUrl,
         'accessToken': accessToken,
+        'clientName': ?clientName,
+        'legacy': legacy ? 'true' : 'false',
       });
     } catch (e) {
       Logs().w('[APNs] saveCredentials failed', e);
+    }
+  }
+
+  /// Выход из аккаунта [clientName]: натив удаляет его `accessToken.<cn>`
+  /// (и легаси-ключи, если в них тот же токен или аккаунтов не осталось) и
+  /// перезаписывает список аккаунтов [remaining] для холодной чистки NSE.
+  Future<void> removeCredentials(
+    String clientName, {
+    required List<String> remaining,
+  }) async {
+    try {
+      await _channel.invokeMethod('removeCredentials', {
+        'clientName': clientName,
+        'remaining': remaining,
+      });
+    } catch (e) {
+      Logs().w('[APNs] removeCredentials failed', e);
     }
   }
 
@@ -311,6 +337,36 @@ class ApnsPushService {
       });
     } catch (e) {
       Logs().w('[APNs] retractDelivered failed', e);
+      return null;
+    }
+  }
+
+  /// macOS, Р3: локальный баннер нативным запросом с идентификатором
+  /// [identifier] = `pushBannerId` — тем же, что APNs-баннер получает из
+  /// `apns-collapse-id`. Натив не показывает, если баннер события уже есть.
+  /// Ответ: `shown` / `skipped` / `failed`; ошибка канала — `null`
+  /// (вызывающий откатывается на плагин, баннер не теряем).
+  Future<String?> showBanner({
+    required String identifier,
+    required String title,
+    required String body,
+    required String roomId,
+    required String eventId,
+    required String clientName,
+    String? attachmentPath,
+  }) async {
+    try {
+      return await _channel.invokeMethod<String>('showBanner', {
+        'identifier': identifier,
+        'title': title,
+        'body': body,
+        'roomId': roomId,
+        'eventId': eventId,
+        'clientName': clientName,
+        'attachmentPath': attachmentPath,
+      });
+    } catch (e) {
+      Logs().w('[APNs] showBanner failed', e);
       return null;
     }
   }

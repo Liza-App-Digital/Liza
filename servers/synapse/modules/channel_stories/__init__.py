@@ -36,7 +36,7 @@ from synapse_modules.channel_stories._storage import ChannelStoriesStore
 logger = logging.getLogger(__name__)
 
 _CHANNEL_TYPE = "channel"
-_AI_LOCALPARTS = frozenset({"liza", "gpt", "deepseek"})
+_AI_LOCALPARTS = frozenset({"liza"})
 
 
 class ChannelStoriesModule:

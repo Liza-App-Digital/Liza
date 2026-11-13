@@ -26,21 +26,49 @@ enum MiniAppLayoutMode {
   side,
 }
 
-/// Режим раскладки для окна шириной [windowWidth]: боковая панель — только
-/// когда окно не уже порога «закреплено по умолчанию» и это не планшет.
+/// Сколько ширины боковая панель оставляет приложению в окне уже порога
+/// колонок: там приложение показывает одну колонку (список ИЛИ чат), как на
+/// телефоне.
+const double kMiniAppMinNarrowChildWidth = 360;
+
+/// С какой ширины окна возможна боковая панель: минимальная панель + узкое
+/// приложение. Уже — лист на весь экран.
+const double kMiniAppSideMinWindowWidth =
+    kMiniAppMinPanelWidth + kMiniAppMinNarrowChildWidth;
+
+/// Окно достаточно широкое, чтобы рядом с панелью приложение сохраняло две
+/// колонки. Уже — приложение рядом с панелью живёт в одну колонку и панель не
+/// даёт ему расшириться до порога колонок (иначе раскладка сменилась бы
+/// посреди перетаскивания границы).
+bool miniAppKeepsColumnsFor(double windowWidth) =>
+    windowWidth >= kMiniAppDockedByDefaultMinWidth;
+
+/// Режим раскладки для окна шириной [windowWidth]: боковая панель — пока в окне
+/// помещаются минимальная панель и узкое приложение, и это не планшет.
 MiniAppLayoutMode miniAppLayoutModeFor(
   double windowWidth, {
   bool tablet = false,
-}) => tablet || windowWidth < kMiniAppDockedByDefaultMinWidth
+}) => tablet || windowWidth < kMiniAppSideMinWindowWidth
     ? MiniAppLayoutMode.sheet
     : MiniAppLayoutMode.side;
 
-/// Ширина закреплённой боковой панели, ужатая под текущее окно: приложению
-/// слева остаётся не меньше порога двух колонок.
-double clampMiniAppPanelWidth(double width, double windowWidth) => width.clamp(
-  kMiniAppMinPanelWidth,
-  math.max(kMiniAppMinPanelWidth, windowWidth - kMiniAppMinChildWidth),
-);
+/// Ширина закреплённой боковой панели, ужатая под текущее окно. В широком окне
+/// приложению слева остаётся не меньше порога двух колонок; в узком — не меньше
+/// [kMiniAppMinNarrowChildWidth], и оно никогда не шире порога колонок.
+double clampMiniAppPanelWidth(double width, double windowWidth) {
+  if (miniAppKeepsColumnsFor(windowWidth)) {
+    return width.clamp(
+      kMiniAppMinPanelWidth,
+      math.max(kMiniAppMinPanelWidth, windowWidth - kMiniAppMinChildWidth),
+    );
+  }
+  final min = math.max(
+    kMiniAppMinPanelWidth,
+    windowWidth - (kMiniAppMinChildWidth - 1),
+  );
+  final max = math.max(min, windowWidth - kMiniAppMinNarrowChildWidth);
+  return width.clamp(min, max);
+}
 
 /// Глобальный хост miniApp — оборачивает child (Router) и раскладывает рядом
 /// с ним окно miniApp.
@@ -354,11 +382,14 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
               child: MediaQuery(
                 data: childMq,
                 child: MiniAppHostScope(
-                  forceColumnMode: mode == MiniAppLayoutMode.side,
+                  forceColumnMode:
+                      mode == MiniAppLayoutMode.side &&
+                      miniAppKeepsColumnsFor(size.width),
                   // Открытая HTML-страница забирает ширину у списка чатов: он
                   // сжимается до аватарок, пока страница не закрыта.
                   compactChatList:
                       mode == MiniAppLayoutMode.side &&
+                      miniAppKeepsColumnsFor(size.width) &&
                       _manager.activeApp?.kind == MiniAppKind.html &&
                       _manager.chatListCompactable.value &&
                       !_manager.chatListExpanded.value,

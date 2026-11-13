@@ -21,6 +21,7 @@ import 'package:matrix/matrix.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/utils/android_room_notification.dart';
 import 'package:liza/utils/push_client_resolver.dart';
 import 'package:liza/utils/push_helper.dart';
 
@@ -199,6 +200,39 @@ void main() {
   });
 
   // AC:RL-macos-push-background-banner/4
+  // AC:RL-push-read-banner-sweep/15
+  test('clearing: уведомление с id по событию и тегом комнаты (Р5) — комната '
+      'берётся из тега/payload, непрочитанная видимая сохраняется, скрытая '
+      'гасится', () async {
+    const hiddenB = '!hiddenB:nadezhda.liza.ru';
+    const visB = '!visB:nadezhda.liza.ru';
+    await _joinUnread(b, hiddenB, {'com.liza.chat.type': 'stories'});
+    await _joinUnread(b, visB, const {});
+    final idVis = pushEventNotificationId(b.clientName, r'$v1');
+    final idHidden = pushEventNotificationId(b.clientName, r'$h1');
+    recorder.active = [
+      ActiveNotification(
+        id: idVis,
+        tag: visB,
+        payload: LizaPushPayload(b.clientName, visB, r'$v1').toString(),
+      ),
+      ActiveNotification(id: idHidden, tag: hiddenB),
+    ];
+    await pushHelper(
+      PushNotification(
+        devices: const [],
+        counts: const PushNotificationCounts(unread: 1),
+      ),
+      clients: [b],
+      clientName: b.clientName,
+      l10n: l10n,
+      flutterLocalNotificationsPlugin: plugin,
+    );
+    expect(recorder.cancelledIds, isNot(contains(idVis)),
+        reason: 'непрочитанная видимая комната — баннер остаётся');
+    expect(recorder.cancelledIds, contains(idHidden));
+  });
+
   test('1 клиент, unread=0 → cancelAll как раньше (одноклиентный путь цел)',
       () async {
     await pushHelper(

@@ -22,12 +22,15 @@ object NativePushDiagnostics {
     private const val MAX_COUNT = 256
     private const val MAX_BYTES = 128 * 1024
     private const val TTL_MS = 7L * 24 * 60 * 60 * 1000
-    private val stages = setOf("fcmReceived", "token")
+    private val stages = setOf("fcmReceived", "fcmDuplicate", "token")
     private val reasons = setOf("first", "unchanged", "rotated", "registration_failed")
 
     private fun hash(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8)).take(16)
         .joinToString("") { "%02x".format(it.toInt() and 255) }
+
+    /** Тот же хэш, что в журнале: им же ключуется дедуп повторов. */
+    fun eventHash(value: String): String = hash(value)
 
     private fun file(context: Context) = AtomicFile(File(context.noBackupFilesDir, "push-diagnostics-v2.json"))
 
@@ -60,6 +63,8 @@ object NativePushDiagnostics {
                 if (eventHash.matches(Regex("[a-f0-9]{32}"))) {
                     clean.put("event_hash", eventHash).put("hash_version", "sha256-128")
                 }
+                val sent = item.optLong("sent", -1)
+                if (sent > 0 && sent <= now + TTL_MS) clean.put("sent", sent)
                 entries.add(clean)
             }
             Pair(entries, dropped)
@@ -87,9 +92,18 @@ object NativePushDiagnostics {
         }
     }
 
+    /** M6: `liza_sent_ms` из data пуша (мс эпохи, строкой) — момент отправки Sygnal'ом. */
+    fun sentMs(raw: String?): Long? = raw?.toLongOrNull()?.takeIf { it > 0 }
+
     @Synchronized
-    fun received(context: Context, eventId: String?) {
-        append(context, "fcmReceived", eventId = eventId)
+    fun received(context: Context, eventId: String?, sentMs: Long? = null) {
+        append(context, "fcmReceived", eventId = eventId, sent = sentMs)
+    }
+
+    /** Ф1.1: повтор события отброшен LRU — подтверждение исхода duplicate. */
+    @Synchronized
+    fun duplicate(context: Context, eventId: String?) {
+        append(context, "fcmDuplicate", eventId = eventId)
     }
 
     @Synchronized
@@ -104,13 +118,15 @@ object NativePushDiagnostics {
         } catch (_: Exception) { /* Диагностика не меняет Firebase dispatch. */ }
     }
 
-    private fun append(context: Context, stage: String, eventId: String? = null, reason: String? = null) {
+    private fun append(context: Context, stage: String, eventId: String? = null, reason: String? = null,
+                       sent: Long? = null) {
         try {
             val (entries, dropped) = load(context)
             val item = JSONObject().put("id", UUID.randomUUID().toString())
                 .put("t", System.currentTimeMillis()).put("s", stage)
             if (!eventId.isNullOrEmpty()) item.put("event_hash", hash(eventId)).put("hash_version", "sha256-128")
             if (reason != null) item.put("reason", reason)
+            if (sent != null && sent > 0) item.put("sent", sent)
             entries.add(item)
             persist(context, entries, dropped)
         } catch (_: Exception) { /* Нельзя менять доставку при storage failure. */ }

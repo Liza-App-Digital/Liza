@@ -1,5 +1,6 @@
 import UIKit
 import Flutter
+import BackgroundTasks
 import UserNotifications
 import flutter_foreground_task
 import receive_sharing_intent
@@ -163,7 +164,79 @@ enum LizaShareMedia {
     // to ensure FlutterAppDelegate doesn't override our delegate.
     UNUserNotificationCenter.current().delegate = self
 
+    registerReadBannerRefresh()
+
     return result
+  }
+
+  // MARK: - Р2 L2: фоновая чистка прочитанных баннеров (BGAppRefresh)
+
+  /// Идентификатор = bundle id: он уже разрешён в `BGTaskSchedulerPermittedIdentifiers`
+  /// как `$(PRODUCT_BUNDLE_IDENTIFIER)` и меняется вместе с Apple-аккаунтом.
+  private var readBannerRefreshId: String? { Bundle.main.bundleIdentifier }
+
+  /// `register` обязан пройти до конца `didFinishLaunching` (иначе ObjC-исключение
+  /// на `submit`). `submit` — на уходе в фон через уведомление: под сценами
+  /// `applicationDidEnterBackground` делегату приложения не приходит.
+  private func registerReadBannerRefresh() {
+    guard let id = readBannerRefreshId else { return }
+    let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: id, using: nil) {
+      [weak self] task in
+      guard let refresh = task as? BGAppRefreshTask else {
+        task.setTaskCompleted(success: false)
+        return
+      }
+      self?.handleReadBannerRefresh(refresh)
+    }
+    guard registered else {
+      NSLog("Liza: BGAppRefresh %@ не зарегистрирован", id)
+      return
+    }
+    NotificationCenter.default.addObserver(
+      forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      self?.scheduleReadBannerRefresh()
+    }
+  }
+
+  private func scheduleReadBannerRefresh() {
+    guard let id = readBannerRefreshId else { return }
+    let request = BGAppRefreshTaskRequest(identifier: id)
+    request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+    do {
+      try BGTaskScheduler.shared.submit(request)
+    } catch {
+      NSLog("Liza: BGAppRefresh submit: %@", String(describing: error))
+    }
+  }
+
+  /// Тот же проход, что NSE делает на каждом пуше, — по каждому аккаунту.
+  /// Пустой `client_names` (старая установка) → один проход по легаси-ключам.
+  private func handleReadBannerRefresh(_ task: BGAppRefreshTask) {
+    scheduleReadBannerRefresh()
+    let defaults = UserDefaults(suiteName: lizaAppGroup())
+    let names: [String?] = {
+      let list = defaults?.stringArray(forKey: "client_names") ?? []
+      return list.isEmpty ? [nil] : list.map { Optional($0) }
+    }()
+    let group = DispatchGroup()
+    let finished = ReadBannerSweep.Once { removed in
+      task.setTaskCompleted(success: removed >= 0)
+    }
+    task.expirationHandler = { finished.call(-1) }
+    var total = 0
+    let lock = NSLock()
+    for name in names {
+      group.enter()
+      ReadBannerSweep.run(clientName: name, defaults: defaults) { removed in
+        lock.lock(); total += removed; lock.unlock()
+        group.leave()
+      }
+    }
+    group.notify(queue: .global()) {
+      NSLog("Liza: BGAppRefresh снял прочитанных баннеров: %d", total)
+      finished.call(total)
+    }
   }
 
   // Handle notification presentation when app is in foreground.
@@ -176,22 +249,27 @@ enum LizaShareMedia {
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
     let userInfo = notification.request.content.userInfo
-
-    // Remote push from NSE — explicitly show with sound, banner, badge.
-    if userInfo["room_id"] != nil && notification.request.trigger is UNPushNotificationTrigger {
-      // Чат уже открыт на экране — сообщение и так видно, баннер со звуком лишний
-      // (жалоба 2026-09-15 «пришёл пуш о сообщении в активном чате»).
-      if UIApplication.shared.applicationState == .active
-          && ApnsPushPlugin.isActiveRoom(userInfo) {
-        completionHandler([])
-        return
-      }
+    let isRemote = notification.request.trigger is UNPushNotificationTrigger
+    let appActive = UIApplication.shared.applicationState == .active
+    switch PushPresentation.decide(
+      userInfo: userInfo,
+      isRemote: isRemote,
+      appActive: appActive,
+      inActiveRoom: appActive && ApnsPushPlugin.isActiveRoom(userInfo)
+    ) {
+    case .suppress:
+      completionHandler([])
+      return
+    case .show:
+      // Remote push from NSE — explicitly show with sound, banner, badge.
       if #available(iOS 14.0, *) {
         completionHandler([.banner, .sound, .badge, .list])
       } else {
         completionHandler([.alert, .sound, .badge])
       }
       return
+    case .plugin:
+      break
     }
 
     // Local notification from flutter_local_notifications — let the plugin decide.

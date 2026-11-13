@@ -224,7 +224,12 @@ class Avatar extends StatelessWidget {
       ],
     );
     final ringed = hasRing
-        ? StoryAvatarRing(state: storyRing!, size: size, child: container)
+        ? StoryAvatarRing(
+            state: storyRing!,
+            size: size,
+            hexagonal: isHexagonal,
+            child: container,
+          )
         : container;
     // При активном кольце тап ведёт в сторис-просмотрщик (onStoryTap), иначе -
     // обычный onTap (картинка-аватар / профиль / чат).

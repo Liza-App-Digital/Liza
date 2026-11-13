@@ -79,7 +79,7 @@ MiniAppLaunch? miniAppLaunchForRoom(Room room) =>
 /// игнорируем (cross-HS бандл).
 const Set<String> botFatherLocalparts = {'bot_father', 'botfather'};
 
-/// Домен хоумсервера всех ботов BotFather (@botfather/@liza/@gpt/@deepseek +
+/// Домен хоумсервера всех ботов BotFather (@botfather/@liza +
 /// пользовательские боты создаются здесь). Домен mxid НЕ меняется при
 /// деактивации аккаунта — устойчивый признак «это бот» даже после удаления бота
 /// (роль `ai` и реестр `/liza/mybots` после удаления обнуляются, домен — нет).

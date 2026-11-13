@@ -219,8 +219,6 @@ abstract class AppConfig {
   /// или приватных запросов. Чужая роль ai и произвольный домен ботов не подходят.
   static Set<String> legacySystemBotMxidsForHomeserver(String? host) => {
     '@liza:bots.liza.ru',
-    '@gpt:bots.liza.ru',
-    '@deepseek:bots.liza.ru',
     '@botfather:bots.liza.ru',
     '@liza-news:bots.liza.ru',
     '@support:bots.liza.ru',

@@ -84,7 +84,9 @@ class _FluidPageCardState extends State<FluidPageCard> {
 
   /// Linux и Web: встроенного WebView нет — карточка открывает файл как
   /// обычное вложение.
-  bool get _canEmbed => !PlatformInfos.isLinux && !PlatformInfos.isWeb;
+  // Web — тоже панелью мини-аппа (FluidPageView рисует там sandbox-iframe): раньше
+  // openFile отдавал page.html браузеру, и тот скачивал файл (13.11, телефон).
+  bool get _canEmbed => !PlatformInfos.isLinux;
 
   String get _title {
     final title = fluidPageTitle(widget.event);

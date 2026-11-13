@@ -73,10 +73,10 @@ class _InteractiveBotComposerState extends State<InteractiveBotComposer> {
     BotInteractiveDraft.registerQuery(
       widget.room.client,
       widget.room.id,
-      () =>
-          mounted &&
-          _api.isCurrent &&
-          (_inline.loading || _inline.recognisedBot),
+      // Отправку держим, только пока на экране есть варианты бота: «@бот текст» без
+      // вариантов (бот не ответил, ответил пустым или ещё думает) уходит обычным
+      // сообщением — иначе упоминание в начале строки отправить было нельзя.
+      () => mounted && _api.isCurrent && _inline.results.isNotEmpty,
     );
     _refresh();
     _textChanged();

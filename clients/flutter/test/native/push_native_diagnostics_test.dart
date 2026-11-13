@@ -10,6 +10,8 @@ void main() {
   // AC:RL-push-native-diagnostics/5
   // AC:RL-push-native-diagnostics/6
   // AC:RL-push-native-diagnostics/8
+  // ledger:RL-push-clearing-alert-v2
+  // AC:RL-push-clearing-alert-v2/6 — nse_handler.swift: пуш снятия v2
   test(
     'production Swift spool и NSE handler на host',
     () async {
@@ -19,8 +21,10 @@ void main() {
           final binary = '${output.path}/$test';
           final compiled = await Process.run('swiftc', [
             'ios/Notification Service Extension/NativePushJournal.swift',
-            if (test == 'nse_handler')
+            if (test == 'nse_handler') ...[
               'ios/Notification Service Extension/NotificationService.swift',
+              'ios/Notification Service Extension/ReadBannerSweep.swift',
+            ],
             'test/native/push_diagnostics/$test.swift',
             '-o',
             binary,

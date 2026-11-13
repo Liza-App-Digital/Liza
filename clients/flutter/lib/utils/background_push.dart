@@ -19,6 +19,7 @@ import 'package:unifiedpush_ui/unifiedpush_ui.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/main.dart';
+import 'package:liza/utils/android_room_notification.dart';
 import 'package:liza/utils/apns_push_service.dart';
 import 'package:liza/utils/app_badge.dart';
 import 'package:liza/utils/chat_topology.dart';
@@ -28,6 +29,7 @@ import 'package:liza/utils/notification_background_handler.dart';
 import 'package:liza/utils/push_client_resolver.dart';
 import 'package:liza/utils/push_helper.dart';
 import 'package:liza/utils/push_journal.dart';
+import 'package:liza/utils/push_probe_api.dart';
 import 'package:liza/utils/push_tap_navigation.dart';
 import 'package:liza/utils/unseen_messages.dart';
 import 'package:liza/widgets/liza_app.dart';
@@ -78,6 +80,10 @@ class BackgroundPush {
   /// resume в `MatrixState.didChangeAppLifecycleState`, чтобы не дёргать
   /// `setupPush()` после холодного старта, где регистрация уже прошла.
   final Map<String, bool> pusherRegisteredByClient = {};
+
+  /// Последний pushkey, с которым шла регистрация pusher'а. Нужен только
+  /// для `pushkey_hash` в подтверждениях Ф1.1 — сырым никуда не уходит.
+  String? lastPushkey;
 
   /// Все залогиненные клиенты зарегистрированы (агрегат для мониторинга
   /// `[push-config] no_pusher` и resume-хука).
@@ -738,6 +744,32 @@ class BackgroundPush {
     await cancelDeliveredOfReadRooms();
   }
 
+  /// Р2 L2 на запуске: баннеры, прочитанные на другом устройстве, пока
+  /// приложение было выгружено. В отличие от resume, по таймауту НЕ чистим:
+  /// до первого sync локальный стор не знает о свежем событии и счёл бы его
+  /// комнату прочитанной — сняли бы новый баннер.
+  /// По умолчанию ждём без таймаута: таймер на 30 с пережил бы dispose
+  /// `Matrix` (в host-тестах sync выключен) и ничего не дал бы — первый sync
+  /// и через минуту даёт свежий стор, а не пришёл — снимать нечего.
+  Future<List<String>> cancelDeliveredAfterFirstSync({
+    Duration? wait,
+    Future<List<String>> Function()? delivered,
+    Future<void> Function(String roomId)? cancel,
+  }) async {
+    if (!Platform.isIOS && !Platform.isMacOS && delivered == null) {
+      return const [];
+    }
+    try {
+      final firstSyncs = Future.wait(
+        List<Client>.of(clients).map((c) => c.onSync.stream.first),
+      );
+      await (wait == null ? firstSyncs : firstSyncs.timeout(wait));
+    } catch (_) {
+      return const [];
+    }
+    return cancelDeliveredOfReadRooms(delivered: delivered, cancel: cancel);
+  }
+
   /// Ядро чистки: снять нативные баннеры комнат, которые клиент уже не
   /// считает непрочитанными. Общее для resume и clearing-пуша — одно
   /// определение «прочитано» (`isUnreadOrInvited`), без новых копий предиката.
@@ -853,8 +885,33 @@ class BackgroundPush {
       pushNotificationId(client.clientName, roomId),
     );
     await _flutterLocalNotificationsPlugin.cancel(roomId.hashCode);
+    if (Platform.isAndroid) await _cancelAndroidRoom(client, roomId);
     if (Platform.isIOS || Platform.isMacOS) {
       await apns?.cancelDeliveredForRoom(roomId);
+    }
+  }
+
+  /// Android: id уведомления — хэш события, тег — комната (Р5), поэтому снятие
+  /// идёт по тегу/payload активных уведомлений, включая баннер Play Services.
+  /// Баннер без владельца при нескольких аккаунтах снимаем, только если
+  /// комната не принадлежит другому аккаунту.
+  Future<void> _cancelAndroidRoom(Client client, String roomId) async {
+    try {
+      final active = await _flutterLocalNotificationsPlugin
+          .getActiveNotifications();
+      final ownerlessIsOurs = clients
+          .where((c) => c.clientName != client.clientName)
+          .every((c) => c.getRoomById(roomId) == null);
+      for (final n in androidRoomNotificationsToCancel(
+        active: active,
+        ownClientName: client.clientName,
+        roomId: roomId,
+        ownerlessIsOurs: ownerlessIsOurs,
+      )) {
+        await _flutterLocalNotificationsPlugin.cancel(n.id, tag: n.tag);
+      }
+    } catch (e, s) {
+      Logs().w('[Push] Android room notifications cancel failed', e, s);
     }
   }
 
@@ -870,6 +927,8 @@ class BackgroundPush {
     String? clientName,
   }) async {
     Logs().v('[Push] Native notification tap for room: $roomId');
+    // Тестовый пуш (Р8): комната синтетическая, открывать нечего.
+    if (isTestPushEvent(eventId)) return;
     final client = clientForPush(
       clients: clients,
       clientName: clientName,
@@ -900,6 +959,7 @@ class BackgroundPush {
       await _flutterLocalNotificationsPlugin.cancel(
         pushNotificationId(owner.clientName, roomId),
       );
+      if (Platform.isAndroid) await _cancelAndroidRoom(owner, roomId);
     }
     await _flutterLocalNotificationsPlugin.cancel(roomId.hashCode);
     // Баннеры, нарисованные НАТИВНО (NSE на iOS, AppDelegate на macOS), плагину
@@ -984,6 +1044,7 @@ class BackgroundPush {
     }
     final thisAppId = useDeviceSpecificAppId ? deviceAppId : appId;
     if (gatewayUrl != null && token != null) {
+      lastPushkey = token;
       final currentPushers = pushers.where((pusher) => pusher.pushkey == token);
       // Ровно один существующий pusher с этим токеном — сверяем поля; иначе
       // (0 или >1) регистрируем заново. mismatchReason == null ⇔ pusher уже
@@ -1152,6 +1213,7 @@ class BackgroundPush {
     required String dataMessage,
     required bool apple,
     String? platform,
+    bool nseFiltering = nseFilteringEnabled,
   }) => {
         "data_message": dataMessage,
         "default_payload": {
@@ -1159,7 +1221,10 @@ class BackgroundPush {
           if (platform != null) "platform": platform,
           // Умеем тихий clearing-пуш «почисти шторку» (howItWoks/pushes.md §21):
           // без этого ключа Sygnal его не шлёт — старые сборки зря не будятся.
-          if (apple) pushClearCapabilityKey: 1,
+          // v2 (этап 3): видимый пуш снятия, который NSE подавляет, — только
+          // iOS-сборке с filtering entitlement (LIZA_NSE_FILTERING).
+          if (apple)
+            pushClearCapabilityKey: nseFiltering && platform == 'ios' ? 2 : 1,
           if (apple)
             "aps": {
               "mutable-content": 1,
@@ -1352,12 +1417,51 @@ class BackgroundPush {
       // Натив снимает баннеры по clearing-пушу без Dart (приложение выгружено):
       // баннер без client_name он считает своим, только если аккаунт один.
       apns?.saveClientNames(clients.map((c) => c.clientName).toList());
-      apns?.saveCredentials(
-        homeserverUrl: client.homeserver.toString(),
-        accessToken: client.accessToken ?? '',
-      );
+      for (final cred in nseCredentials(clients, client)) {
+        apns?.saveCredentials(
+          homeserverUrl: cred.homeserverUrl,
+          accessToken: cred.accessToken,
+          clientName: cred.clientName,
+          legacy: cred.legacy,
+        );
+      }
     }
   }
+
+  /// Аккаунт вышел: его токен не должен оставаться в App Group для NSE.
+  Future<void> forgetNseCredentials(String clientName) async {
+    if (!Platform.isIOS) return;
+    await apns?.removeCredentials(
+      clientName,
+      remaining: nseRemainingClientNames(clients, clientName),
+    );
+  }
+
+  @visibleForTesting
+  static List<String> nseRemainingClientNames(
+    List<Client> clients,
+    String loggedOut,
+  ) => [
+    for (final c in clients)
+      if (c.clientName != loggedOut) c.clientName,
+  ];
+
+  /// Р2 L1: креды КАЖДОГО залогиненного аккаунта для NSE (ключ по
+  /// client_name); legacy-ключи без суффикса — только у текущего [current].
+  @visibleForTesting
+  static List<
+    ({String homeserverUrl, String accessToken, String clientName, bool legacy})
+  >
+  nseCredentials(List<Client> clients, Client current) => [
+    for (final c in List<Client>.of(clients))
+      if (c.homeserver != null && (c.accessToken ?? '').isNotEmpty)
+        (
+          homeserverUrl: c.homeserver.toString(),
+          accessToken: c.accessToken!,
+          clientName: c.clientName,
+          legacy: identical(c, current),
+        ),
+  ];
 
   Future<void> _noFcmWarning() async {
     if (matrix == null) {

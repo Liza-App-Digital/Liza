@@ -89,7 +89,9 @@ class BotInlineController extends ChangeNotifier {
     try {
       final bot = await api.resolve(username: username);
       if (!_current(generation)) return;
-      if (bot == null || !bot.supportsInteractive) {
+      if (bot == null ||
+          !bot.supportsInteractive ||
+          !bot.supportsInlineQueries) {
         loading = false;
         _notify();
         return;

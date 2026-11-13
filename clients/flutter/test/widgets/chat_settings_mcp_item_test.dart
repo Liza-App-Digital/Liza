@@ -4,8 +4,8 @@
 // МСР-подключения». Ключевое слово — «в Лиза ИИ»: пункт обязан быть ТОЛЬКО в DM
 // с живым ассистентом.
 //
-// Очевидный на вид гейт `isAiUser` здесь НЕВЕРЕН: роль `ai` носят также @gpt,
-// @deepseek, @botfather, @liza-news, @cup (см. `_fallbackAiMxids` в
+// Очевидный на вид гейт `isAiUser` здесь НЕВЕРЕН: роль `ai` носят также
+// @botfather, @liza-news, @cup, @support (см. `_fallbackAiMxids` в
 // widgets/matrix.dart) — пункт всплыл бы в чатах со всеми ними. Правильный
 // предикат — полный mxid через геттер `MatrixState.lizaMxid` (не литерал:
 // на локальном стенде mxid другой).
@@ -235,9 +235,8 @@ void main() {
   // мультикейс, а не один пример — именно на этих mxid ломается наивный
   // гейт `isAiUser` (у всех них роль `ai`).
   for (final peer in const [
-    '@gpt:bots.liza.ru',
-    '@deepseek:bots.liza.ru',
     '@botfather:bots.liza.ru',
+    '@support:bots.liza.ru',
     '@liza-news:bots.liza.ru',
     '@alice:example.invalid',
   ]) {

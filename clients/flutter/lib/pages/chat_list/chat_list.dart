@@ -29,7 +29,6 @@ import 'package:liza/utils/pending_deep_link.dart';
 import 'package:liza/utils/pending_invite_code.dart';
 import 'package:liza/utils/show_update_snackbar.dart';
 import 'package:liza/utils/voice_recording_guard.dart';
-import 'package:liza/widgets/developer_mark.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_modal_action_popup.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_text_input_dialog.dart';
@@ -1226,7 +1225,6 @@ class ChatListController extends State<ChatList>
   bool waitForFirstSync = false;
 
   Future<void> _waitForFirstSync() async {
-    final router = GoRouter.of(context);
     final client = Matrix.of(context).client;
     await client.roomsLoading;
     await client.accountDataLoading;
@@ -1245,43 +1243,6 @@ class ChatListController extends State<ChatList>
     setState(() {
       waitForFirstSync = true;
     });
-
-    if (Matrix.of(context).isCurrentUserDeveloper &&
-        (client.userDeviceKeys[client.userID!]?.deviceKeys.values.any(
-              (device) => !device.verified && !device.blocked,
-            ) ??
-            false)) {
-      late final ScaffoldFeatureController controller;
-      final theme = Theme.of(context);
-      controller = ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(seconds: 15),
-          showCloseIcon: true,
-          backgroundColor: theme.colorScheme.errorContainer,
-          closeIconColor: theme.colorScheme.onErrorContainer,
-          content: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  L10n.of(context).oneOfYourDevicesIsNotVerified,
-                  style: TextStyle(color: theme.colorScheme.onErrorContainer),
-                ),
-              ),
-              const SizedBox(width: 8),
-              const DeveloperMark(),
-            ],
-          ),
-          action: SnackBarAction(
-            onPressed: () {
-              controller.close();
-              router.go('/rooms/settings/devices');
-            },
-            textColor: theme.colorScheme.onErrorContainer,
-            label: L10n.of(context).settings,
-          ),
-        ),
-      );
-    }
   }
 
   void setActiveFilter(ActiveFilter filter) {

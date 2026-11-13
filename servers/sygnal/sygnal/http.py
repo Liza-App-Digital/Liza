@@ -33,6 +33,7 @@ from sygnal._news_audience import should_skip
 from sygnal.exceptions import (
     InvalidNotificationException,
     NotificationDispatchException,
+    TemporaryNotificationDispatchException,
 )
 from sygnal.notifications import Notification, NotificationContext, Pushkin
 from sygnal.utils import NotificationLoggerAdapter, json_decoder
@@ -297,6 +298,10 @@ class V1NotifyHandler(Resource):
                     "Successfully delivered notifications with %d rejected pushkeys",
                     len(rejected),
                 )
+        except TemporaryNotificationDispatchException:
+            # 503, а не 500: временный отказ провайдера, Synapse повторит.
+            request.setResponseCode(503)
+            log.warning("Temporary failure dispatching notification", exc_info=True)
         except NotificationDispatchException:
             request.setResponseCode(502)
             log.warning("Failed to dispatch notification.", exc_info=True)

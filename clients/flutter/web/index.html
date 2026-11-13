@@ -38,6 +38,10 @@
   <title>Liza</title>
   <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" type="text/css" href="splash/style.css">
+  <!-- Мост flutter_inappwebview для Web: без него iframe мини-аппа грузится,
+       но клиент не получает onLoadStart/onLoadStop и через 30 с показывает
+       «Превышено время загрузки» (у всех мини-аппов в web-клиенте). -->
+  <script type="application/javascript" src="assets/packages/flutter_inappwebview_web/assets/web/web_support.js" defer></script>
 
 
 </head>

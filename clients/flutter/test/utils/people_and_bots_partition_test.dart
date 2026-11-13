@@ -7,8 +7,9 @@
 //
 // Покрываемые AC (tests/registry/RL-search-people-vs-bots-sections.md):
 //   AC-2 человек / федеративный человек → «Люди»; бот liza-bot-api (по домену
-//        и по роли ai на чужом домене), ИИ liza/gpt/deepseek (bots.liza.ru и
-//        AI-localpart на другом инстансе) → «Боты и ИИ»; Лиза первая.
+//        и по роли ai на чужом домене), ИИ liza (bots.liza.ru и AI-localpart
+//        на другом инстансе), боты BotFather/Liza News на bots.liza.ru
+//        (gpt/deepseek выведены 2026-11-13) → «Боты и ИИ»; Лиза первая.
 //   AC-3 (данные) раздел без элементов пуст — экран по нему скрывает заголовок.
 //   AC-6 (клиентская часть) разделы не добавляют профилей сверх выдачи
 //        сервера — приватный бот, отфильтрованный user_search_guard, не
@@ -17,7 +18,7 @@
 //        успевший ответ onLate не зовёт; ошибка ролей поиск не роняет.
 //
 // Red-proof AC-2: убрать `isBotLikeMxid(userId) ||` из MatrixState.isBotOrAiUser
-// → `@shop_bot:bots.liza.ru` и `@gpt:nadezhda.liza.ru` (без роли) уезжают в
+// → `@shop_bot:bots.liza.ru` и `@liza:nadezhda.liza.ru` (без роли) уезжают в
 // «Люди», тест красный.
 
 import 'dart:async';
@@ -59,10 +60,10 @@ void main() {
         Profile(userId: '@anna:synapse.liza.laba.prodamus.tech'), // человек
         Profile(userId: '@shop_bot:bots.liza.ru'), // бот liza-bot-api
         Profile(userId: '@ivan:nadezhda.liza.ru'), // федеративный человек
-        Profile(userId: '@gpt:bots.liza.ru'), // ИИ
+        Profile(userId: '@botfather:bots.liza.ru'), // бот по домену
         Profile(userId: '@cup_bot:liza.cyber-agro.ru'), // бот по роли ai
-        Profile(userId: '@deepseek:bots.liza.ru'), // ИИ
-        Profile(userId: '@gpt:nadezhda.liza.ru'), // ИИ на другом инстансе
+        Profile(userId: '@liza-news:bots.liza.ru'), // бот по домену
+        Profile(userId: '@liza:nadezhda.liza.ru'), // ИИ на другом инстансе
         Profile(userId: MatrixState.lizaMxid), // Лиза — в середине выдачи
       ];
 
@@ -79,10 +80,10 @@ void main() {
       expect(sections.botsAndAi.map((p) => p.userId).toList(), [
         MatrixState.lizaMxid,
         '@shop_bot:bots.liza.ru',
-        '@gpt:bots.liza.ru',
+        '@botfather:bots.liza.ru',
         '@cup_bot:liza.cyber-agro.ru',
-        '@deepseek:bots.liza.ru',
-        '@gpt:nadezhda.liza.ru',
+        '@liza-news:bots.liza.ru',
+        '@liza:nadezhda.liza.ru',
       ]);
     });
 
@@ -120,7 +121,7 @@ void main() {
       expect(humans.people, hasLength(2));
 
       final bots = partitionPeopleAndBots(
-        [Profile(userId: '@gpt:bots.liza.ru')],
+        [Profile(userId: '@botfather:bots.liza.ru')],
         isBotOrAi: matrix.isBotOrAiUser,
       );
       expect(bots.people, isEmpty);

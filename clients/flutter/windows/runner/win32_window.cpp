@@ -2,6 +2,8 @@
 
 #include <flutter_windows.h>
 
+#include <algorithm>
+
 #include "resource.h"
 
 namespace {
@@ -171,6 +173,29 @@ Win32Window::MessageHandler(HWND hwnd,
       SetWindowPos(hwnd, nullptr, newRectSize->left, newRectSize->top, newWidth,
                    newHeight, SWP_NOZORDER | SWP_NOACTIVATE);
 
+      return 0;
+    }
+    case WM_GETMINMAXINFO: {
+      // Окно Лизы не сжимается «в строку» (Надежда 13.11): контент не меньше
+      // 480×520 dp, но не больше 90% рабочей области — иначе на маленьком
+      // экране окно не влезет. Синхронно с minSize в MainFlutterWindow.swift.
+      UINT dpi = GetDpiForWindow(hwnd);
+      if (!dpi) dpi = 96;
+      RECT frame{0, 0, MulDiv(480, dpi, 96), MulDiv(520, dpi, 96)};
+      AdjustWindowRectExForDpi(&frame, GetWindowLong(hwnd, GWL_STYLE), FALSE,
+                               GetWindowLong(hwnd, GWL_EXSTYLE), dpi);
+      MONITORINFO monitor{};
+      monitor.cbSize = sizeof(monitor);
+      GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                     &monitor);
+      const LONG max_w = (monitor.rcWork.right - monitor.rcWork.left) * 9 / 10;
+      const LONG max_h = (monitor.rcWork.bottom - monitor.rcWork.top) * 9 / 10;
+      auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+      // Больший предел, выставленный плагином раньше нас, сохраняем.
+      info->ptMinTrackSize.x = (std::max)(
+          info->ptMinTrackSize.x, (std::min)(frame.right - frame.left, max_w));
+      info->ptMinTrackSize.y = (std::max)(
+          info->ptMinTrackSize.y, (std::min)(frame.bottom - frame.top, max_h));
       return 0;
     }
     case WM_SIZE: {

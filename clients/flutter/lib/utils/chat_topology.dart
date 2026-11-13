@@ -597,8 +597,6 @@ bool isCompanySpace({required Room space, required Iterable<Room> allRooms}) {
 /// зарегистрированные Bot API аккаунты — по точному домену ботов.
 const Set<String> serviceAccountLocalparts = {
   'liza',
-  'gpt',
-  'deepseek',
   'support',
 };
 

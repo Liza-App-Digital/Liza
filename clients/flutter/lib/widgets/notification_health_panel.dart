@@ -2,10 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'package:matrix/matrix.dart';
+
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/notification_health.dart';
 import 'package:liza/widgets/matrix.dart';
+import 'package:liza/widgets/notification_checkup_section.dart';
 
 /// Один наблюдатель для панели настроек и предупреждения над чатами.
 /// Чтение не зависит от build; несколько поверхностей разделяют single-flight.
@@ -40,10 +43,18 @@ class _HealthLifecycle extends WidgetsBindingObserver {
 
 /// Измеренные факты об уведомлениях. Доставка и показ здесь не проверяются.
 class NotificationHealthPanel extends StatefulWidget {
-  const NotificationHealthPanel({super.key, this.compact = false, this.health});
+  const NotificationHealthPanel({
+    super.key,
+    this.compact = false,
+    this.health,
+    this.loadPushers,
+  });
 
   final bool compact;
   final NotificationHealth? health;
+
+  /// Для тестов: загрузка pusher'ов секцией «Проверка уведомлений».
+  final Future<List<Pusher>?> Function(Client client)? loadPushers;
 
   @override
   State<NotificationHealthPanel> createState() =>
@@ -168,6 +179,11 @@ class _NotificationHealthPanelState extends State<NotificationHealthPanel> {
                   false => l10n.notificationRegistrationMissing,
                   null => l10n.notificationRegistrationUnknown,
                 }),
+                const SizedBox(height: 12),
+                NotificationCheckupSection(
+                  health: _health,
+                  loadPushers: widget.loadPushers,
+                ),
               ],
               const SizedBox(height: 8),
               Text(

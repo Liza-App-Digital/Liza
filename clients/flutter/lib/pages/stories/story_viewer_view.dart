@@ -468,6 +468,11 @@ class StoryViewerView extends StatelessWidget {
                                               owner,
                                             ),
                                             size: 32,
+                                            isHexagonal:
+                                                owner != null &&
+                                                Matrix.of(
+                                                  context,
+                                                ).isAiUser(owner),
                                           ),
                                         ),
                                         const SizedBox(width: 8),

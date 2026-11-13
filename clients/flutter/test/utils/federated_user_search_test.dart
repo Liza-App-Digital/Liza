@@ -126,7 +126,7 @@ void main() {
     test('Лиза идёт первой в «Боты и ИИ»', () {
       final profiles = [
         Profile(userId: '@human:prod'),
-        Profile(userId: '@gpt:bots.liza.ru'),
+        Profile(userId: '@botfather:bots.liza.ru'),
         Profile(userId: '@liza:bots.liza.ru'),
       ];
 
@@ -137,13 +137,13 @@ void main() {
       );
 
       expect(sections.botsAndAi.map((p) => p.userId).toList(),
-          ['@liza:bots.liza.ru', '@gpt:bots.liza.ru']);
+          ['@liza:bots.liza.ru', '@botfather:bots.liza.ru']);
       expect(sections.people.map((p) => p.userId).toList(), ['@human:prod']);
     });
 
     test('без lizaMxid порядок внутри «Боты и ИИ» не меняется', () {
       final profiles = [
-        Profile(userId: '@gpt:bots.liza.ru'),
+        Profile(userId: '@botfather:bots.liza.ru'),
         Profile(userId: '@liza:bots.liza.ru'),
       ];
 
@@ -153,7 +153,7 @@ void main() {
       );
 
       expect(sections.botsAndAi.map((p) => p.userId).toList(),
-          ['@gpt:bots.liza.ru', '@liza:bots.liza.ru']);
+          ['@botfather:bots.liza.ru', '@liza:bots.liza.ru']);
       expect(sections.people, isEmpty);
     });
   });

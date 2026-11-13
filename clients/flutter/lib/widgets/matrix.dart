@@ -38,6 +38,8 @@ import 'package:liza/utils/failed_send_retry_service.dart';
 import 'package:liza/utils/ghost_room_prune.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/push_client_resolver.dart';
+import 'package:liza/utils/push_acks.dart';
+import 'package:liza/utils/push_probe_api.dart';
 import 'package:liza/utils/push_journal.dart';
 import 'package:liza/utils/uia_request_manager.dart';
 import 'package:liza/utils/single_space_service.dart';
@@ -386,11 +388,9 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
 
   static const _fallbackAiMxids = {
     // Прод-домен намеренно литералом: это const-фолбэк каталога ролей ai (как
-    // gpt/deepseek/botfather ниже), не путь закрепления DM. Flavor-aware mxid
+    // botfather ниже), не путь закрепления DM. Flavor-aware mxid
     // ассистента — в геттере [lizaMxid].
     '@liza:bots.liza.ru',
-    '@gpt:bots.liza.ru',
-    '@deepseek:bots.liza.ru',
     // BotFather: карточки-пикеры (выбор бота при /newapp, приветствие, /myapps)
     // рисуются только от отправителя роли ai; страхуемся на случай, если каталог
     // ролей ещё не подтянут к первому рендеру / не проставлен на dev-стенде.
@@ -670,6 +670,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
         MiniAppManager.instance.closeForClient(c);
         _cancelSubs(c.clientName);
         widget.clients.remove(c);
+        unawaited(backgroundPush?.forgetNseCredentials(c.clientName));
         _syncMonitoringIdentity();
         ClientManager.removeClientNameFromStore(c.clientName, store);
         // Only delete the session backup on an explicit user-initiated logout.
@@ -1016,6 +1017,9 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
           }
         },
       );
+      // Р2 L2: на холодном старте снять баннеры, прочитанные в другом месте.
+      // ignore: unawaited_futures
+      backgroundPush?.cancelDeliveredAfterFirstSync();
     }
 
     createVoipPlugin();
@@ -1299,7 +1303,15 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
       final journal = PushJournal.instance;
       journal.flush();
       final entries = journal.entries;
-      return await Monitoring.reportPushHealth(
+      final acks = buildPushAcks(
+        nativeJournal: nativeJournal,
+        local: await PushAckLog.instance.read(),
+        pushkey: backgroundPush?.lastPushkey,
+        build: info.buildNumber,
+        since: DateTime.now().subtract(const Duration(hours: 24)),
+      );
+      if (!mounted) return false;
+      final sent = await Monitoring.reportPushHealth(
         platform: pushReportPlatform(),
         tags: tags,
         accounts: accounts,
@@ -1314,7 +1326,19 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
           since: DateTime.now().subtract(const Duration(hours: 24)),
         ),
         journalTail: PushJournal.tail(entries, Monitoring.pushReportTailBytes),
+        acks: acks,
       );
+      // M6: тот же блок — на приёмник подтверждений (если включён на сервере).
+      if (sent) {
+        unawaited(
+          uploadPushAcksIfEnabled(
+            client: client,
+            block: acks,
+            platform: pushReportPlatform(),
+          ),
+        );
+      }
+      return sent;
     } catch (e, s) {
       Monitoring.pushReportStatus.value = PushReportStatus.error;
       Logs().w('[Push] push-report failed', e, s);

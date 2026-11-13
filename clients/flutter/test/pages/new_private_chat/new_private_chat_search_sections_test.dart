@@ -8,7 +8,7 @@
 // Покрываемые AC (tests/registry/RL-search-people-vs-bots-sections.md):
 //   AC-1 два раздела в одном списке на этом экране.
 //   AC-2 человек / федеративный человек — под «Люди»; бот liza-bot-api,
-//        бот по роли ai, ИИ liza/gpt — под «Агенты», Лиза первая.
+//        бот по роли ai, ИИ liza, BotFather — под «Агенты», Лиза первая.
 //   AC-3 только люди → заголовка «Агенты» нет.
 //   AC-4 роли пришли позже 1,5 с → бот переезжает в «Агенты»; ответ
 //        ролей устаревшего запроса выдачу нового не затирает.
@@ -34,7 +34,7 @@ const _directory = {
   '@ivan:nadezhda.liza.ru': 'Иван kot',
   '@shop_bot:bots.liza.ru': 'Магазин kot',
   '@cup_bot:liza.cyber-agro.ru': 'Кубок kot',
-  '@gpt:bots.liza.ru': 'GPT kot',
+  '@botfather:bots.liza.ru': 'BotFather kot',
   '@liza:bots.liza.ru': 'Лиза kot',
   '@zed:example.com': 'Зед zed',
 };
@@ -114,11 +114,11 @@ void main() {
     for (final human in ['Анна kot', 'Иван kot']) {
       expectInSection(tester, human, peopleSectionKey);
     }
-    for (final bot in ['Лиза kot', 'Магазин kot', 'Кубок kot', 'GPT kot']) {
+    for (final bot in ['Лиза kot', 'Магазин kot', 'Кубок kot', 'BotFather kot']) {
       expectInSection(tester, bot, botsAndAiSectionKey);
     }
     final lizaY = topOfText(tester, 'Лиза kot');
-    for (final bot in ['Магазин kot', 'Кубок kot', 'GPT kot']) {
+    for (final bot in ['Магазин kot', 'Кубок kot', 'BotFather kot']) {
       expect(lizaY, lessThan(topOfText(tester, bot)),
           reason: 'Лиза — первая в «Агенты»');
     }

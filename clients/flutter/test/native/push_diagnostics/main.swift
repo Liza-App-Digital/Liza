@@ -99,4 +99,17 @@ let counterSize = try base.appendingPathComponent("contention.count").resourceVa
 assert(counterSize == 8)
 journal.token("POISON_TOKEN_C", preferences: prefs)
 assert(prefs.string(forKey: "push.diagnostics.token_digest") != oldDigest)
+// AC:RL-push-test-sender-and-acks/9 — момент отправки Sygnal'ом (`liza_sent_ms`)
+// переживает запись и чистку; мусор отбрасывается.
+assert(NativePushJournal.sentMs(NSNumber(value: 1_799_999_999_000)) == 1_799_999_999_000)
+assert(NativePushJournal.sentMs("1799999999000") == 1_799_999_999_000)
+assert(NativePushJournal.sentMs("soon") == nil && NativePushJournal.sentMs(-5) == nil && NativePushJournal.sentMs(nil) == nil)
+let sentBase = FileManager.default.temporaryDirectory.appendingPathComponent("push-journal-sent-" + UUID().uuidString)
+defer { try? FileManager.default.removeItem(at: sentBase) }
+let sentJournal = NativePushJournal(directory: sentBase, clock: { now })
+sentJournal.append(.nseReceived, eventId: "$e1", sent: now - 1500)
+sentJournal.append(.nseCompleted, eventId: "$e1")
+let sentRead = sentJournal.read()!
+assert(sentRead.first { $0["s"] as? String == "nseReceived" }?["sent"] as? Int64 == now - 1500)
+assert(sentRead.first { $0["s"] as? String == "nseCompleted" }?["sent"] == nil)
 print("NativePushJournal: interprocess contention/loss/token retry PASS")

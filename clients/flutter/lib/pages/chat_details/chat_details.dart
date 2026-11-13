@@ -10,6 +10,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat_details/chat_details_view.dart';
 import 'package:liza/pages/settings/settings.dart';
 import 'package:liza/utils/auth_proxy_service.dart';
+import 'package:liza/utils/call_link.dart';
 import 'package:liza/utils/channel_discussion.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/file_selector.dart';
@@ -214,6 +215,16 @@ class ChatDetailsController extends State<ChatDetails> {
   void initState() {
     super.initState();
     _loadChannelHandle();
+    _syncCallLink();
+  }
+
+  /// Секция «Ссылка на созвон» показывает серверную правду, а не только
+  /// локальный кеш (см. [CallLink]): `force` — экран настроек открывают редко и
+  /// именно за этим.
+  Future<void> _syncCallLink() async {
+    final room = Matrix.of(context).client.getRoomById(roomId!);
+    if (room == null) return;
+    if (await CallLink.sync(room, force: true) && mounted) setState(() {});
   }
 
   void setDisplaynameAction() async {
@@ -239,7 +250,7 @@ class ChatDetailsController extends State<ChatDetails> {
     }
   }
 
-  static const callLinkEventType = 'io.element.call_link';
+  static const callLinkEventType = CallLink.eventType;
 
   void setCallLinkAction() async {
     final room = Matrix.of(context).client.getRoomById(roomId!)!;

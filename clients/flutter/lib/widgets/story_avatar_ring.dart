@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'package:liza/widgets/hexagon_clipper.dart';
+
 enum StoryRingState { none, seen, unseen }
 
 /// Оборачивает аватарку градиентным кольцом сторисов.
@@ -9,17 +11,22 @@ enum StoryRingState { none, seen, unseen }
 /// кольца + зазор), поэтому общий бокс остаётся ровно [size] и не вылезает
 /// за пределы родительского контейнера (иначе кольцо обрезалось в списке
 /// чатов, где аватарка лежит в SizedBox фиксированного размера).
+///
+/// [hexagonal] - кольцо повторяет шестиугольник аватарки бота (роль ai):
+/// круглое кольцо вокруг соты читалось как рассинхрон формы (Роман 13.11).
 class StoryAvatarRing extends StatelessWidget {
   const StoryAvatarRing({
     required this.state,
     required this.child,
     this.size = 56,
+    this.hexagonal = false,
     super.key,
   });
 
   final StoryRingState state;
   final Widget child;
   final double size;
+  final bool hexagonal;
 
   // Тонкое кольцо: жирное визуально перегружало мелкие аватарки в списках.
   static const double ringWidth = 1.5;
@@ -43,22 +50,24 @@ class StoryAvatarRing extends StatelessWidget {
               theme.colorScheme.outlineVariant,
             ],
           );
+    final ShapeBorder shape = hexagonal
+        ? const HexagonBorder()
+        : const CircleBorder();
     return SizedBox(
       width: size,
       height: size,
       child: Container(
         padding: const EdgeInsets.all(ringWidth),
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: gradient,
-        ),
+        decoration: ShapeDecoration(shape: shape, gradient: gradient),
         child: Container(
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
+          decoration: ShapeDecoration(
+            shape: shape,
             color: theme.colorScheme.surface,
           ),
           padding: const EdgeInsets.all(gap),
-          child: ClipOval(child: child),
+          child: hexagonal
+              ? ClipPath(clipper: HexagonClipper(), child: child)
+              : ClipOval(child: child),
         ),
       ),
     );

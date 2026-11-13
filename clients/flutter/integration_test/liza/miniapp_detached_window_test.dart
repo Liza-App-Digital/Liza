@@ -22,7 +22,10 @@
 // закрывает окно Лизы и ждёт, что процесс завершится (AC-16..19). Провал —
 // исключение теста в выводе.
 
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -54,7 +57,23 @@ const _appUrl = 'https://example.com/';
 void main([List<String> args = const []]) {
   // Этот же entrypoint desktop_multi_window запускает в движке окна.
   if (args.firstOrNull == kMiniAppWindowEntryArg) {
-    miniAppWindowMain(args);
+    // Движок окна пишет в журнал пилота сам: его ошибки иначе уходят только
+    // в консоль главного движка, которой у задачи планировщика нет.
+    _step('окно: движок запущен, аргументов ${args.length}');
+    runZonedGuarded(() async {
+      await miniAppWindowMain(args);
+      _step('окно: runApp');
+      final report = FlutterError.onError;
+      FlutterError.onError = (details) {
+        _step('окно: ошибка ${details.exceptionAsString()}');
+        report?.call(details);
+      };
+      final platformReport = PlatformDispatcher.instance.onError;
+      PlatformDispatcher.instance.onError = (error, stack) {
+        _step('окно: ошибка платформы $error\n$stack');
+        return platformReport?.call(error, stack) ?? false;
+      };
+    }, (error, stack) => _step('окно: ошибка $error\n$stack'));
     return;
   }
 
@@ -75,7 +94,11 @@ void main([List<String> args = const []]) {
     server.listen((request) async {
       requests.add(request.uri.path);
       request.response.headers.contentType = ContentType.json;
-      request.response.write('{"init_data": "$_initData"}');
+      // verified_app_url — сервер подтверждает адрес app (014e6123), без
+      // него хост отказывает: «Unverified Mini App URL».
+      request.response.write(
+        jsonEncode({'init_data': _initData, 'verified_app_url': _appUrl}),
+      );
       await request.response.close();
     });
     final base = 'http://127.0.0.1:${server.port}';
@@ -84,6 +107,9 @@ void main([List<String> args = const []]) {
     await tester.runAsync(() async => client = await prepareTestClient());
     // init_data хост берёт у homeserver клиента — подменяем локальным сервером.
     client.homeserver = Uri.parse(base);
+    // Хост mini App отдаёт init_data только сессии с токеном (014e6123):
+    // без него окно получало «Mini App session changed» и не грузилось.
+    client.accessToken = 'pilot-token';
     final room = Room(id: '!shop:localhost', client: client);
     final manager = MiniAppManager.instance;
     manager.windowsSupported = true;
@@ -136,8 +162,11 @@ void main([List<String> args = const []]) {
       return all.where((w) => w.windowId != own.windowId).toList();
     }
 
+    var windowsSeen = -1;
+    String? stateError;
     Future<String?> windowLoadedUrl() async {
       final windows = await miniAppWindows();
+      windowsSeen = windows.length;
       if (windows.isEmpty) return null;
       Map<Object?, Object?>? state;
       await tester.runAsync(() async {
@@ -145,17 +174,69 @@ void main([List<String> args = const []]) {
           state = await windows.single.invokeMethod<Map<Object?, Object?>>(
             'state',
           );
-        } catch (_) {
-          // Движок окна ещё не поднял обработчик.
+          stateError = null;
+        } catch (e) {
+          // Движок окна ещё не поднял обработчик. Ошибку — в журнал пилота:
+          // без неё пустой loaded_url в VM не отличить от «окна нет».
+          stateError = '$e';
         }
       });
       return state?['loaded_url'] as String?;
+    }
+
+    Future<Map<Object?, Object?>> windowCall(String method) async {
+      final window = (await miniAppWindows()).single;
+      late Map<Object?, Object?> value;
+      await tester.runAsync(() async {
+        final result = await window.invokeMethod<Object?>(method);
+        value = result is Map ? result : {'value': result};
+      });
+      return value;
+    }
+
+    // AC:RL-miniapp-detached-window/26 — «должен открываться большим»:
+    // контент 1100×820 (не больше 90% экрана);
+    // AC:RL-miniapp-detached-window/27 (Windows), AC:RL-miniapp-detached-window/24
+    // (macOS) — минимум окна 800×600 (так же).
+    Future<void> expectOpenedLarge(String what) async {
+      final g = await windowCall('geometry');
+      final areaW = (g['areaWidth'] as num).toDouble();
+      final areaH = (g['areaHeight'] as num).toDouble();
+      double fit(double v, double area) => v < area * 0.9 ? v : area * 0.9;
+      _step('detached-window: $what — геометрия $g');
+      expect(g['maximized'], isFalse, reason: what);
+      expect(
+        (g['width'] as num).toDouble(),
+        greaterThanOrEqualTo(fit(1100, areaW) - 20),
+        reason: '$what: ширина по умолчанию',
+      );
+      expect(
+        (g['height'] as num).toDouble(),
+        greaterThanOrEqualTo(fit(820, areaH) - 20),
+        reason: '$what: высота по умолчанию',
+      );
+      expect(
+        (g['minWidth'] as num).toDouble(),
+        closeTo(fit(800, areaW), 20),
+        reason: '$what: минимальная ширина',
+      );
+      expect(
+        (g['minHeight'] as num).toDouble(),
+        closeTo(fit(600, areaH), 20),
+        reason: '$what: минимальная высота',
+      );
     }
 
     Future<void> waitForWindowLoaded(String what) async {
       String? url;
       for (var i = 0; i < 600 && url == null; i++) {
         url = await windowLoadedUrl();
+        if (url == null && i % 100 == 99) {
+          _step(
+            'detached-window: ждём «$what» ${(i + 1) ~/ 10} с — '
+            'окон mini App $windowsSeen, ошибка state: $stateError',
+          );
+        }
         if (url == null) {
           await tester.runAsync(
             () => Future<void>.delayed(const Duration(milliseconds: 100)),
@@ -170,6 +251,19 @@ void main([List<String> args = const []]) {
       );
     }
 
+    // LIZA_PILOT_GO — пилот VM сначала переносит окно Лизы на другой монитор
+    // (другой масштаб), затем создаёт этот файл: окно mini App должно открыться
+    // на мониторе Лизы (AC-26).
+    final go = Platform.environment['LIZA_PILOT_GO'];
+    if (go != null) {
+      _step('detached-window: ждём перенос окна Лизы');
+      for (var i = 0; i < 1200 && !File(go).existsSync(); i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+      }
+    }
+
     // AC:RL-miniapp-detached-window/10 — по умолчанию отдельное окно ОС.
     manager.open(
       appUrl: _appUrl,
@@ -182,6 +276,27 @@ void main([List<String> args = const []]) {
     expect(initDataRequests(), 1);
     expect(await windowCount(), 2, reason: 'окно Лизы + окно mini App');
     expect(manager.hasApps, isFalse, reason: 'в окне Лизы панели нет');
+
+    _step('detached-window: шаг 1б — размер и «развернуть»');
+    await expectOpenedLarge('первое открытие');
+    // AC:RL-miniapp-detached-window/29 — «увеличить можно весь экран».
+    final before = await windowCall('geometry');
+    expect((await windowCall('toggleMaximize'))['value'], isTrue);
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 800)),
+    );
+    final zoomed = await windowCall('geometry');
+    expect(zoomed['maximized'], isTrue, reason: 'окно развёрнуто');
+    expect(
+      (zoomed['width'] as num).toDouble(),
+      greaterThan((before['width'] as num).toDouble()),
+      reason: 'развёрнутое шире',
+    );
+    expect((await windowCall('toggleMaximize'))['value'], isFalse);
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 800)),
+    );
+    expect((await windowCall('geometry'))['maximized'], isFalse);
 
     // AC:RL-miniapp-detached-window/12 — «Прикрепить»: окно уходит, панель
     // в окне Лизы запрашивает initData уже сама.
@@ -204,6 +319,8 @@ void main([List<String> args = const []]) {
     await tester.pumpAndSettle();
     await waitForWindowLoaded('окно снова загрузило магазин');
     expect(manager.hasApps, isFalse);
+    // Размер прошлого окна не переносится — снова большое (AC-26).
+    await expectOpenedLarge('повторное открытие');
 
     // AC:RL-miniapp-detached-window/12 — окно закрыли крестиком ОС (мимо
     // менеджера): app закрывается и в менеджере, плашки в окне Лизы нет.
@@ -236,7 +353,10 @@ void main([List<String> args = const []]) {
     _step(
       'detached-window: ready-to-close — окно открыто, можно закрывать Лизу',
     );
-    if (Platform.isWindows) {
+    // LIZA_PILOT_HOLD — то же на macOS: окно живёт, пока его меряют снаружи
+    // (Accessibility: минимум при ресайзе, AC-24/27).
+    if (Platform.isWindows ||
+        Platform.environment.containsKey('LIZA_PILOT_HOLD')) {
       // Окно должно дожить до WM_CLOSE от драйвера: иначе tearDown закроет его
       // сам (closeAll) и проверка пройдёт без окна mini App.
       await tester.runAsync(

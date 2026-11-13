@@ -12,16 +12,19 @@
 import asyncio
 import base64
 import copy
+import hashlib
 import json
 import logging
 import os
+from collections import OrderedDict
 from datetime import timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import aioapns
 from aioapns import APNs, NotificationRequest
 from aioapns.common import NotificationResult, PushType
+from aioapns.exceptions import MaxAttemptsExceeded
 from cryptography.hazmat.backends import default_backend
 from cryptography.x509 import load_pem_x509_certificate
 from opentracing import Span, logs, tags
@@ -38,7 +41,8 @@ from sygnal._clean_body import (
     media_caption,
 )
 from sygnal._news_audience import device_platform
-from sygnal._push_outcomes import PushOutcome
+from sygnal._push_outcomes import SENT_MS_KEY, PushOutcome, emit_apns_id
+from sygnal._sent_cache import SENT_CACHE_TTL_SECONDS, SentCache, client_name_of
 from sygnal.exceptions import (
     NotificationDispatchException,
     PushkinSetupException,
@@ -58,6 +62,28 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# apns-id = UUIDv5(pushkey|client_name|event_id): один на все повторы одного
+# события у одного аккаунта на одном токене. Apple по нему схлопывает дубль,
+# а мы находим пуш в своих логах и в Push Notifications Console.
+# Пространство имён менять нельзя — сломается сверка со старыми логами.
+STABLE_APNS_NAMESPACE = uuid5(NAMESPACE_URL, "https://liza.ru/push/apns-id")
+
+ALERT_CLEARING_FALLBACK_BODY = "Новые сообщения прочитаны"
+
+UNIQUE_IDS_MAX_ENTRIES = 10_000
+
+
+def stable_apns_id(pushkey: str, client_name: str, event_id: str) -> str:
+    return str(uuid5(STABLE_APNS_NAMESPACE, f"{pushkey}|{client_name}|{event_id}"))
+
+
+def collapse_id_for_event(client_name: str, event_id: str) -> str:
+    """apns-collapse-id ≤ 64 байт; event_id Matrix бывает длиннее, поэтому
+    хэш. Клиент macOS считает ту же строку для id локального баннера —
+    формулу менять только вместе с ним."""
+    digest = hashlib.sha256(f"{client_name}|{event_id}".encode()).digest()
+    return base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
 SEND_TIME_HISTOGRAM = Histogram(
     "sygnal_apns_request_time", "Time taken to send HTTP request to APNS"
@@ -92,6 +118,40 @@ def _without_mutable_content(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+class ApnsSendTimeout(Exception):
+    pass
+
+
+class ConnectDeadlineLoop:
+    """Обёртка loop пула aioapns: ограничивает create_connection по времени.
+
+    aioapns зовёт loop.create_connection без таймаута и под asyncio.Lock пула.
+    В k8s egress иногда молча теряет SYN (Errno 110 через ~127 с), и один такой
+    коннект держит лок, пока Envoy не рвёт запрос Synapse на 15 с → 504 →
+    backoff пушера (заявка 11.11, howItWoks/pushes/history.md).
+
+    happy_eyeballs: при немом первом адресе через 0,25 с параллельно пробуется
+    следующий. Только без прокси: ProxyingEventLoopWrapper таких kwargs не
+    принимает, а коннектится он к самому прокси.
+    """
+
+    def __init__(self, wrapped_loop: Any, timeout: float, happy_eyeballs: bool):
+        self._wrapped_loop = wrapped_loop
+        self._timeout = timeout
+        self._happy_eyeballs = happy_eyeballs
+
+    async def create_connection(self, *args: Any, **kwargs: Any) -> Any:
+        if self._happy_eyeballs:
+            kwargs.setdefault("happy_eyeballs_delay", 0.25)
+            kwargs.setdefault("interleave", 1)
+        return await asyncio.wait_for(
+            self._wrapped_loop.create_connection(*args, **kwargs), self._timeout
+        )
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._wrapped_loop, item)
+
+
 class ApnsPushkin(ConcurrencyLimitedPushkin):
     """
     Relays notifications to the Apple Push Notification Service.
@@ -113,8 +173,16 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
         (410, "Unregistered"),
     }
 
-    MAX_TRIES = 3
-    RETRY_DELAY_BASE = 10
+    # Весь dispatch обязан уложиться в таймаут Envoy перед Sygnal (15 с по
+    # умолчанию в k8s): иначе Synapse получает 504, ставит пушер в backoff и
+    # задерживает СЛЕДУЮЩИЕ пуши этого устройства на минуты. Бюджет:
+    # SEND_TIMEOUT + RETRY_DELAY + SEND_TIMEOUT = 10,5 с. Внутри попытки пул
+    # aioapns делает до двух проходов (connect ≤ CONNECT_TIMEOUT, при неудаче
+    # sleep(1)); всё это обрезается SEND_TIMEOUT.
+    MAX_TRIES = 2
+    RETRY_DELAY = 0.5
+    CONNECT_TIMEOUT = 3.0
+    SEND_TIMEOUT = 5.0
 
     MAX_FIELD_LENGTH = 1024
     MAX_JSON_BODY_SIZE = 4096
@@ -131,11 +199,18 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
         "convert_device_token_to_hex",
         "send_badge_counts",
         "clearing_push",
+        "stable_apns_id",
+        "collapse_by_event",
+        "alert_clearing",
+        "success_cache_ttl",
+        "sent_timestamp",
     } | ConcurrencyLimitedPushkin.UNDERSTOOD_CONFIG_FIELDS
 
     # Clearing-пуш живёт в очереди APNs недолго: через час чистить шторку уже
     # поздно — это сделает сам клиент на resume.
     CLEARING_PUSH_TTL_SECONDS = 3600
+    # Флаги по умолчанию — на классе: тесты собирают pushkin без __init__.
+    sent_timestamp = False
 
     APNS_PUSH_TYPES = {
         "alert": PushType.ALERT,
@@ -232,11 +307,73 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
 
             self.push_type = self.APNS_PUSH_TYPES[push_type]
 
+        self.stable_apns_id = self.get_config("stable_apns_id", bool, False)
+        self.collapse_by_event = self.get_config("collapse_by_event", bool, False)
+        self.alert_clearing = self.get_config("alert_clearing", bool, False)
+        self.sent_timestamp = self.get_config("sent_timestamp", bool, False)
+        self.sent_cache = SentCache(
+            self.get_config("success_cache_ttl", int, SENT_CACHE_TTL_SECONDS),
+            sygnal.reactor.seconds,
+        )
+        self._unique_ids: "OrderedDict[str, str]" = OrderedDict()
+        self._install_unique_id_capture()
+
         # without this, aioapns will retry every second forever.
-        self.apns_client.pool.max_connection_attempts = 3
+        # Две попытки пула: протухшее idle-соединение (ConnectionClosed) лечится
+        # внутри той же попытки Sygnal. Время всё равно режет SEND_TIMEOUT.
+        self.apns_client.pool.max_connection_attempts = 2
 
         # without this, aioapns will not use the proxy if one is configured.
-        self.apns_client.pool.loop = loop
+        self.apns_client.pool.loop = ConnectDeadlineLoop(  # type: ignore[assignment]
+            loop, self.CONNECT_TIMEOUT, happy_eyeballs=not proxy_url_str
+        )
+
+    def _install_unique_id_capture(self) -> None:
+        """apns-unique-id приходит заголовком ответа, а aioapns отдаёт наружу
+        только status/description. Подменяем класс протокола пула наследником,
+        который запоминает пару apns-id → apns-unique-id. Apple присылает
+        unique-id только в development-окружении, в production ключом сверки
+        остаётся сам apns-id."""
+        base = getattr(self.apns_client.pool, "protocol_class", None)
+        if not isinstance(base, type):
+            return
+        pushkin = self
+
+        class UniqueIdCapturingProtocol(base):  # type: ignore[valid-type,misc]
+            def on_response_received(self, headers: Dict[bytes, bytes]) -> None:
+                apns_id = headers.get(b"apns-id")
+                unique_id = headers.get(b"apns-unique-id")
+                if apns_id and unique_id:
+                    pushkin._remember_unique_id(
+                        apns_id.decode("utf8"), unique_id.decode("utf8")
+                    )
+                super().on_response_received(headers)
+
+        self.apns_client.pool.protocol_class = UniqueIdCapturingProtocol
+
+    def _remember_unique_id(self, apns_id: str, unique_id: str) -> None:
+        self._unique_ids[apns_id.lower()] = unique_id
+        while len(self._unique_ids) > UNIQUE_IDS_MAX_ENTRIES:
+            self._unique_ids.popitem(last=False)
+
+    def _apns_id_in_flight(self, notif_id: str) -> bool:
+        return any(
+            notif_id in connection.requests
+            for connection in list(self.apns_client.pool.connections)
+        )
+
+    def _stable_notification_id(
+        self, n: Notification, device: Device
+    ) -> Optional[str]:
+        client_name = client_name_of(device)
+        if not (self.stable_apns_id and n.event_id and client_name):
+            return None
+        notif_id = stable_apns_id(device.pushkey, client_name, n.event_id)
+        # Тот же id ещё ждёт ответа на другом запросе (Synapse прислал повтор,
+        # пока висит первая попытка) — aioapns сопоставит ответ не тому future.
+        if self._apns_id_in_flight(notif_id):
+            return None
+        return notif_id
 
     def _report_certificate_expiration(self, certfile: str) -> None:
         """Export the epoch time that the certificate expires as a metric."""
@@ -261,6 +398,9 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
         time_to_live: Optional[int] = None,
         event_id: Optional[str] = None,
         attempt: int = 0,
+        collapse_key: Optional[str] = None,
+        clearing: bool = False,
+        stable: bool = False,
     ) -> List[str]:
         """
         Actually attempts to dispatch the notification once.
@@ -276,7 +416,7 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
             device.pushkey,
             event_id,
             attempt,
-            push_type is PushType.BACKGROUND,
+            clearing,
         )
         outcome.emit("attempt", "dispatch")
 
@@ -298,16 +438,25 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
             notification_id=notif_id,
             time_to_live=time_to_live,
             push_type=push_type or self.push_type,
+            collapse_key=collapse_key,
         )
 
         try:
             with ACTIVE_REQUESTS_GAUGE.track_inprogress():
                 with SEND_TIME_HISTOGRAM.time():
                     response = await self._send_notification(request)
-        except aioapns.ConnectionError:
+        except (aioapns.ConnectionError, MaxAttemptsExceeded):
+            # MaxAttemptsExceeded — пул исчерпал попытки connect/ConnectionClosed;
+            # это не наследник ConnectionError, раньше уходил в unexpected_error
+            # без повтора.
             outcome.emit("retryable", "connection_failure")
             raise TemporaryNotificationDispatchException(
                 "aioapns Connection Failure"
+            ) from None
+        except ApnsSendTimeout:
+            outcome.emit("retryable", "provider_timeout")
+            raise TemporaryNotificationDispatchException(
+                "APNs request timed out"
             ) from None
         except Exception:
             outcome.emit("error", "unexpected_error")
@@ -322,6 +471,16 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
         span.set_tag(tags.HTTP_STATUS_CODE, code)
 
         RESPONSE_STATUS_CODES_COUNTER.labels(pushkin=self.name, code=code).inc()
+
+        emit_apns_id(
+            log,
+            device.pushkey,
+            event_id,
+            notif_id,
+            self._unique_ids.pop(notif_id.lower(), None),
+            stable,
+            code,
+        )
 
         if response.is_successful:
             outcome.emit("accepted", "accepted", code)
@@ -377,10 +536,15 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
 
             push_type: Optional[PushType] = None
             time_to_live: Optional[int] = None
-            if self._is_clearing_push(n, default_payload):
-                payload: Optional[Dict[str, Any]] = self._get_payload_clearing(
+            clearing = self._is_clearing_push(n, default_payload)
+            if clearing and self._wants_alert_clearing(device, default_payload):
+                payload: Optional[Dict[str, Any]] = self._get_payload_alert_clearing(
                     n, default_payload
                 )
+                push_type = PushType.ALERT
+                time_to_live = self.CLEARING_PUSH_TTL_SECONDS
+            elif clearing:
+                payload = self._get_payload_clearing(n, default_payload)
                 push_type = PushType.BACKGROUND
                 time_to_live = self.CLEARING_PUSH_TTL_SECONDS
             elif n.event_id and not n.type:
@@ -396,6 +560,14 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                 # Nothing to do
                 span_parent.log_kv({logs.EVENT: "apns_no_payload"})
                 return []
+
+            # M6: момент отправки — до truncate, чтобы поле уложилось в 4 KiB.
+            # Только пуш с событием: у снятия и счётчика подтверждений нет.
+            if self.sent_timestamp and n.event_id and not clearing:
+                payload = {
+                    **payload,
+                    SENT_MS_KEY: int(self.sygnal.reactor.seconds() * 1000),
+                }
 
             try:
                 shaved_payload = apnstruncate.truncate(
@@ -440,6 +612,23 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
             else:
                 prio = 5
 
+            sent_key = self.sent_cache.key(n, device)
+            if sent_key is not None and self.sent_cache.seen(sent_key):
+                PushOutcome(
+                    log, "apns", self.name, device.pushkey, n.event_id, 0, clearing
+                ).emit("skipped", "deduplicated")
+                return []
+
+            # Один id на все попытки: повтор после таймаута, который Apple на
+            # самом деле приняла, схлопнется у Apple, а не прозвенит второй раз.
+            stable_id = self._stable_notification_id(n, device)
+            client_name = client_name_of(device)
+            collapse_key = (
+                collapse_id_for_event(client_name, n.event_id)
+                if self.collapse_by_event and n.event_id and client_name
+                else None
+            )
+
             for retry_number in range(self.MAX_TRIES):
                 try:
                     span_tags = {"retry_num": retry_number}
@@ -449,13 +638,9 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                     ) as span:
                         assert shaved_payload is not None
 
-                        # this is no good: APNs expects ID to be in their format
-                        # so we can't just derive a
-                        # notif_id = context.request_id + f"-{n.devices.index(device)}"
-                        notif_id = str(uuid4())
-                        # XXX: shouldn't we use the same notif_id for each retry?
+                        notif_id = stable_id or str(uuid4())
 
-                        return await self._dispatch_request(
+                        failed = await self._dispatch_request(
                             log,
                             span,
                             device,
@@ -466,14 +651,22 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                             time_to_live=time_to_live,
                             event_id=n.event_id,
                             attempt=retry_number,
+                            collapse_key=collapse_key,
+                            clearing=clearing,
+                            stable=stable_id is not None,
                         )
+                        if not failed and sent_key is not None:
+                            self.sent_cache.remember(sent_key)
+                        return failed
                 except TemporaryNotificationDispatchException as exc:
-                    retry_delay = self.RETRY_DELAY_BASE * (2**retry_number)
+                    # Пауза фиксированная и короткая: длинная (раньше 10/20 с)
+                    # переживала таймаут Envoy → 504 → backoff пушера Synapse.
+                    retry_delay = self.RETRY_DELAY
                     if exc.custom_retry_delay is not None:
-                        retry_delay = exc.custom_retry_delay
+                        retry_delay = min(exc.custom_retry_delay, self.RETRY_DELAY)
 
                     log.warning(
-                        "Temporary failure, will retry in %d seconds",
+                        "Temporary failure, will retry in %.1f seconds",
                         retry_delay,
                     )
 
@@ -492,7 +685,7 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                 device.pushkey,
                 n.event_id,
                 self.MAX_TRIES - 1,
-                push_type is PushType.BACKGROUND,
+                clearing,
             ).emit("error", "retry_exhausted")
             raise NotificationDispatchException("Retried too many times.")
 
@@ -508,7 +701,38 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
             return False
         if not self.get_config("clearing_push", bool, True):
             return False
-        return default_payload.get("liza_clear_v") == 1
+        return default_payload.get("liza_clear_v") in (1, 2)
+
+    def _wants_alert_clearing(
+        self, device: Device, default_payload: Dict[str, Any]
+    ) -> bool:
+        """Видимое снятие (Р3 спеки 2026-11-12): только сборки с filtering
+        entitlement объявляют liza_clear_v=2 — их NSE гасит этот alert и
+        чистит шторку. Без entitlement система показала бы «Новые сообщения
+        прочитаны» баннером. На macOS расширение не стартует (§24) — только
+        тихий путь."""
+        return (
+            self.alert_clearing
+            and default_payload.get("liza_clear_v") == 2
+            and device_platform(device) != "macos"
+        )
+
+    def _get_payload_alert_clearing(
+        self, n: Notification, default_payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            k: v for k, v in default_payload.items() if k != "aps"
+        }
+        aps: Dict[str, Any] = {
+            "alert": {"body": ALERT_CLEARING_FALLBACK_BODY},
+            "mutable-content": 1,
+        }
+        if n.counts.unread is not None:
+            aps["badge"] = n.counts.unread
+            payload["counts"] = {"unread": n.counts.unread}
+        payload["aps"] = aps
+        payload["liza_clear"] = 2
+        return payload
 
     def _get_payload_clearing(
         self, n: Notification, default_payload: Dict[str, Any]
@@ -833,5 +1057,29 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
         self, request: NotificationRequest
     ) -> NotificationResult:
         return await Deferred.fromFuture(
-            asyncio.ensure_future(self.apns_client.send_notification(request))
+            asyncio.ensure_future(self._send_with_deadline(request))
         )
+
+    async def _send_with_deadline(
+        self, request: NotificationRequest
+    ) -> NotificationResult:
+        # Дедлайн покрывает ожидание лока пула + connect + ответ APNs: у aioapns
+        # ни на что из этого таймаута нет.
+        try:
+            return await asyncio.wait_for(
+                self.apns_client.send_notification(request), self.SEND_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            self._drop_hung_connection(request.notification_id)
+            raise ApnsSendTimeout() from None
+
+    def _drop_hung_connection(self, notification_id: str) -> None:
+        """Закрыть соединение, на котором повис ответ на этот запрос.
+
+        Остальные соединения пула не трогаем — на них чужие запросы в полёте.
+        Future запроса уже отменён wait_for'ом: вынимаем его до close(), иначе
+        connection_lost сделает set_exception на отменённом future.
+        """
+        for connection in list(self.apns_client.pool.connections):
+            if connection.requests.pop(notification_id, None) is not None:
+                connection.close()

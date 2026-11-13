@@ -27,7 +27,7 @@ ADMIN_POWER_LEVEL = 99
 MODERATOR_POWER_LEVEL = 50
 
 DEFAULT_BOT_LOCALPARTS = frozenset(
-    {"liza", "gpt", "deepseek", "bot_father", "botfather"}
+    {"liza", "bot_father", "botfather"}
 )
 DEFAULT_BOTS_HOMESERVER = "bots.liza.ru"
 

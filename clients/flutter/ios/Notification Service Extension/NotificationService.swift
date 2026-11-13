@@ -14,11 +14,16 @@ class NotificationService: UNNotificationServiceExtension {
     var contentHandler: ((UNNotificationContent) -> Void)?
     var bestAttemptContent: UNMutableNotificationContent?
     var diagnosticJournal: NativePushJournal? = NativePushJournal.shared
+    /// Для host-тестов: вне бандла UNUserNotificationCenter.current() падает.
+    var readBannerSweep: (String?, UserDefaults?, @escaping (Int) -> Void) -> Void = {
+        ReadBannerSweep.run(clientName: $0, defaults: $1, completion: $2)
+    }
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         let eventId = request.content.userInfo["event_id"] as? String
         let journal = diagnosticJournal
-        journal?.append(.nseReceived, eventId: eventId)
+        journal?.append(.nseReceived, eventId: eventId,
+                        sent: NativePushJournal.sentMs(request.content.userInfo["liza_sent_ms"]))
         // Обёртка наблюдает прежние вызовы, не меняет payload/число callback.
         let originalHandler = contentHandler
         let contentHandler: (UNNotificationContent) -> Void = { content in
@@ -27,6 +32,22 @@ class NotificationService: UNNotificationServiceExtension {
         }
         self.contentHandler = contentHandler
         bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
+
+        // Этап 3 (alert-clearing v2): Sygnal шлёт видимый пуш с запасным
+        // текстом «Новые сообщения прочитаны» только pusher'ам с liza_clear_v=2
+        // (сборка с filtering entitlement). Снимаем прочитанное и отдаём пустое
+        // содержимое — с entitlement iOS такой пуш подавит; без него человек
+        // увидит запасной текст, а не пустой баннер.
+        if (request.content.userInfo["liza_clear"] as? Int) == 2 {
+            isClearing = true
+            let defaults = UserDefaults(suiteName: appGroup())
+            let clientName = request.content.userInfo["client_name"] as? String
+            readBannerSweep(clientName, defaults) { [weak self] removed in
+                journal?.append(.nseSuppressed, value: removed)
+                self?.finishClearing()
+            }
+            return
+        }
 
         if let bestAttemptContent = bestAttemptContent {
             os_log("[LizaPushHelper] New message received")
@@ -139,8 +160,29 @@ class NotificationService: UNNotificationServiceExtension {
                 value: (savedBadge ?? 0) > 0 ? savedBadge! : 1
             )
 
-            // Attempt to download sender avatar and attach as Communication Notification.
-            fetchAvatar(senderId: senderId) { [weak self] attachmentUrl in
+            // Р2 L1: параллельно с аватаром снимаем баннеры событий, прочитанных
+            // на другом устройстве. contentHandler — только после обоих: иначе
+            // iOS может заморозить расширение до removeDelivered. Таймаут 3 с,
+            // ошибка → ничего не снимаем.
+            let pending = DispatchGroup()
+            pending.enter()
+            let clientName = bestAttemptContent.userInfo["client_name"] as? String
+            readBannerSweep(clientName, badgeDefaults) { removed in
+                if removed > 0 { journal?.append(.nseSwept, eventId: eventId, value: removed) }
+                pending.leave()
+            }
+            var avatarUrl: URL?
+            pending.enter()
+            fetchAvatar(
+                senderId: senderId,
+                clientName: bestAttemptContent.userInfo["client_name"] as? String
+            ) { url in
+                avatarUrl = url
+                pending.leave()
+            }
+
+            pending.notify(queue: .global()) { [weak self] in
+                let attachmentUrl = avatarUrl
                 guard let self = self else {
                     contentHandler(bestAttemptContent)
                     return
@@ -202,8 +244,25 @@ class NotificationService: UNNotificationServiceExtension {
         }
     }
 
+    private var isClearing = false
+    private let clearingLock = NSLock()
+
+    /// Ровно один ответ на пуш снятия: из обработчика чистки или по истечении
+    /// времени — кто первый.
+    private func finishClearing() {
+        clearingLock.lock()
+        let handler = contentHandler
+        contentHandler = nil
+        clearingLock.unlock()
+        handler?(UNMutableNotificationContent())
+    }
+
     override func serviceExtensionTimeWillExpire() {
         diagnosticJournal?.append(.nseExpired, eventId: bestAttemptContent?.userInfo["event_id"] as? String)
+        if isClearing {
+            finishClearing()
+            return
+        }
         // Deliver whatever we have so far (possibly without avatar).
         if let contentHandler = contentHandler, let bestAttemptContent = bestAttemptContent {
             contentHandler(bestAttemptContent)
@@ -301,15 +360,20 @@ class NotificationService: UNNotificationServiceExtension {
     /// Downloads the sender's avatar from the Matrix homeserver via the shared
     /// App Group credentials. Two HTTP requests: profile lookup + thumbnail download.
     /// Returns a local file URL for the avatar image, or nil on failure.
-    private func fetchAvatar(senderId: String?, completion: @escaping (URL?) -> Void) {
-        let defaults = UserDefaults(suiteName: appGroup())
-        guard let homeserver = defaults?.string(forKey: "homeserverUrl"),
-              let accessToken = defaults?.string(forKey: "accessToken"),
+    private func fetchAvatar(senderId: String?, clientName: String?, completion: @escaping (URL?) -> Void) {
+        // Токен аккаунта-адресата пуша (`accessToken.<client_name>`), как у
+        // ReadBannerSweep; легаси-ключ — только при одном аккаунте.
+        guard let creds = ReadBannerSweep.credentials(
+                clientName: clientName,
+                defaults: UserDefaults(suiteName: appGroup())
+              ),
               let sender = senderId,
               !sender.isEmpty else {
             completion(nil)
             return
         }
+        let homeserver = creds.homeserver
+        let accessToken = creds.accessToken
 
         // Step 1: GET /_matrix/client/v3/profile/{userId}/avatar_url
         let encodedSender = sender.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sender

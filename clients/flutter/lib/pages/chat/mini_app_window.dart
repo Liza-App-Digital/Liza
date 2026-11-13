@@ -4,7 +4,8 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart' show kPrimaryMouseButton;
+import 'package:flutter/gestures.dart'
+    show kDoubleTapTimeout, kPrimaryMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -564,86 +565,219 @@ Future<void> miniAppWindowMain(List<String> args) async {
   final config = MiniAppWindowConfig.fromJson(
     Map<String, Object?>.from(jsonDecode(args[2]) as Map),
   );
-  final controller = await WindowController.fromCurrentEngine();
-  runApp(MiniAppWindowApp(controller: controller, config: config));
+  runApp(
+    MiniAppWindowApp(
+      controller: await _currentWindowController(),
+      config: config,
+    ),
+  );
+}
+
+/// desktop_multi_window регистрирует себя в движке окна ПОСЛЕ колбэка раннера
+/// (белый список плагинов + канал окна), а Dart окна к этому моменту уже
+/// запущен. Первый вызов может прийти раньше регистрации — MissingPluginException,
+/// окно так и остаётся скрытым (пилот VM 13.11, на Windows). Повторяем, пока
+/// плагин не ответит.
+Future<WindowController> _currentWindowController() async {
+  for (var attempt = 0; ; attempt++) {
+    try {
+      return await WindowController.fromCurrentEngine();
+    } on MissingPluginException {
+      // До 10 с: в тесной VM плагин регистрируется дольше.
+      if (attempt >= 500) rethrow;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+  }
 }
 
 /// Окно mini App рисует свою шапку вместо системной (macOS — прозрачный
-/// titlebar, Windows — снятый WS_CAPTION). Откат Windows — выставить false.
+/// titlebar, Windows — заголовок снят в WM_NCCALCSIZE). Откат Windows — false.
 final bool miniAppWindowFrameless =
     defaultTargetPlatform == TargetPlatform.macOS ||
     defaultTargetPlatform == TargetPlatform.windows;
 
-/// Единственная шапка отдельного окна: название, «Прикрепить к Лизе», крестик.
-/// Без [onAttach] кнопки «Прикрепить» нет (жидкая страница живёт в окне).
-class MiniAppWindowHeader extends StatelessWidget {
+/// Край окна, за который тянут из шапки. Только верх: слева, справа и снизу
+/// у окна Windows остаются системные рамки, у macOS — свои края окна.
+enum MiniAppWindowEdge { top, topLeft, topRight }
+
+/// Единственная шапка отдельного окна: название, «Прикрепить к Лизе»,
+/// «Развернуть/Восстановить», крестик. Без [onAttach] нет «Прикрепить»
+/// (жидкая страница живёт в окне), без [onToggleMaximize] — «Развернуть».
+/// [onResizeStart] — полоса верхнего края (Windows), скрыта у развёрнутого окна.
+class MiniAppWindowHeader extends StatefulWidget {
   final String title;
   final String attachTooltip;
   final String closeTooltip;
+  final String? maximizeTooltip;
+  final String? restoreTooltip;
   final VoidCallback? onAttach;
   final VoidCallback onClose;
   final VoidCallback onDragStart;
+  final VoidCallback? onToggleMaximize;
+  final ValueChanged<MiniAppWindowEdge>? onResizeStart;
+  final bool maximized;
 
   const MiniAppWindowHeader({
     required this.title,
     required this.attachTooltip,
     required this.closeTooltip,
+    this.maximizeTooltip,
+    this.restoreTooltip,
     this.onAttach,
     required this.onClose,
     required this.onDragStart,
+    this.onToggleMaximize,
+    this.onResizeStart,
+    this.maximized = false,
     super.key,
   });
 
+  /// Толщина полосы верхнего края и длина угловых участков, dp.
+  static const resizeBand = 5.0;
+  static const resizeCorner = 12.0;
+
+  @override
+  State<MiniAppWindowHeader> createState() => _MiniAppWindowHeaderState();
+}
+
+class _MiniAppWindowHeaderState extends State<MiniAppWindowHeader> {
+  // Двойной клик ловим сами: первое нажатие уходит в системный цикл
+  // перетаскивания, и жесты Flutter второго клика не видят.
+  Duration? _lastDownTime;
+  Offset? _lastDownPosition;
+
+  void _onPointerDown(PointerDownEvent e) {
+    if (e.buttons != kPrimaryMouseButton) return;
+    final toggle = widget.onToggleMaximize;
+    final lastTime = _lastDownTime;
+    final lastPosition = _lastDownPosition;
+    if (toggle != null &&
+        lastTime != null &&
+        lastPosition != null &&
+        e.timeStamp - lastTime <= kDoubleTapTimeout &&
+        (e.position - lastPosition).distance <= 8) {
+      _lastDownTime = null;
+      _lastDownPosition = null;
+      toggle();
+      return;
+    }
+    _lastDownTime = e.timeStamp;
+    _lastDownPosition = e.position;
+    widget.onDragStart();
+  }
+
+  Widget _edge(MiniAppWindowEdge edge, MouseCursor cursor, {double? width}) {
+    return SizedBox(
+      width: width,
+      child: MouseRegion(
+        cursor: cursor,
+        child: Listener(
+          key: ValueKey('miniapp-window-resize-${edge.name}'),
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: (e) {
+            if (e.buttons == kPrimaryMouseButton) {
+              widget.onResizeStart?.call(edge);
+            }
+          },
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final toggle = widget.onToggleMaximize;
+    final row = Row(
+      children: [
+        Expanded(
+          child: Listener(
+            key: const ValueKey('miniapp-window-drag'),
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: _onPointerDown,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 16),
+                child: Text(
+                  widget.title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ),
+          ),
+        ),
+        if (widget.onAttach != null)
+          IconButton(
+            key: const ValueKey('miniapp-window-attach'),
+            tooltip: widget.attachTooltip,
+            // Обратный «Открепить» из шапки панели: тот же значок, повёрнутый.
+            icon: ExcludeSemantics(
+              child: Transform.rotate(
+                angle: math.pi,
+                child: const Icon(Icons.open_in_new, size: 20),
+              ),
+            ),
+            onPressed: widget.onAttach,
+          ),
+        if (toggle != null)
+          IconButton(
+            key: const ValueKey('miniapp-window-maximize'),
+            tooltip: widget.maximized
+                ? widget.restoreTooltip
+                : widget.maximizeTooltip,
+            icon: Icon(
+              widget.maximized ? Icons.filter_none : Icons.crop_square,
+              size: widget.maximized ? 16 : 20,
+            ),
+            onPressed: toggle,
+          ),
+        IconButton(
+          key: const ValueKey('miniapp-window-close'),
+          tooltip: widget.closeTooltip,
+          icon: const Icon(Icons.close, size: 22),
+          onPressed: widget.onClose,
+        ),
+        const SizedBox(width: 4),
+      ],
+    );
+    final resize = widget.onResizeStart != null && !widget.maximized;
     return SizedBox(
       height: 44,
-      child: Row(
+      child: Stack(
         children: [
-          Expanded(
-            child: Listener(
-              key: const ValueKey('miniapp-window-drag'),
-              behavior: HitTestBehavior.translucent,
-              onPointerDown: (e) {
-                if (e.buttons == kPrimaryMouseButton) onDragStart();
-              },
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.only(left: 16),
-                  child: Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+          Positioned.fill(child: row),
+          if (resize)
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
+              height: MiniAppWindowHeader.resizeBand,
+              child: Row(
+                children: [
+                  _edge(
+                    MiniAppWindowEdge.topLeft,
+                    SystemMouseCursors.resizeUpLeftDownRight,
+                    width: MiniAppWindowHeader.resizeCorner,
                   ),
-                ),
+                  Expanded(
+                    child: _edge(
+                      MiniAppWindowEdge.top,
+                      SystemMouseCursors.resizeUpDown,
+                    ),
+                  ),
+                  _edge(
+                    MiniAppWindowEdge.topRight,
+                    SystemMouseCursors.resizeUpRightDownLeft,
+                    width: MiniAppWindowHeader.resizeCorner,
+                  ),
+                ],
               ),
             ),
-          ),
-          if (onAttach != null)
-            IconButton(
-              key: const ValueKey('miniapp-window-attach'),
-              tooltip: attachTooltip,
-              // Обратный «Открепить» из шапки панели: тот же значок, повёрнутый.
-              icon: ExcludeSemantics(
-                child: Transform.rotate(
-                  angle: math.pi,
-                  child: const Icon(Icons.open_in_new, size: 20),
-                ),
-              ),
-              onPressed: onAttach,
-            ),
-          IconButton(
-            key: const ValueKey('miniapp-window-close'),
-            tooltip: closeTooltip,
-            icon: const Icon(Icons.close, size: 22),
-            onPressed: onClose,
-          ),
-          const SizedBox(width: 4),
         ],
       ),
     );
@@ -672,6 +806,7 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
 
   String? _toast;
   int _toastGen = 0;
+  bool _maximized = false;
   Timer? _visibilityTimer;
   Future<void> _visibilityReports = Future<void>.value();
 
@@ -694,6 +829,7 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
         .then((_) async {
           if (!mounted || !identical(host, _host)) return;
           final value = snapshot ?? await _nativeVisibility();
+          _syncMaximized(value);
           if (mounted && identical(host, _host)) {
             await host.reportVisibility(value);
           }
@@ -758,6 +894,12 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
         // Сначала ответить: закрытое окно уносит с собой движок, и ответ
         // после закрытия уже некому отправить — вызывающий ждал бы вечно.
         Timer.run(() => _nativeWindow.invokeMethod<void>('close'));
+      case 'geometry':
+        // Размеры окна в dp — нативный страж RL-miniapp-detached-window/26–29.
+        return _nativeWindow.invokeMapMethod<Object?, Object?>('geometry');
+      case 'toggleMaximize':
+        await _toggleMaximize();
+        return _maximized;
       case 'state':
         // Что показывает окно — для диагностики и нативного стража.
         return {
@@ -790,6 +932,34 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
     } catch (e, s) {
       _reportError(e, s);
     }
+  }
+
+  // Окно разворачивают не только кнопкой шапки (Snap, Win+↑) — значок
+  // «Развернуть/Восстановить» берёт состояние из снимка окна.
+  void _syncMaximized(Map<Object?, Object?> snapshot) {
+    final maximized = snapshot['maximized'];
+    if (mounted && maximized is bool && maximized != _maximized) {
+      setState(() => _maximized = maximized);
+    }
+  }
+
+  Future<void> _toggleMaximize() async {
+    try {
+      final maximized = await _nativeWindow.invokeMethod<bool>(
+        'toggleMaximize',
+      );
+      if (mounted && maximized != null && maximized != _maximized) {
+        setState(() => _maximized = maximized);
+      }
+    } catch (e, s) {
+      _reportError(e, s);
+    }
+  }
+
+  void _startResize(MiniAppWindowEdge edge) {
+    _nativeWindow
+        .invokeMethod<void>('startResize', {'edge': edge.name})
+        .catchError((Object _) {});
   }
 
   void _startDrag() {
@@ -838,6 +1008,18 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
                           : () => _attach(l10n),
                       onClose: _close,
                       onDragStart: _startDrag,
+                      maximizeTooltip: l10n.miniAppMaximize,
+                      restoreTooltip: l10n.miniAppRestore,
+                      maximized: _maximized,
+                      onToggleMaximize: miniAppWindowFrameless
+                          ? _toggleMaximize
+                          : null,
+                      // Сверху у безрамочного окна Windows рамки нет.
+                      onResizeStart:
+                          miniAppWindowFrameless &&
+                              defaultTargetPlatform == TargetPlatform.windows
+                          ? _startResize
+                          : null,
                     ),
                     Divider(height: 1, color: colorScheme.outlineVariant),
                     Expanded(

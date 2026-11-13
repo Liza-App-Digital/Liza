@@ -12,7 +12,12 @@ import tempfile
 from typing import TYPE_CHECKING, Any, AnyStr, Dict, List, Tuple
 from unittest.mock import MagicMock
 
-from sygnal.exceptions import TemporaryNotificationDispatchException
+from twisted.internet.defer import Deferred, ensureDeferred
+
+from sygnal.exceptions import (
+    NotificationQuotaDispatchException,
+    TemporaryNotificationDispatchException,
+)
 from sygnal.gcmpushkin import APIVersion, GcmPushkin
 
 from tests import testutils
@@ -180,6 +185,12 @@ class GcmTestCase(testutils.TestCase):
                     },
                 },
             },
+        }
+
+        config["apps"]["com.example.gcm.apiv1.normal"] = {
+            **config["apps"]["com.example.gcm.apiv1"],
+            "counts_priority_normal": True,
+            "sent_timestamp": True,
         }
 
     def tearDown(self) -> None:
@@ -559,7 +570,8 @@ class GcmTestCase(testutils.TestCase):
 
         _resp = self._request(self._make_dummy_notification([DEVICE_EXAMPLE_APIV1]))
 
-        self.assertEqual(3, method.call_count)
+        # Р4 спеки 2026-11-12: две попытки, бюджет FCM ≤ 9 с.
+        self.assertEqual(2, method.call_count)
         notification_req = method.call_args.args
 
         self.assertEqual(
@@ -730,3 +742,212 @@ ooooooooooxxxxxxxxxx🦉oooooo£xxxxxxxx☻oo🦉…",
         self.assertEqual(
             notification_req[3].get("Authorization"), ["Bearer myaccesstoken"]
         )
+
+
+DEVICE_APIV1_LIZA = {
+    "app_id": "com.example.gcm.apiv1",
+    "pushkey": "spqr",
+    "pushkey_ts": 42,
+    "data": {"default_payload": {"client_name": "acc1"}},
+}
+DEVICE_APIV1_NORMAL = {
+    "app_id": "com.example.gcm.apiv1.normal",
+    "pushkey": "spqr",
+    "pushkey_ts": 42,
+}
+
+
+class GcmBudgetTestCase(testutils.TestCase):
+    """ledger:RL-sygnal-egress-deadlines — бюджет FCM ≤ 9 с (Р4 спеки 2026-11-12)."""
+
+    config_setup = GcmTestCase.config_setup
+    tearDown = GcmTestCase.tearDown
+    get_test_pushkin = GcmTestCase.get_test_pushkin
+
+
+    def _fail_with(self, exc: Exception) -> Tuple[MagicMock, List[float]]:
+        gcm = self.get_test_pushkin("com.example.gcm.apiv1")
+        calls: List[float] = []
+
+        async def side_effect(*_args: Any, **_kwargs: Any) -> None:
+            calls.append(self.reactor.seconds())
+            raise exc
+
+        method = MagicMock(side_effect=side_effect)
+        gcm._request_dispatch = method  # type: ignore[assignment]
+        return method, calls
+
+    def test_two_tries_short_pause_then_503(self) -> None:
+        """AC:RL-sygnal-egress-deadlines/11 — FCM: 2 попытки, пауза 0,5 с, итог 503 быстрее 9 с."""
+        method, calls = self._fail_with(
+            TemporaryNotificationDispatchException("temp", custom_retry_delay=None)
+        )
+        start = self.reactor.seconds()
+
+        resp = self._request(self._make_dummy_notification([DEVICE_EXAMPLE_APIV1]))
+
+        self.assertEqual(2, method.call_count)
+        self.assertEqual(503, resp)
+        # Тестовый reactor идёт шагом 1 с: пауза 0,5 с видна как ≤ 1 с.
+        self.assertLessEqual(calls[1] - calls[0], 1.0)
+        self.assertLess(self.reactor.seconds() - start, 9)
+
+    def test_retry_after_longer_than_budget_fails_at_once(self) -> None:
+        """AC:RL-sygnal-egress-deadlines/12 — Retry-After 30 с → одна попытка, 503."""
+        method, _ = self._fail_with(
+            TemporaryNotificationDispatchException("temp", custom_retry_delay=30)
+        )
+        start = self.reactor.seconds()
+
+        resp = self._request(self._make_dummy_notification([DEVICE_EXAMPLE_APIV1]))
+
+        self.assertEqual(1, method.call_count)
+        self.assertEqual(503, resp)
+        self.assertLess(self.reactor.seconds() - start, 2)
+
+    def test_retry_after_within_budget_is_honoured(self) -> None:
+        """AC:RL-sygnal-egress-deadlines/13 — Retry-After 2 с умещается в бюджет и соблюдается."""
+        method, calls = self._fail_with(
+            TemporaryNotificationDispatchException("temp", custom_retry_delay=2)
+        )
+
+        resp = self._request(self._make_dummy_notification([DEVICE_EXAMPLE_APIV1]))
+
+        self.assertEqual(2, method.call_count)
+        self.assertEqual(503, resp)
+        self.assertGreaterEqual(calls[1] - calls[0], 2)
+
+    def test_quota_exceeded_fails_at_once(self) -> None:
+        """AC:RL-sygnal-egress-deadlines/12 — квота (пауза 60 с) → одна попытка, 503."""
+        method, _ = self._fail_with(
+            NotificationQuotaDispatchException("quota", custom_retry_delay=None)
+        )
+
+        resp = self._request(self._make_dummy_notification([DEVICE_EXAMPLE_APIV1]))
+
+        self.assertEqual(1, method.call_count)
+        self.assertEqual(503, resp)
+
+    def test_request_is_cut_after_four_seconds(self) -> None:
+        """AC:RL-sygnal-egress-deadlines/14 — запрос к FCM обрывается через 4 с, слот семафора возвращается."""
+        gcm = self.get_test_pushkin("com.example.gcm.apiv1")
+        hung: "Deferred[Any]" = Deferred()
+        gcm.http_agent = MagicMock()
+        gcm.http_agent.request.return_value = hung
+
+        d = ensureDeferred(GcmPushkin._perform_http_request(gcm, {}, {}))
+        failures: List[Any] = []
+        d.addErrback(failures.append)
+
+        self.reactor.advance(3.9)
+        self.assertEqual([], failures)
+        self.reactor.advance(0.2)
+        self.assertEqual(1, len(failures))
+        self.assertIsInstance(
+            failures[0].value, TemporaryNotificationDispatchException
+        )
+        self.assertEqual(gcm.max_connections, gcm.connection_semaphore.tokens)
+
+
+class GcmPriorityTestCase(testutils.TestCase):
+    """ledger:RL-fcm-counts-priority-normal — Р1/Ф0.5, AC-8."""
+
+    config_setup = GcmTestCase.config_setup
+    tearDown = GcmTestCase.tearDown
+    get_test_pushkin = GcmTestCase.get_test_pushkin
+
+
+    def _capture(self, app_id: str) -> MagicMock:
+        method = MagicMock(side_effect=testutils.make_async_magic_mock(([], [])))
+        self.get_test_pushkin(app_id)._request_dispatch = method  # type: ignore
+        return method
+
+    def test_counts_only_normal_under_flag(self) -> None:
+        """AC:RL-fcm-counts-priority-normal/1"""
+        method = self._capture("com.example.gcm.apiv1.normal")
+        self._request(self._make_dummy_notification_badge_only([DEVICE_APIV1_NORMAL]))
+        android = method.call_args.args[2]["message"]["android"]
+        self.assertEqual("normal", android["priority"])
+
+    def test_visible_push_stays_high_under_flag(self) -> None:
+        """AC:RL-fcm-counts-priority-normal/2"""
+        method = self._capture("com.example.gcm.apiv1.normal")
+        self._request(self._make_dummy_notification([DEVICE_APIV1_NORMAL]))
+        android = method.call_args.args[2]["message"]["android"]
+        self.assertEqual("high", android["priority"])
+
+    def test_counts_only_high_without_flag(self) -> None:
+        """AC:RL-fcm-counts-priority-normal/3 — флаг выключен, всё как было."""
+        method = self._capture("com.example.gcm.apiv1")
+        self._request(self._make_dummy_notification_badge_only([DEVICE_EXAMPLE_APIV1]))
+        android = method.call_args.args[2]["message"]["android"]
+        self.assertEqual("high", android["priority"])
+
+
+    def test_sent_timestamp_in_event_push_under_flag(self) -> None:
+        """AC:RL-push-test-sender-and-acks/8 — liza_sent_ms строкой (FCM v1 data —
+        только строки) у пуша с событием; у счётчика и без флага — нет.
+        ledger:RL-push-test-sender-and-acks"""
+        self.reactor.advance(1_700_000_000)
+        method = self._capture("com.example.gcm.apiv1.normal")
+        self._request(self._make_dummy_notification([DEVICE_APIV1_NORMAL]))
+        data = method.call_args.args[2]["message"]["data"]
+        self.assertEqual(str(int(self.reactor.seconds() * 1000)), data["liza_sent_ms"])
+        self._request(self._make_dummy_notification_badge_only([DEVICE_APIV1_NORMAL]))
+        self.assertNotIn("liza_sent_ms", method.call_args.args[2]["message"]["data"])
+        off = self._capture("com.example.gcm.apiv1")
+        self._request(self._make_dummy_notification([DEVICE_EXAMPLE_APIV1]))
+        self.assertNotIn("liza_sent_ms", off.call_args.args[2]["message"]["data"])
+
+
+class GcmSentCacheTestCase(testutils.TestCase):
+    """ledger:RL-push-sent-dedupe — повтор Synapse после 504 не шлём второй раз."""
+
+    config_setup = GcmTestCase.config_setup
+    tearDown = GcmTestCase.tearDown
+    get_test_pushkin = GcmTestCase.get_test_pushkin
+
+
+    def test_repeat_of_accepted_event_is_not_sent(self) -> None:
+        """AC:RL-push-sent-dedupe/1 — повтор того же события в 10 минут не уходит второй раз."""
+        gcm = self.get_test_pushkin("com.example.gcm.apiv1")
+        gcm.preload_with_response(200, {"name": "projects/x/messages/1"})
+
+        first = self._request(self._make_dummy_notification([DEVICE_APIV1_LIZA]))
+        second = self._request(self._make_dummy_notification([DEVICE_APIV1_LIZA]))
+
+        self.assertEqual({"rejected": []}, first)
+        self.assertEqual({"rejected": []}, second)
+        self.assertEqual(1, gcm.num_requests)
+
+    def test_without_client_name_every_request_is_sent(self) -> None:
+        """AC:RL-push-sent-dedupe/2 — без client_name ключа нет, каждый запрос уходит."""
+        gcm = self.get_test_pushkin("com.example.gcm.apiv1")
+        gcm.preload_with_response(200, {"name": "projects/x/messages/1"})
+
+        self._request(self._make_dummy_notification([DEVICE_EXAMPLE_APIV1]))
+        self._request(self._make_dummy_notification([DEVICE_EXAMPLE_APIV1]))
+
+        self.assertEqual(2, gcm.num_requests)
+
+    def test_counts_only_is_never_deduplicated(self) -> None:
+        """AC:RL-push-sent-dedupe/3 — пуш «только счётчик» не запоминается."""
+        gcm = self.get_test_pushkin("com.example.gcm.apiv1")
+        gcm.preload_with_response(200, {"name": "projects/x/messages/1"})
+
+        notif = self._make_dummy_notification_badge_only([DEVICE_APIV1_LIZA])
+        self._request(notif)
+        self._request(notif)
+
+        self.assertEqual(2, gcm.num_requests)
+
+    def test_cache_expires_after_ten_minutes(self) -> None:
+        """AC:RL-push-sent-dedupe/4 — через 10 минут память о событии истекает."""
+        gcm = self.get_test_pushkin("com.example.gcm.apiv1")
+        gcm.preload_with_response(200, {"name": "projects/x/messages/1"})
+
+        self._request(self._make_dummy_notification([DEVICE_APIV1_LIZA]))
+        self.reactor.advance(601)
+        self._request(self._make_dummy_notification([DEVICE_APIV1_LIZA]))
+
+        self.assertEqual(2, gcm.num_requests)

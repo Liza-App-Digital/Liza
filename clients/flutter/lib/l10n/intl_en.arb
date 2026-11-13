@@ -4562,6 +4562,10 @@
   "@miniAppDetach": {},
   "miniAppAttach": "Attach to Liza",
   "@miniAppAttach": {},
+  "miniAppMaximize": "Maximize",
+  "@miniAppMaximize": {},
+  "miniAppRestore": "Restore size",
+  "@miniAppRestore": {},
   "miniAppMoveDuringPayment": "Wait until the payment is finished",
   "@miniAppMoveDuringPayment": {},
   "chatListExpand": "Expand chat list",
@@ -5464,6 +5468,31 @@
   "notificationHealthRefresh": "Refresh status",
   "notificationHealthSettingsFailed": "Could not open system settings. Open your device settings and find notification settings for Liza.",
   "notificationHealthActionFailed": "The action could not be completed. Please try again.",
+  "notificationCheckupTitle": "Notification check",
+  "notificationCheckupAllClear": "No problems found on this device.",
+  "notificationCheckupPermissionDenied": "The system blocks notifications from Liza.",
+  "notificationCheckupAlertsHidden": "Notifications arrive without banners.",
+  "notificationCheckupPusherMissing": "This device does not receive pushes.",
+  "notificationCheckupAccountMuted": "Notifications are turned off in your account settings.",
+  "notificationCheckupSecondCopy": "Another copy of Liza is installed on this device. Delete the old one.",
+  "notificationCheckupOutdated": "A newer version of Liza is available. Update to get the latest notification fixes.",
+  "notificationCheckupBattery": "The system may put Liza to sleep. Allow background activity; on Xiaomi, Huawei and Honor also enable autostart.",
+  "notificationCheckupMacSleep": "While the Mac is asleep, Apple keeps only the latest notification.",
+  "notificationCheckupReconnect": "Reconnect",
+  "notificationCheckupEnable": "Turn on",
+  "notificationCheckupUpdate": "Update",
+  "notificationTestPushSend": "Send a test push",
+  "notificationTestPushRunning": "Waiting for the test push…",
+  "notificationTestPushDelivered": "The push arrived in {seconds} s.",
+  "notificationTestPushTimedOut": "The push did not arrive within 60 s.",
+  "notificationTestPushRejected": "The server did not accept the test push request.",
+  "@notificationTestPushDelivered": {
+    "placeholders": {
+      "seconds": {
+        "type": "String"
+      }
+    }
+  },
   "notificationLocalTestExplanation": "Local notification only. This does not test APNs/FCM delivery.",
   "@notificationHealthObservedAt": {
     "placeholders": {
@@ -5529,5 +5558,52 @@
   "botJoinRequestCheck": "Complete bot check",
   "botJoinRequestJoin": "Join chat",
   "botJoinRequestDeclined": "Your join request was declined.",
-  "botRequestsPermissions": "The bot requests chat management permissions."
+  "botRequestsPermissions": "The bot requests chat management permissions.",
+  "chatCapsuleUnpublish": "Unpublish",
+  "@chatCapsuleUnpublish": {},
+  "chatCapsuleArchive": "Move to archive",
+  "@chatCapsuleArchive": {},
+  "chatCapsuleRestore": "Restore from archive",
+  "@chatCapsuleRestore": {},
+  "chatCapsuleArchiveConfirm": "Move the capsule to the archive?",
+  "@chatCapsuleArchiveConfirm": {},
+  "chatCapsuleNoPermission": "Insufficient permissions",
+  "@chatCapsuleNoPermission": {},
+  "chatCapsulesUnavailable": "Capsule service is unavailable",
+  "@chatCapsulesUnavailable": {},
+  "chatCapsuleNoFolder": "This chat has no folder to publish to",
+  "@chatCapsuleNoFolder": {},
+  "widgetStart": "Start",
+  "@widgetStart": {
+    "description": "Кнопка запуска виджета непроверенного бота"
+  },
+  "widgetStopped": "Widget stopped",
+  "@widgetStopped": {
+    "description": "Плашка поверх виджета, остановленного сторожем"
+  },
+  "widgetNotSupported": "Widgets are not supported on this device",
+  "@widgetNotSupported": {
+    "description": "Пометка под подписью виджета на Linux"
+  },
+  "widgetLoading": "Loading widget",
+  "@widgetLoading": {
+    "description": "Подпись заглушки виджета для экранного диктора"
+  },
+  "widgetLinkName": "Link from a widget",
+  "@widgetLinkName": {
+    "description": "Имя ссылки из виджета в диалоге подтверждения"
+  },
+  "widgetOpenInApp": "Open this widget in the Liza app",
+  "@widgetOpenInApp": {
+    "description": "Пометка под подписью виджета непроверенного бота в веб-версии"
+  },
+  "widgetCopied": "Copied: {text}",
+  "@widgetCopied": {
+    "description": "Тост после copyText из виджета, показывает скопированный текст",
+    "placeholders": {
+      "text": {
+        "type": "String"
+      }
+    }
+  }
 }

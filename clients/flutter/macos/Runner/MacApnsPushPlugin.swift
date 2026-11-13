@@ -158,6 +158,47 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
         }
     }
 
+    /// Р3: локальный баннер под идентификатором `identifier` (= apns-collapse-id
+    /// события). Опоздавший APNs с тем же collapse-id заменяет его, а не
+    /// рисует второй. Уже есть баннер события (по id или по event_id) →
+    /// `skipped`. userInfo — те же top-level ключи, что у APNs: тап, снятие по
+    /// комнате и retract работают без отдельной ветки.
+    static func showBanner(
+        identifier: String,
+        title: String,
+        body: String,
+        roomId: String,
+        eventId: String,
+        clientName: String,
+        attachmentPath: String?,
+        completion: @escaping (String) -> Void
+    ) {
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { delivered in
+            if delivered.contains(where: {
+                $0.request.identifier == identifier
+                    || ($0.request.content.userInfo["event_id"] as? String) == eventId
+            }) {
+                return completion("skipped")
+            }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = UNNotificationSound(named: UNNotificationSoundName("liza_ding.aiff"))
+            content.threadIdentifier = roomId
+            content.userInfo = ["event_id": eventId, "room_id": roomId, "client_name": clientName]
+            if let path = attachmentPath,
+               let attachment = try? UNNotificationAttachment(
+                   identifier: "avatar", url: URL(fileURLWithPath: path), options: nil) {
+                content.attachments = [attachment]
+            }
+            let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+            center.add(request) { error in
+                completion(error == nil ? "shown" : "failed")
+            }
+        }
+    }
+
     static func deliveredRoomIds(completion: @escaping ([String]) -> Void) {
         UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
             var rooms: [String] = []
@@ -381,8 +422,16 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             // no-op с устаревшим комментарием «No NSE on macOS»).
             let credArgs = call.arguments as? [String: String]
             let credDefaults = UserDefaults(suiteName: lizaAppGroup())
-            credDefaults?.set(credArgs?["homeserverUrl"], forKey: "homeserverUrl")
-            credDefaults?.set(credArgs?["accessToken"], forKey: "accessToken")
+            // Р2: токен по client_name — NSE/фоновая чистка ходят в /notifications
+            // от имени аккаунта-адресата пуша, а не «текущего».
+            if let cn = credArgs?["clientName"], !cn.isEmpty {
+                credDefaults?.set(credArgs?["homeserverUrl"], forKey: "homeserverUrl.\(cn)")
+                credDefaults?.set(credArgs?["accessToken"], forKey: "accessToken.\(cn)")
+            }
+            if credArgs?["legacy"] != "false" {
+                credDefaults?.set(credArgs?["homeserverUrl"], forKey: "homeserverUrl")
+                credDefaults?.set(credArgs?["accessToken"], forKey: "accessToken")
+            }
             result(true)
         case "setActiveRoom":
             // Открытый на экране чат (Dart шлёт null при уходе с чата или в фон).
@@ -433,6 +482,24 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             }
             MacApnsPushPlugin.isEventDelivered(eventId: eventId) { found in
                 DispatchQueue.main.async { result(found) }
+            }
+        case "showBanner":
+            let args = call.arguments as? [String: Any]
+            guard let identifier = args?["identifier"] as? String, !identifier.isEmpty,
+                  let eventId = args?["eventId"] as? String, !eventId.isEmpty,
+                  let roomId = args?["roomId"] as? String, !roomId.isEmpty else {
+                return result("failed")
+            }
+            MacApnsPushPlugin.showBanner(
+                identifier: identifier,
+                title: args?["title"] as? String ?? "",
+                body: args?["body"] as? String ?? "",
+                roomId: roomId,
+                eventId: eventId,
+                clientName: args?["clientName"] as? String ?? "",
+                attachmentPath: args?["attachmentPath"] as? String
+            ) { outcome in
+                DispatchQueue.main.async { result(outcome) }
             }
         case "retractDelivered":
             let args = call.arguments as? [String: Any]

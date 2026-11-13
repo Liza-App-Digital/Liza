@@ -7,7 +7,7 @@ import Darwin
 /// не блокирует contentHandler. В журнал никогда не попадает payload/token.
 final class NativePushJournal {
     enum Stage: String, Codable {
-        case nseReceived, nseCompleted, nseExpired, nseError, fcmReceived, token, diagnosticLoss
+        case nseReceived, nseCompleted, nseExpired, nseError, nseSwept, nseSuppressed, fcmReceived, token, diagnosticLoss
     }
     enum Reason: String, Codable { case first, unchanged, rotated, registration_failed, storage, dropped }
     struct Entry: Codable {
@@ -18,6 +18,8 @@ final class NativePushJournal {
         var event_hash: String?
         var hash_version: String?
         var value: Int?
+        /// M6: момент отправки Sygnal'ом (`liza_sent_ms` в пуше), мс эпохи.
+        var sent: Int64?
     }
     static let maxCount = 256
     static let maxBytes = 128 * 1024
@@ -49,12 +51,26 @@ final class NativePushJournal {
         SHA256.hash(data: Data(value.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// `liza_sent_ms` из userInfo (число или строка) → мс; мусор → nil.
+    static func sentMs(_ raw: Any?) -> Int64? {
+        let value: Int64?
+        switch raw {
+        case let n as NSNumber: value = n.int64Value
+        case let s as String: value = Int64(s)
+        default: value = nil
+        }
+        guard let v = value, v > 0 else { return nil }
+        return v
+    }
+
     @discardableResult
-    func append(_ stage: Stage, eventId: String? = nil, reason: Reason? = nil) -> Bool {
+    func append(_ stage: Stage, eventId: String? = nil, reason: Reason? = nil, value: Int? = nil,
+                sent: Int64? = nil) -> Bool {
         locked(fallback: false, reportLoss: true) {
             let eventHash = eventId.flatMap { $0.isEmpty ? nil : Self.hash($0) }
             let entry = Entry(id: UUID().uuidString, t: clock(), s: stage, reason: reason,
-                              event_hash: eventHash, hash_version: eventHash == nil ? nil : "sha256-128")
+                              event_hash: eventHash, hash_version: eventHash == nil ? nil : "sha256-128",
+                              value: value, sent: sent.flatMap { $0 > 0 ? $0 : nil })
             do {
                 let data = try encoder.encode(entry)
                 try data.write(to: directory.appendingPathComponent(entry.id + ".json"), options: .atomic)
@@ -175,7 +191,8 @@ final class NativePushJournal {
             let clean = Entry(id: entry.id, t: entry.t, s: entry.s, reason: entry.reason,
                               event_hash: entry.event_hash,
                               hash_version: entry.event_hash == nil ? nil : "sha256-128",
-                              value: entry.value.map { max(0, min(2147483647, $0)) })
+                              value: entry.value.map { max(0, min(2147483647, $0)) },
+                              sent: entry.sent.flatMap { $0 > 0 && $0 <= now + Self.ttlMs ? $0 : nil })
             entries.append((file, clean, size))
         }
         entries.sort { $0.1.t == $1.1.t ? $0.1.id < $1.1.id : $0.1.t < $1.1.t }
