@@ -28,7 +28,10 @@ bool _isApple(TargetPlatform p) =>
 /// Сетевой выключатель по платформам: Android — `blockNetworkLoads` +
 /// перехват, Windows (WebView2) — перехват всех загрузок
 /// (`AddWebResourceRequestedFilter("*")`), iOS/macOS — WKContentRuleList.
-InAppWebViewSettings tgWidgetWebViewSettings({TargetPlatform? platform}) {
+InAppWebViewSettings tgWidgetWebViewSettings({
+  TargetPlatform? platform,
+  bool scrollable = false,
+}) {
   final p = platform ?? defaultTargetPlatform;
   return InAppWebViewSettings(
     javaScriptEnabled: true,
@@ -59,7 +62,7 @@ InAppWebViewSettings tgWidgetWebViewSettings({TargetPlatform? platform}) {
     displayZoomControls: false,
     verticalScrollBarEnabled: false,
     horizontalScrollBarEnabled: false,
-    disableVerticalScroll: true,
+    disableVerticalScroll: !scrollable,
     disableHorizontalScroll: true,
     disableContextMenu: true,
     disableLongPressContextMenuOnLinks: true,
@@ -82,17 +85,25 @@ InAppWebViewSettings tgWidgetWebViewSettings({TargetPlatform? platform}) {
   );
 }
 
+/// Правила WKContentRuleList: блок всего, кроме `data:`/`blob:`/`about:` —
+/// по отдельному правилу-исключению на схему. Regex-движок WebKit в
+/// content-rule-list (Yarr) НЕ поддерживает дизъюнкцию: `^(data|blob|about):`
+/// даёт «Disjunctions are not supported yet», список не компилируется, и
+/// flutter_inappwebview (`makeInitialLoad`) на ошибке компиляции молча НЕ
+/// зовёт `load(...)` — документ не выполняется, сообщений шима нет, виджет
+/// умирает по сторожу. Поэтому схемы перечислены отдельными правилами.
 List<ContentBlocker> tgWidgetContentBlockers() => [
   ContentBlocker(
     trigger: ContentBlockerTrigger(urlFilter: '.*'),
     action: ContentBlockerAction(type: ContentBlockerActionType.BLOCK),
   ),
-  ContentBlocker(
-    trigger: ContentBlockerTrigger(urlFilter: '^(data|blob|about):'),
-    action: ContentBlockerAction(
-      type: ContentBlockerActionType.IGNORE_PREVIOUS_RULES,
+  for (final scheme in tgWidgetLocalSchemes)
+    ContentBlocker(
+      trigger: ContentBlockerTrigger(urlFilter: '^$scheme:'),
+      action: ContentBlockerAction(
+        type: ContentBlockerActionType.IGNORE_PREVIOUS_RULES,
+      ),
     ),
-  ),
 ];
 
 /// Чего не хватает настройкам до сетевого выключателя. Движок с непустым
@@ -158,9 +169,18 @@ class _NativeTgWidgetEngineState extends State<NativeTgWidgetEngine>
     implements TgWidgetEngineHandle {
   InAppWebViewController? _controller;
   int _loads = 0;
+  bool _firstMessage = false;
   late final InAppWebViewSettings _settings =
-      widget.debugSettings ?? tgWidgetWebViewSettings();
+      widget.debugSettings ??
+      tgWidgetWebViewSettings(scrollable: widget.config.scrollable);
   late final List<String> _violations = tgWidgetSettingsViolations(_settings);
+
+  /// Стадия наружу — только пока виджет жив: после dispose/смены документа
+  /// поздние колбэки плагина уже ничего не значат.
+  void _stage(String stage) {
+    if (!mounted) return;
+    widget.config.onStage(stage);
+  }
 
   @override
   void dispose() {
@@ -233,12 +253,17 @@ class _NativeTgWidgetEngineState extends State<NativeTgWidgetEngine>
               if (!mounted || _controller != controller || _loads > 1) {
                 return null;
               }
+              if (!_firstMessage) {
+                _firstMessage = true;
+                _stage(TgWidgetEngineStage.firstMessage);
+              }
               if (args.isNotEmpty && args.first is String) {
                 config.onMessage(args.first as String);
               }
               return null;
             },
           );
+          _stage(TgWidgetEngineStage.created);
           config.onCreated(this);
         },
         shouldOverrideUrlLoading: (controller, action) async =>
@@ -256,10 +281,31 @@ class _NativeTgWidgetEngineState extends State<NativeTgWidgetEngine>
                 reasonPhrase: 'Forbidden',
                 data: Uint8List(0),
               ),
+        // iOS для initialData эти колбэки не зовёт (проверено на симуляторе
+        // iOS 26.5: в логе created → firstMessage), поэтому «документ не
+        // выполнился» может прийти со стадией created — это и есть ответ.
+        onLoadStart: (controller, url) {
+          if (!mounted || _controller != controller) return;
+          _stage(TgWidgetEngineStage.loadStarted);
+        },
         onLoadStop: (controller, url) {
           if (!mounted || _controller != controller) return;
+          _stage(TgWidgetEngineStage.loadStopped);
           _loads++;
           if (_loads > 1) config.onUnexpectedNavigation();
+        },
+        // Ошибки только фиксируем: заблокированная картинка или отменённый
+        // запрос — не повод гасить виджет. Стадия нужна для разбора, почему
+        // документ не выполнился (например, content-rule-list не скомпилился).
+        onReceivedError: (controller, request, error) {
+          if (!mounted || _controller != controller) return;
+          _stage(TgWidgetEngineStage.failed(error.type));
+        },
+        onReceivedHttpError: (controller, request, errorResponse) {
+          if (!mounted || _controller != controller) return;
+          _stage(
+            TgWidgetEngineStage.failed(errorResponse.statusCode ?? 'http'),
+          );
         },
         onCreateWindow: (controller, action) async => false,
         onPermissionRequest: (controller, request) async => PermissionResponse(

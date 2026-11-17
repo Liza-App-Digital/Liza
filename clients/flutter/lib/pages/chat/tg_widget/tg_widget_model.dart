@@ -129,6 +129,9 @@ class TgWidgetBlock {
 
   String get htmlSha256 => sha256.convert(utf8.encode(html)).toString();
 
+  /// В HTML есть блок подробной версии (см. [tgWidgetHasDetails]).
+  bool get hasDetails => tgWidgetHasDetails(html);
+
   /// Подписанные байты D13: канонический JSON (ключи по алфавиту, без
   /// пробелов, не-ASCII как есть). `jsonEncode` Dart не экранирует не-ASCII и
   /// пишет целые без `.0` — совпадает с `json.dumps(ensure_ascii=False)`.
@@ -207,6 +210,26 @@ TgWidgetBlock? resolveTgWidgetState(Event original, Timeline? timeline) {
     );
   }
   return base;
+}
+
+/// Класс-маркер подробной версии в HTML виджета (Liza-расширение).
+const String tgWidgetDetailsClass = 'liza-more';
+
+final RegExp _tgWidgetClassAttr = RegExp(
+  r'''\bclass\s*=\s*(["'])(.*?)\1''',
+  caseSensitive: false,
+  dotAll: true,
+);
+
+/// Есть ли в подписанном HTML блок подробной версии (`class="… liza-more …"`,
+/// в том числе в списке классов). Проверяем строку, а не DOM: признак нужен
+/// до загрузки и когда виджет показан постером.
+bool tgWidgetHasDetails(String html) {
+  for (final match in _tgWidgetClassAttr.allMatches(html)) {
+    final classes = (match[2] ?? '').split(RegExp(r'\s+'));
+    if (classes.contains(tgWidgetDetailsClass)) return true;
+  }
+  return false;
 }
 
 /// Размеры пузыря профиля 1: ширина 200–600 (0 = по ширине пузыря), высота

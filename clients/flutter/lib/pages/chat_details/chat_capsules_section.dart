@@ -22,6 +22,11 @@ class ChatCapsule {
   final DateTime? startedAt;
   final int? durationSec;
 
+  /// Опубликована ли капсула хотя бы в одну папку — то есть видна ли она
+  /// участникам других чатов этой папки. Старый сервер поля не шлёт:
+  /// считаем капсулу неопубликованной.
+  final bool published;
+
   /// Действия, разрешённые сервером (`actions.<name> == true`). Старый сервер
   /// поля не шлёт — набор пуст, меню нет.
   final Set<ChatCapsuleAction> actions;
@@ -31,6 +36,7 @@ class ChatCapsule {
     required this.title,
     this.startedAt,
     this.durationSec,
+    this.published = false,
     this.actions = const {},
   });
 }
@@ -64,6 +70,7 @@ ChatCapsules? parseChatCapsules(Map<String, dynamic> data) {
         title: title is String && title.isNotEmpty ? title : id,
         startedAt: started is String ? DateTime.tryParse(started) : null,
         durationSec: duration is num ? duration.toInt() : null,
+        published: r['published'] == true,
         actions: {
           if (rawActions is Map)
             for (final a in ChatCapsuleAction.values)
@@ -274,7 +281,54 @@ class _ChatCapsulesSectionState extends State<ChatCapsulesSection> {
     }
   }
 
-  Widget? _actionsMenu(L10n l10n, ChatCapsule c) {
+  /// Цвет и иконка быстрого действия. «Опубликовать» — акцент, «Снять с
+  /// публикации» — цвет остановки и деструктивных действий, как в дизайн-системе.
+  /// Цвет дублирует слово, а не заменяет его.
+  ({Color? color, IconData? icon}) _actionStyle(
+    ThemeData theme,
+    ChatCapsuleAction a,
+  ) => switch (a) {
+    ChatCapsuleAction.publish => (
+      color: theme.colorScheme.primary,
+      icon: Icons.public_outlined,
+    ),
+    ChatCapsuleAction.unpublish => (
+      color: theme.colorScheme.error,
+      icon: Icons.visibility_off_outlined,
+    ),
+    ChatCapsuleAction.archive || ChatCapsuleAction.restore => (
+      color: null,
+      icon: null,
+    ),
+  };
+
+  PopupMenuItem<ChatCapsuleAction> _menuItem(
+    ThemeData theme,
+    L10n l10n,
+    ChatCapsuleAction a,
+  ) {
+    final (color: color, icon: icon) = _actionStyle(theme, a);
+    return PopupMenuItem(
+      value: a,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 20, color: color),
+            const SizedBox(width: 8),
+          ],
+          Flexible(
+            child: Text(
+              _actionLabel(l10n, a),
+              style: color == null ? null : TextStyle(color: color),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget? _actionsMenu(BuildContext context, L10n l10n, ChatCapsule c) {
     if (c.actions.isEmpty) return null;
     if (_busy.contains(c.id)) {
       return const SizedBox.square(
@@ -285,14 +339,14 @@ class _ChatCapsulesSectionState extends State<ChatCapsulesSection> {
         ),
       );
     }
+    final theme = Theme.of(context);
     return PopupMenuButton<ChatCapsuleAction>(
       icon: const Icon(Icons.more_horiz),
       tooltip: l10n.more,
       onSelected: (a) => _runAction(c, a),
       itemBuilder: (_) => [
         for (final a in ChatCapsuleAction.values)
-          if (c.actions.contains(a))
-            PopupMenuItem(value: a, child: Text(_actionLabel(l10n, a))),
+          if (c.actions.contains(a)) _menuItem(theme, l10n, a),
       ],
     );
   }
@@ -332,6 +386,47 @@ class _ChatCapsulesSectionState extends State<ChatCapsulesSection> {
         L10n.of(context).chatCapsuleMinutes((c.durationSec! / 60).ceil()),
     ];
     return parts.join(' · ');
+  }
+
+  /// Отметка публикации: слово есть в обоих состояниях, цвет только дублирует
+  /// его (правило дизайн-системы «статус всегда назван словом»).
+  Widget _statusChip(ThemeData theme, L10n l10n, ChatCapsule c) {
+    final published = c.published;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: published
+            ? theme.colorScheme.primaryContainer
+            : theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        published ? l10n.chatCapsulePublished : l10n.chatCapsuleUnpublished,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: published
+              ? theme.colorScheme.onPrimaryContainer
+              : theme.colorScheme.onSurfaceVariant,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    );
+  }
+
+  /// Строка под названием: время и длительность плюс отметка публикации.
+  /// `Wrap`, чтобы на узком экране отметка уходила на вторую строку, а не
+  /// обрезалась.
+  Widget _statusLine(BuildContext context, L10n l10n, ChatCapsule c) {
+    final theme = Theme.of(context);
+    final meta = _subtitle(context, c);
+    return Wrap(
+      spacing: 8,
+      runSpacing: 4,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        if (meta.isNotEmpty) Text(meta),
+        _statusChip(theme, l10n, c),
+      ],
+    );
   }
 
   @override
@@ -376,8 +471,8 @@ class _ChatCapsulesSectionState extends State<ChatCapsulesSection> {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
-                subtitle: Text(_subtitle(context, c)),
-                trailing: _actionsMenu(l10n, c),
+                subtitle: _statusLine(context, l10n, c),
+                trailing: _actionsMenu(context, l10n, c),
                 onTap: () =>
                     _open(data, '?capsule=${Uri.encodeQueryComponent(c.id)}'),
               ),

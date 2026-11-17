@@ -201,6 +201,14 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
   }
 
   func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+    let originalCompletion = completionHandler
+    let completionHandler: (UNNotificationPresentationOptions) -> Void = { options in
+      originalCompletion(options)
+      let outcome: NativePushJournal.Outcome = options.isEmpty ? .suppressed
+        : (options.contains(.banner) ? .bannerSoundList : .soundList)
+      MacApnsPushPlugin.observe(notification, stage: .presentation, outcome: outcome,
+                                presentationOptions: options.rawValue)
+    }
     if notification.request.trigger is UNPushNotificationTrigger {
       // For remote (APNs) push notifications: format the content natively
       // (like a mini-NSE) so the user sees proper text instead of raw loc-keys.
@@ -375,7 +383,12 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
           content: mutableContent,
           trigger: nil
         )
+        let diagnostic = NativePushJournal.context(userInfo, requestId: newRequest.identifier,
+                                                     source: .local, render: .nativeFormatted)
+        NativePushJournal.shared?.enqueue(.localSubmission, context: diagnostic)
         center.add(newRequest) { error in
+          NativePushJournal.shared?.enqueue(.localResult, context: diagnostic,
+                                          outcome: error == nil ? .accepted : .failed)
           if let error = error {
             NSLog(
               "[LizaPush] Failed to add formatted notification, showing original: %@",

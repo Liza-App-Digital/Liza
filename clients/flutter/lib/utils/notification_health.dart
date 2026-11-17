@@ -165,6 +165,32 @@ class NotificationHealth extends ChangeNotifier {
 /// Отдельный installation journal: чтение никогда не подтверждает доставку
 /// отчёта и не удаляет записи. Stable id позволяет дедуп при повторных отчётах.
 abstract final class NativePushDiagnostics {
+  static Future<void> recordLocal({
+    required String stage,
+    required String eventId,
+    required String clientName,
+    required String requestId,
+    required String media,
+    required bool voice,
+    String? outcome,
+  }) async {
+    try {
+      await NotificationHealth.appleChannel
+          .invokeMethod<void>('recordLocalDiagnostic', {
+            'stage': stage,
+            'eventId': eventId,
+            'clientName': clientName,
+            'requestId': requestId,
+            'media': media,
+            'voice': voice,
+            if (outcome != null) 'outcome': outcome,
+          })
+          .timeout(const Duration(seconds: 3));
+    } catch (_) {
+      // Диагностика никогда не меняет решение о показе.
+    }
+  }
+
   /// Успешное чтение пустого spool всё равно не доказывает получение пуша.
   static String lastReadStatus = 'unknown';
   static Future<List<Map<String, Object>>> readJournal() async {
@@ -228,6 +254,12 @@ abstract final class NativePushDiagnostics {
           t < minMs ||
           t > nowMs + 60000 ||
           !const {
+            'received',
+            'localSubmission',
+            'localResult',
+            'presentation',
+            'deliveredObserved',
+            'removalRequested',
             'nseReceived',
             'nseCompleted',
             'nseExpired',
@@ -257,6 +289,100 @@ abstract final class NativePushDiagnostics {
       if (hash is String && RegExp(r'^[a-f0-9]{32}$').hasMatch(hash)) {
         entry['event_hash'] = hash;
         entry['hash_version'] = 'sha256-128';
+      }
+      for (final key in ['account_hash', 'request_hash']) {
+        final value = item[key];
+        if (value is String && RegExp(r'^[a-f0-9]{32}$').hasMatch(value)) {
+          entry[key] = value;
+        }
+      }
+      for (final key in ['run_id', 'dispatch_id']) {
+        final value = item[key];
+        if (value is String &&
+            RegExp(
+              r'^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$',
+            ).hasMatch(value)) {
+          entry[key] = value;
+        }
+      }
+      const enums = <String, Set<String>>{
+        'process_role': {'runner', 'nse'},
+        'capture_policy': {'sync', 'async_best_effort'},
+        'media': {
+          'unknown',
+          'text',
+          'audio',
+          'voice',
+          'image',
+          'video',
+          'file',
+          'encrypted',
+          'other',
+        },
+        'content_shape': {'absent', 'object', 'json', 'invalid'},
+        'render_source': {
+          'apnsOriginal',
+          'nseFormatted',
+          'nativeFormatted',
+          'dartLocal',
+          'unknown',
+        },
+        'render_recipe': {
+          'unknown',
+          'body',
+          'mediaLabel',
+          'encryptedFallback',
+          'genericFallback',
+          'empty',
+        },
+        'source': {'remote', 'local', 'unknown'},
+        'outcome': {
+          'accepted',
+          'failed',
+          'skipped',
+          'suppressed',
+          'bannerSoundList',
+          'soundList',
+          'plugin',
+          'unknown',
+        },
+      };
+      for (final field in enums.entries) {
+        final value = item[field.key];
+        if (value is String && field.value.contains(value)) {
+          entry[field.key] = value;
+        }
+      }
+      final build = item['observed_build'];
+      if (build is String && RegExp(r'^[0-9.]{1,32}$').hasMatch(build)) {
+        entry['observed_build'] = build;
+      }
+      for (final key in ['voice', 'matches_truncated']) {
+        if (item[key] is bool) entry[key] = item[key] as bool;
+      }
+      for (final key in ['dispatch_attempt', 'matched_count']) {
+        final value = item[key];
+        if (value is int && value >= 0 && value <= 2147483647) {
+          entry[key] = value;
+        }
+      }
+      // Запрошенные options делегата не доказывают видимость/звук ОС.
+      final presentation = item['presentation_options'];
+      if (presentation is int && presentation >= 0 && presentation <= 65535) {
+        entry['presentation_options'] = presentation;
+      }
+      final date = item['observed_date'];
+      if (date is int && date > 0 && date <= nowMs + 60000) {
+        entry['observed_date'] = date;
+      }
+      final matches = item['matched_request_hashes'];
+      if (matches is List) {
+        entry['matched_request_hashes'] = List<String>.unmodifiable(
+          matches
+              .take(8)
+              .whereType<String>()
+              .where((value) => RegExp(r'^[a-f0-9]{32}$').hasMatch(value)),
+        );
       }
       final value = item['value'];
       if (value is int && value >= 0 && value <= 2147483647) {

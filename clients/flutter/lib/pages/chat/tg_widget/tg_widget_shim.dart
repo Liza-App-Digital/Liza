@@ -129,17 +129,50 @@ String tgWidgetScriptJson(Object? value) => jsonEncode(value)
     .replaceAll('\u2029', r'\u2029');
 
 /// Документ-обёртка: CSP → базовые стили → шим → HTML виджета.
+///
+/// [expanded] — развёрнутый хост: документ скроллится, блок `liza-more`
+/// виден. В пузыре те же правила прячут блок, а прокрутки нет (профиль 1).
 String buildTgWidgetDocument({
   required String widgetHtml,
   required Map<String, Object?> config,
   String colorScheme = 'light',
+  bool expanded = false,
 }) {
   final clean = sanitizeTgWidgetHtml(widgetHtml);
   final shim = tgWidgetShimSource.replaceFirst(
     '__TGW_CFG__',
     tgWidgetScriptJson(config),
   );
-  return '<!doctype html><html${_attrs(clean.htmlAttrs)}><head>'
+  final modeClass = expanded ? 'liza-expanded' : 'liza-compact';
+  final htmlAttrs = Map<String, String>.of(clean.htmlAttrs);
+  final existingClass = (htmlAttrs['class'] ?? '').trim();
+  htmlAttrs['class'] = existingClass.isEmpty
+      ? modeClass
+      : '$existingClass $modeClass';
+  final baseCss = expanded
+      ? 'html{height:100%;overflow:auto;background:transparent;'
+            '-webkit-text-size-adjust:100%;-webkit-touch-callout:none;'
+            '-webkit-user-select:none;user-select:none}'
+            'body{margin:0;display:flow-root;overflow:auto;min-height:100%;'
+            'background:transparent;color:var(--tg-theme-text-color);'
+            'font-family:-apple-system,system-ui,Roboto,"Segoe UI",sans-serif;'
+            'font-size:var(--tg-text-font-size);'
+            'line-height:var(--tg-text-line-height)}'
+      : 'html{height:auto;overflow:hidden;background:transparent;'
+            '-webkit-text-size-adjust:100%;-webkit-touch-callout:none;'
+            '-webkit-user-select:none;user-select:none}'
+            'body{margin:0;display:flow-root;overflow:hidden;'
+            'background:transparent;color:var(--tg-theme-text-color);'
+            'font-family:-apple-system,system-ui,Roboto,"Segoe UI",sans-serif;'
+            'font-size:var(--tg-text-font-size);'
+            'line-height:var(--tg-text-line-height)}';
+  // Правила режима — ПОСЛЕ CSS виджета: иначе его собственный
+  // `.liza-more{display:none}` выиграл бы у развёрнутого хоста.
+  final modeCss = expanded
+      ? 'html.liza-expanded .liza-more{display:block!important}'
+            'html.liza-expanded,html.liza-expanded body{overflow:auto!important}'
+      : 'html.liza-compact .liza-more{display:none!important}';
+  return '<!doctype html><html${_attrs(htmlAttrs)}><head>'
       '<meta http-equiv="Content-Security-Policy" content="$tgWidgetCsp">'
       '<meta charset="utf-8">'
       '<meta http-equiv="x-dns-prefetch-control" content="off">'
@@ -148,16 +181,10 @@ String buildTgWidgetDocument({
       '<meta name="color-scheme" content="${colorScheme == 'dark' ? 'dark' : 'light'}">'
       '<meta name="viewport" content="width=device-width,initial-scale=1,'
       'maximum-scale=1,user-scalable=no">'
-      '<style>html{height:auto;overflow:hidden;background:transparent;'
-      '-webkit-text-size-adjust:100%;-webkit-touch-callout:none;'
-      '-webkit-user-select:none;user-select:none}'
-      'body{margin:0;display:flow-root;overflow:hidden;'
-      'background:transparent;color:var(--tg-theme-text-color);'
-      'font-family:-apple-system,system-ui,Roboto,"Segoe UI",sans-serif;'
-      'font-size:var(--tg-text-font-size);'
-      'line-height:var(--tg-text-line-height)}</style>'
+      '<style>$baseCss</style>'
       '<script>$shim</script>'
       '${clean.head}'
+      '<style>$modeCss</style>'
       '</head><body${_attrs(clean.bodyAttrs)}>${clean.body}</body></html>';
 }
 
@@ -614,6 +641,17 @@ const String tgWidgetShimSource = r'''
   var LIZA = (CFG.liza || []).slice();
   var LW = {};
   lock(LW, 'has', function (feature) { return LIZA.indexOf(feature) >= 0; });
+  // Разворот подробной версии: только у проверенного бота с блоком
+  // `.liza-more` и только в пузыре (в развёрнутом хосте фичи нет).
+  lock(LW, 'expand', function () {
+    if (LIZA.indexOf('expand') < 0) throw new WidgetRequestError('NOT_ALLOWED');
+    post({ t: 'expand', tap: requireTap() });
+  });
+  // Виджет рисует свою кнопку разворота: клиентский уголок больше не нужен.
+  lock(LW, 'takeOverExpand', function () {
+    if (LIZA.indexOf('expand') < 0) throw new WidgetRequestError('NOT_ALLOWED');
+    post({ t: 'takeOverExpand' });
+  });
   Object.freeze(LW);
   dp(W, 'LizaWidget', { value: LW, writable: false, configurable: false, enumerable: true });
 

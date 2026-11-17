@@ -1,4 +1,5 @@
 // ledger:RL-telegram-widgets
+// ledger:RL-widget-apple-engine
 //
 // Хост-сторона моста TelegramWidget. Мост недоверенный: тап, квоту, запросы и
 // mxc проверяет хост. Движок — фейковый канал, логика — настоящая.
@@ -728,6 +729,74 @@ void main() {
       final s = make();
       s.onUnexpectedNavigation();
       expect(delegate.stops, [TgWidgetStopReason.navigation]);
+    });
+
+    // AC:RL-widget-apple-engine/2
+    test('документ так и не выполнился → loadFailed со стадией', () {
+      fakeAsync((async) {
+        final start = DateTime(2026, 11, 16);
+        clock = start;
+        final s = make();
+        // WebView создан, навигация началась — и дальше ни одного сообщения
+        // шима (так ведёт себя плагин, если content-rule-list не собрался).
+        s.onEngineStage(TgWidgetEngineStage.created);
+        s.onEngineStage(TgWidgetEngineStage.loadStarted);
+        for (var i = 0; i < 16; i++) {
+          async.elapse(const Duration(milliseconds: 250));
+          clock = start.add(async.elapsed);
+        }
+        expect(delegate.stops, [TgWidgetStopReason.loadFailed]);
+        expect(s.stopDetail, 'stage=loadStarted');
+        s.dispose();
+      });
+    });
+
+    // AC:RL-widget-apple-engine/2
+    test('стадий нет вовсе → прежний watchdog no-heartbeat-at-start', () {
+      fakeAsync((async) {
+        final start = DateTime(2026, 11, 16);
+        clock = start;
+        final s = make();
+        for (var i = 0; i < 16; i++) {
+          async.elapse(const Duration(milliseconds: 250));
+          clock = start.add(async.elapsed);
+        }
+        expect(delegate.stops, [TgWidgetStopReason.watchdog]);
+        expect(s.stopDetail, 'no-heartbeat-at-start');
+        s.dispose();
+      });
+    });
+
+    // AC:RL-widget-apple-engine/3
+    test(
+      'стадии движка доходят до сессии, первое сообщение — firstMessage',
+      () {
+        final s = make();
+        s.onEngineStage(TgWidgetEngineStage.created);
+        expect(s.engineStage, TgWidgetEngineStage.created);
+        s.onEngineStage(TgWidgetEngineStage.loadStarted);
+        expect(s.engineStage, TgWidgetEngineStage.loadStarted);
+        s.onEngineStage(TgWidgetEngineStage.loadStopped);
+        expect(s.engineStage, TgWidgetEngineStage.loadStopped);
+        // Первое сообщение шима движок отмечает сам, до передачи в хост.
+        s.onEngineStage(TgWidgetEngineStage.firstMessage);
+        emit(s, {'t': 'hb', 'n': 10, 'gap': 200});
+        expect(s.engineStage, TgWidgetEngineStage.firstMessage);
+        expect(delegate.stops, isEmpty);
+        expect(s.stopped, isFalse);
+        s.dispose();
+      },
+    );
+
+    // AC:RL-widget-apple-engine/2
+    test('ошибка загрузки не гасит живой виджет сразу', () {
+      final s = make();
+      s.onEngineStage(TgWidgetEngineStage.failed(403));
+      expect(s.engineStage, 'error:403');
+      expect(delegate.stops, isEmpty);
+      emit(s, {'t': 'hb', 'n': 10, 'gap': 200});
+      expect(delegate.stops, isEmpty);
+      s.dispose();
     });
   });
 

@@ -16,6 +16,8 @@ import 'package:liza/pages/chat/events/xl_buttons_content.dart';
 import 'package:liza/utils/adaptive_bottom_sheet.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/pages/chat/tg_widget/tg_widget_bubble.dart';
+import 'package:liza/pages/chat/tg_widget/tg_widget_expanded_opener.dart';
+import 'package:liza/pages/chat/tg_widget/tg_widget_model.dart';
 import 'package:liza/utils/copy_media_eligibility.dart';
 import 'package:liza/utils/file_description.dart';
 import 'package:liza/utils/fluid_page.dart';
@@ -236,6 +238,29 @@ class _MessageContextMenu extends StatelessWidget {
           onTap: () {
             close();
             controller.replyToEvent(event);
+          },
+        ),
+      );
+    }
+
+    // Виджет с блоком подробностей: развёрнутая версия доступна и из меню —
+    // независимо от угловой кнопки и от того, нарисовал ли виджет свою.
+    final widgetBlock = TgWidgetBlock.fromEvent(event);
+    if (!isBadEncrypted &&
+        !event.redacted &&
+        (widgetBlock?.hasDetails ?? false)) {
+      final caption = event.getDisplayEvent(timeline).body.trim();
+      actions.add(
+        _MenuAction(
+          icon: Icons.open_in_full_rounded,
+          label: l10n.widgetExpand,
+          onTap: () {
+            close();
+            openTgWidgetExpanded(
+              event,
+              timeline,
+              caption.isEmpty ? l10n.widgetExpandedTitle : caption,
+            );
           },
         ),
       );

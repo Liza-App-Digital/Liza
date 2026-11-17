@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'package:matrix/matrix.dart';
+
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/adaptive_bottom_sheet.dart';
 import 'package:liza/utils/date_time_extension.dart';
@@ -20,9 +22,84 @@ Future<void> showReadReceiptsSheet(
   );
 }
 
-class ReadReceiptsList extends StatelessWidget {
+class ReadReceiptsList extends StatefulWidget {
   final List<MessageReadReceipt> receipts;
   const ReadReceiptsList({required this.receipts, super.key});
+
+  @override
+  State<ReadReceiptsList> createState() => _ReadReceiptsListState();
+}
+
+class _ReadReceiptsListState extends State<ReadReceiptsList> {
+  // Room.== сравнивает только roomId, в том числе между разными аккаунтами.
+  final _users = Map<Room, Map<String, Future<User?>>>.identity();
+
+  Future<User?> _resolveUser(User fallback) {
+    final room = fallback.room;
+    return _users.putIfAbsent(room, () => {}).putIfAbsent(fallback.id, () {
+      if (!fallback.id.isValidMatrixId ||
+          fallback.id.sigil != '@' ||
+          fallback.id.localpart!.isEmpty) {
+        return Future.value();
+      }
+      var timedOut = false;
+
+      User? currentMember() =>
+          room.getState(EventTypes.RoomMember, fallback.id)?.asUser(room);
+
+      Future<User?> load() async {
+        final current = currentMember();
+        if (current != null) return current;
+        if (room.partial) {
+          final stored = await room.client.database.getUser(fallback.id, room);
+          if (timedOut) return null;
+          final current = currentMember();
+          if (current != null) return current;
+          if (stored != null) return stored;
+        }
+        try {
+          final content = await room.client.getRoomStateWithKey(
+            room.id,
+            EventTypes.RoomMember,
+            fallback.id,
+          );
+          if (timedOut) return null;
+          return currentMember() ??
+              User.fromState(
+                stateKey: fallback.id,
+                senderId: fallback.id,
+                typeKey: EventTypes.RoomMember,
+                content: content,
+                room: room,
+              );
+        } on MatrixException {
+          // Недоступный room member допускает запасной глобальный профиль.
+        }
+        if (timedOut) return null;
+        final currentAfterState = currentMember();
+        if (currentAfterState != null) return currentAfterState;
+        final profile = await room.client.getUserProfile(fallback.id);
+        if (timedOut) return null;
+        return currentMember() ??
+            User(
+              fallback.id,
+              room: room,
+              displayName: profile.displayname,
+              avatarUrl: profile.avatarUrl?.toString(),
+            );
+      }
+
+      // requestUser записывает ответ в room state и может затереть свежий
+      // /sync. Здесь нужны только данные строки, без изменения общего state.
+      return load().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          timedOut = true;
+          return null;
+        },
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -49,7 +126,7 @@ class ReadReceiptsList extends StatelessWidget {
                 ),
                 const Spacer(),
                 Text(
-                  '${receipts.length}',
+                  '${widget.receipts.length}',
                   style: theme.textTheme.titleMedium?.copyWith(
                     color: theme.colorScheme.outline,
                   ),
@@ -62,37 +139,82 @@ class ReadReceiptsList extends StatelessWidget {
             child: ListView.builder(
               shrinkWrap: true,
               padding: const EdgeInsets.symmetric(vertical: 8),
-              itemCount: receipts.length,
+              itemCount: widget.receipts.length,
               itemBuilder: (context, i) {
-                final receipt = receipts[i];
+                final receipt = widget.receipts[i];
                 final user = receipt.user;
-                return ListTile(
-                  leading: Avatar(
-                    mxContent: user.avatarUrl,
-                    name: user.calcDisplayname(),
-                    isHexagonal: Matrix.of(context).isAiUser(user.id),
-                  ),
-                  title: Text(
-                    user.calcDisplayname(),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: receipt.ts > 0
-                      ? Text(
-                          DateTime.fromMillisecondsSinceEpoch(
-                            receipt.ts,
-                          ).localizedTime(context),
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.outline,
-                          ),
-                        )
-                      : null,
+                return _ReadReceiptTile(
+                  key: ValueKey((ObjectKey(user.room), user.id)),
+                  receipt: receipt,
+                  resolveUser: _resolveUser,
                 );
               },
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ReadReceiptTile extends StatefulWidget {
+  const _ReadReceiptTile({
+    required this.receipt,
+    required this.resolveUser,
+    super.key,
+  });
+
+  final MessageReadReceipt receipt;
+  final Future<User?> Function(User) resolveUser;
+
+  @override
+  State<_ReadReceiptTile> createState() => _ReadReceiptTileState();
+}
+
+class _ReadReceiptTileState extends State<_ReadReceiptTile> {
+  late final Future<User?> _user;
+
+  @override
+  void initState() {
+    super.initState();
+    _user = widget.resolveUser(widget.receipt.user);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final receipt = widget.receipt;
+    final fallback = receipt.user;
+    final theme = Theme.of(context);
+    return FutureBuilder<User?>(
+      future: _user,
+      initialData: fallback,
+      builder: (context, snapshot) {
+        final user =
+            fallback.room
+                .getState(EventTypes.RoomMember, fallback.id)
+                ?.asUser(fallback.room) ??
+            snapshot.data ??
+            fallback;
+        final name = user.calcDisplayname();
+        return ListTile(
+          leading: Avatar(
+            mxContent: user.avatarUrl,
+            name: name,
+            isHexagonal: Matrix.of(context).isAiUser(user.id),
+          ),
+          title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          trailing: receipt.ts > 0
+              ? Text(
+                  DateTime.fromMillisecondsSinceEpoch(
+                    receipt.ts,
+                  ).localizedTime(context),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.outline,
+                  ),
+                )
+              : null,
+        );
+      },
     );
   }
 }

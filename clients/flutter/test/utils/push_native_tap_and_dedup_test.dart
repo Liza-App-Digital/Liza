@@ -235,8 +235,11 @@ void main() {
         '${Directory.current.path}/lib/widgets/local_notifications_extension.dart',
       ).readAsStringSync();
       final check = ext.indexOf('isNativelyReceived(event.eventId)');
-      final mark = ext.indexOf('markLocallyShown(event.eventId)');
+      final mark = RegExp(r'markLocallyShown\(\s*event\.eventId[,)]')
+          .firstMatch(ext)
+          ?.start ?? -1;
       expect(check, greaterThan(0));
+      expect(mark, greaterThan(0));
       expect(check, lessThan(mark));
     });
 

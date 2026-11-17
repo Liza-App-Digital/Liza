@@ -14,6 +14,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/utils/push_report_outbox.dart';
+import 'package:liza/utils/push_journal.dart';
+import 'package:liza/utils/push_incident_exporter.dart';
+import 'package:liza/utils/notification_health.dart';
 
 /// Мониторинг ошибок клиента Liza поверх Sentry-совместимого бэкенда (GlitchTip).
 ///
@@ -106,6 +109,14 @@ abstract final class Monitoring {
       options.beforeBreadcrumb = filterBreadcrumb;
     });
     _active = true;
+    try {
+      _pushProducerInfo = await PackageInfo.fromPlatform();
+      PushJournal.instance.configureObservedBuild(
+        _pushProducerInfo!.buildNumber,
+      );
+    } catch (_) {
+      // Отсутствие сведений о сборке остаётся unknown у записи.
+    }
   }
 
   /// Отправить пойманное исключение. No-op, если мониторинг выключен.
@@ -658,6 +669,53 @@ abstract final class Monitoring {
     PushReportStatus.idle,
   );
   static PushReportOutbox? _pushOutbox;
+  static PackageInfo? _pushProducerInfo;
+
+  /// Независимый от daily/manual gate сборщик на том же outbox/transport.
+  static PushIncidentExporter? createPushIncidentExporter({
+    required List<Map<String, Object?>> Function() accounts,
+    required String platform,
+    bool Function()? canSend,
+  }) {
+    if (!_active && _pushOutbox == null) return null;
+    return PushIncidentExporter(
+      journal: PushJournal.instance,
+      outbox: _outbox,
+      canSend: () => _pushNetworkAllowed() && (canSend?.call() ?? true),
+      readNative: NativePushDiagnostics.readJournal,
+      nativeStatus: () => NativePushDiagnostics.lastReadStatus,
+      payload: () {
+        final snapshot = accounts();
+        final info = _pushProducerInfo;
+        final tags = <String, String>{
+          'liza.category': 'push-report',
+          'liza.env': AppConfig.monitoringEnv,
+          'liza.accounts': '${snapshot.length}',
+          if (info != null) 'liza.build': info.buildNumber,
+          if (info != null) 'liza.bundle': info.packageName,
+          if (snapshot.firstOrNull?['device_id'] case final String device)
+            'liza.device_id': device,
+          'liza.lifecycle':
+              WidgetsBinding.instance.lifecycleState?.name ?? 'unknown',
+        };
+        return {
+          'title': pushReportTitle(platform),
+          'tags': tags,
+          if (info != null)
+            'release':
+                '${info.packageName}@${info.version}+${info.buildNumber}',
+          'context': pushReportContext(
+            counters: const {},
+            journalTail: '',
+            settings: const {},
+            accounts: snapshot,
+            nativeJournal: const [],
+            platform: platform,
+          ),
+        };
+      },
+    );
+  }
 
   @visibleForTesting
   static void setPushReportOutboxForTest(PushReportOutbox? outbox) {
@@ -799,6 +857,8 @@ abstract final class Monitoring {
           'user_id': c.userID,
           'device_id': c.deviceID,
           'homeserver': c.homeserver?.toString(),
+          if (c.clientName.isNotEmpty)
+            'account_hash128': PushJournal.hash128(c.clientName),
           'registration': registrations[c.clientName] == true
               ? 'client_registered'
               : 'unknown',
@@ -831,6 +891,7 @@ abstract final class Monitoring {
     DateTime? settingsObservedAt,
     String nativeJournalStatus = 'unknown',
     Map<String, Object>? acks,
+    Map<String, Object> journalCoverage = const {},
   }) {
     final bounded = <Map<String, Object?>>[];
     var bytes = 0;
@@ -844,6 +905,9 @@ abstract final class Monitoring {
           'registration',
         ])
           if (account.containsKey(key)) key: account[key],
+        if (account['account_hash128'] case final String hash
+            when RegExp(r'^[0-9a-f]{32}$').hasMatch(hash))
+          'account_hash128': hash,
       };
       final size = utf8.encode(jsonEncode(clean)).length;
       if (bounded.length >= 16 || bytes + size > 32 * 1024) break;
@@ -885,14 +949,40 @@ abstract final class Monitoring {
         'accounts_total': accounts.length,
         'accounts_included': bounded.length,
         'truncated': bounded.length != accounts.length,
+        'any_source_truncated': bounded.length != accounts.length ||
+            nativeTruncated || journalCoverage['tail_truncated'] == true,
         'counter_scope': 'installation',
-        'journal_account_binding': 'unknown',
+        'journal_account_binding': 'per_record_when_present',
+        'account_mapping_scope': 'report_snapshot_only',
+        'record_event_hash': 'sha256-128_when_present',
+        'dart_journal': {
+          'status': journalCoverage.isEmpty ? 'unknown' : 'bounded_observations',
+          for (final key in const [
+            'retained_entries',
+            'exported_entries',
+            'first_exported_ms',
+            'last_exported_ms',
+            'ring_evictions_since_start',
+            'pending_evictions_since_start',
+            'disk_evictions_since_start',
+            'persistence_failures_since_start',
+          ])
+            if (journalCoverage[key] case final int value when value >= 0)
+              key: value,
+          if (journalCoverage['tail_truncated'] case final bool truncated)
+            'tail_truncated': truncated,
+          'counter_scope': 'process_lifetime',
+          'prior_process_losses': 'unknown',
+          'crash_tail': 'best_effort_5s',
+        },
         'legacy_event_hash': 'sha256-32',
         'legacy_hash_correlation': 'approximate',
         'local_shown_semantics': 'submitted_to_os',
         'native_journal': nativePartial ? 'partial' : nativeJournalStatus,
         'native_truncated': nativeTruncated,
         'native_loss_semantics': 'cumulative_unknown_window',
+        'native_persistence': 'best_effort',
+        'native_crash_tail': 'async_pending_unknown_after_process_exit',
         'native_window': nativePartial ? 'unknown' : 'bounded_observations',
         'native_received':
             boundedNative.any(
@@ -924,6 +1014,7 @@ abstract final class Monitoring {
     bool force = false,
     bool Function()? canSend,
     Map<String, Object>? acks,
+    Map<String, Object> journalCoverage = const {},
   }) async {
     if (!_active && _pushOutbox == null) {
       pushReportStatus.value = PushReportStatus.disabled;
@@ -947,6 +1038,7 @@ abstract final class Monitoring {
             settingsObservedAt: settingsObservedAt,
             platform: platform,
             acks: acks,
+            journalCoverage: journalCoverage,
           ),
         },
         at,

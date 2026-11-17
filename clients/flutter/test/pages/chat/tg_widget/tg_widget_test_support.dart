@@ -256,6 +256,10 @@ class _FakeEngineState extends State<_FakeEngine> {
     super.initState();
     FakeEngines.live.add(handle);
     FakeEngines.created.add(handle);
+    // Как настоящий движок: стадии до создания документа и после загрузки.
+    widget.config.onStage(TgWidgetEngineStage.created);
+    widget.config.onStage(TgWidgetEngineStage.loadStarted);
+    widget.config.onStage(TgWidgetEngineStage.loadStopped);
     widget.config.onCreated(handle);
   }
 

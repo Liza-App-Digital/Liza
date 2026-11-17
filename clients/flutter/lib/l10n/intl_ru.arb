@@ -5530,6 +5530,8 @@
   "botJoinRequestDeclined": "Заявка на вступление отклонена.",
   "botRequestsPermissions": "Бот запрашивает права управления чатом.",
   "chatCapsuleUnpublish": "Снять с публикации",
+  "chatCapsulePublished": "Опубликовано",
+  "chatCapsuleUnpublished": "Не опубликовано",
   "@chatCapsuleUnpublish": {},
   "chatCapsuleArchive": "В архив",
   "@chatCapsuleArchive": {},
@@ -5575,5 +5577,37 @@
         "type": "String"
       }
     }
+  },
+  "widgetExpand": "Развернуть",
+  "@widgetExpand": {
+    "description": "Кнопка разворота подробной версии виджета (уголок и пункт меню)"
+  },
+  "widgetExpandedTitle": "Виджет",
+  "@widgetExpandedTitle": {
+    "description": "Заголовок панели развёрнутого виджета без подписи"
+  },
+  "widgetGeneratingWriting": "Собираю карточку",
+  "@widgetGeneratingWriting": {
+    "description": "Этап загрузки: модель пишет виджет"
+  },
+  "widgetGeneratingSending": "Показываю карточку",
+  "@widgetGeneratingSending": {
+    "description": "Этап загрузки: виджет отправляется в чат"
+  },
+  "widgetGeneratingHint1": "Выравниваю уголки…",
+  "@widgetGeneratingHint1": {
+    "description": "Вращающаяся шутливая строка на карточке-загрузке виджета"
+  },
+  "widgetGeneratingHint2": "Считаю на пальцах…",
+  "@widgetGeneratingHint2": {
+    "description": "Вращающаяся шутливая строка на карточке-загрузке виджета"
+  },
+  "widgetGeneratingHint3": "Подбираю цвета…",
+  "@widgetGeneratingHint3": {
+    "description": "Вращающаяся шутливая строка на карточке-загрузке виджета"
+  },
+  "widgetGeneratingHint4": "Почти готово…",
+  "@widgetGeneratingHint4": {
+    "description": "Вращающаяся шутливая строка на карточке-загрузке виджета"
   }
 }

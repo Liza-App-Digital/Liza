@@ -39,9 +39,14 @@ void main() {
     ),
   );
 
-  Map<String, dynamic> row(String id, [Map<String, bool>? actions]) => {
+  Map<String, dynamic> row(
+    String id, [
+    Map<String, bool>? actions,
+    bool published = false,
+  ]) => {
     'id': id,
     'title': 'Капсула $id',
+    'published': published,
     'actions': ?actions,
   };
 
@@ -262,6 +267,52 @@ void main() {
         expect(find.byType(SnackBar), findsNothing);
         await tester.pumpWidget(const SizedBox());
       }
+    },
+  );
+
+  test(
+    'разбор published: отметка только при настоящем true [AC:RL-chat-details-capsules/12]',
+    () {
+      final data = capsules([
+        {'id': 'a', 'title': 'A', 'published': true},
+        {'id': 'b', 'title': 'B', 'published': false},
+        {'id': 'c', 'title': 'C'},
+        {'id': 'd', 'title': 'D', 'published': 'true'},
+      ]);
+      expect(data.items.map((c) => c.published), [true, false, false, false]);
+    },
+  );
+
+  testWidgets(
+    'отметка публикации есть у каждой капсулы [AC:RL-chat-details-capsules/12]',
+    (tester) async {
+      await tester.pumpWidget(
+        wrap((_) async => capsules([row('a', null, true), row('b')])),
+      );
+      await tester.pumpAndSettle();
+      // Слово в обоих состояниях: цвет только дублирует его.
+      expect(find.text('Опубликовано'), findsOneWidget);
+      expect(find.text('Не опубликовано'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'публикация и снятие с публикации различаются цветом [AC:RL-chat-details-capsules/13]',
+    (tester) async {
+      final data = capsules([
+        row('a', {'publish': true, 'unpublish': true}),
+      ]);
+      await tester.pumpWidget(wrap((_) async => data));
+      await tester.pumpAndSettle();
+      await openMenu(tester, 'Капсула a');
+      final scheme = Theme.of(
+        tester.element(find.text('Опубликовать')),
+      ).colorScheme;
+      Color? colorOf(String label) =>
+          tester.widget<Text>(find.text(label)).style?.color;
+      expect(colorOf('Опубликовать'), scheme.primary);
+      expect(colorOf('Снять с публикации'), scheme.error);
+      expect(colorOf('Опубликовать'), isNot(colorOf('Снять с публикации')));
     },
   );
 

@@ -19,13 +19,18 @@ const double kMiniAppDefaultPanelWidth = 440;
 const double kMiniAppDockedByDefaultMinWidth =
     kMiniAppMinChildWidth + kMiniAppDefaultPanelWidth;
 
-/// Что показывает панель: mini App (WebView по URL) либо «жидкая» HTML-страница
-/// из события чата (ответ ИИ-бота, см. FluidPageView).
-enum MiniAppKind { miniApp, html }
+/// Что показывает панель: mini App (WebView по URL), «жидкая» HTML-страница
+/// из события чата (ответ ИИ-бота, см. FluidPageView) либо развёрнутый
+/// виджет (живой виджет из сообщения во весь экран панели).
+enum MiniAppKind { miniApp, html, widget }
 
 /// Идентификатор панели с HTML-страницей: одна на окно, новая страница
 /// заменяет прежнюю.
 const String kFluidPageAppId = 'liza-page';
+
+/// Идентификатор панели с развёрнутым виджетом: один на окно, новый виджет
+/// заменяет прежний (как страница).
+const String kWidgetExpandedAppId = 'widget-expanded';
 
 /// Описание одного открытого MiniApp-инстанса.
 class MiniAppInstance {
@@ -61,6 +66,11 @@ class MiniAppInstance {
   final MiniAppKind kind;
   final Event? pageEvent;
 
+  /// Для [MiniAppKind.widget] — исходное событие виджета и таймлайн (из него
+  /// берутся правки `chat_data`/`public_data`).
+  final Event? widgetEvent;
+  final Timeline? widgetTimeline;
+
   MiniAppInstance({
     required this.appUrl,
     required this.appId,
@@ -76,12 +86,18 @@ class MiniAppInstance {
     this.detached = false,
     this.kind = MiniAppKind.miniApp,
     this.pageEvent,
+    this.widgetEvent,
+    this.widgetTimeline,
   }) : interactiveSessionId = interactiveSessionId ?? miniAppCapability(),
        interactiveState = MiniAppInteractiveState()..setVisible(!detached),
        accountUserId = room.client.userID,
        accountToken = room.client.accessToken;
 
   String get contentKey => '$appId#$generation';
+
+  /// Панель живёт как страница: занимает панель целиком, сворачивает список
+  /// чатов и не открепляется в окно ОС.
+  bool get isPageLike => kind != MiniAppKind.miniApp;
 
   bool get sessionCurrent =>
       interactiveState.active &&
@@ -106,6 +122,8 @@ class MiniAppInstance {
       detached: detached ?? this.detached,
       kind: kind,
       pageEvent: pageEvent,
+      widgetEvent: widgetEvent,
+      widgetTimeline: widgetTimeline,
     );
   }
 }
@@ -135,7 +153,7 @@ class MiniAppManager extends ChangeNotifier {
       app.interactiveState.setVisible(_activeAppId == app.appId);
     }
     if (!hasApps) panelFilled.value = false;
-    if (activeApp?.kind != MiniAppKind.html) chatListExpanded.value = false;
+    if (!(activeApp?.isPageLike ?? false)) chatListExpanded.value = false;
     super.notifyListeners();
   }
 
@@ -240,6 +258,8 @@ class MiniAppManager extends ChangeNotifier {
     bool allowDetach = true,
     MiniAppKind kind = MiniAppKind.miniApp,
     Event? pageEvent,
+    Event? widgetEvent,
+    Timeline? widgetTimeline,
   }) {
     final index = _apps.indexWhere((a) => a.appId == appId);
     if (index >= 0) {
@@ -249,6 +269,8 @@ class MiniAppManager extends ChangeNotifier {
       // где его оставили (открепил/прикрепил руками).
       final detached = kind == MiniAppKind.html
           ? windowsSupported && allowDetach
+          : kind == MiniAppKind.widget
+          ? false
           : existing.detached;
       if ((appStartPath.isNotEmpty && appStartPath != existing.appStartPath) ||
           startParam != existing.startParam ||
@@ -260,6 +282,7 @@ class MiniAppManager extends ChangeNotifier {
           room.id != existing.room.id ||
           appUrl != existing.appUrl ||
           kind != existing.kind ||
+          widgetEvent?.eventId != existing.widgetEvent?.eventId ||
           detached != existing.detached) {
         existing.interactiveState.invalidate();
         _apps[index] = MiniAppInstance(
@@ -278,6 +301,8 @@ class MiniAppManager extends ChangeNotifier {
           detached: detached,
           kind: kind,
           pageEvent: pageEvent,
+          widgetEvent: widgetEvent,
+          widgetTimeline: widgetTimeline,
         );
       }
       if (detached) {
@@ -305,11 +330,28 @@ class MiniAppManager extends ChangeNotifier {
         detached: detached,
         kind: kind,
         pageEvent: pageEvent,
+        widgetEvent: widgetEvent,
+        widgetTimeline: widgetTimeline,
       ),
     );
     if (!detached) _activeAppId = appId;
     notifyListeners();
   }
+
+  /// Открыть развёрнутый виджет из сообщения [event]. Развёрнутый виджет —
+  /// живой виджет в панели мини-аппа; в v1 он не открепляется в окно ОС
+  /// (окно без Matrix-клиента не может вести сессию виджета).
+  void openWidget(Event event, {Timeline? timeline, required String title}) =>
+      open(
+        appUrl: event.eventId,
+        appId: kWidgetExpandedAppId,
+        appName: title,
+        room: event.room,
+        allowDetach: false,
+        kind: MiniAppKind.widget,
+        widgetEvent: event,
+        widgetTimeline: timeline,
+      );
 
   /// Открепить app из панели в отдельное окно ОС. [startPath] — страница, на
   /// которой он сейчас (окно откроется на ней же).

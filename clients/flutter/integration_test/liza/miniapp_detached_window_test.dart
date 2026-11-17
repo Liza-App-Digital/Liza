@@ -194,8 +194,8 @@ void main([List<String> args = const []]) {
       return value;
     }
 
-    // AC:RL-miniapp-detached-window/26 — «должен открываться большим»:
-    // контент 1100×820 (не больше 90% экрана);
+    // AC:RL-miniapp-detached-window/26, AC:RL-miniapp-detached-window/51 —
+    // внешняя рамка ровно 90% рабочей области, независимо от DPI и client inset.
     // AC:RL-miniapp-detached-window/27 (Windows), AC:RL-miniapp-detached-window/24
     // (macOS) — минимум окна 800×600 (так же).
     Future<void> expectOpenedLarge(String what) async {
@@ -206,14 +206,14 @@ void main([List<String> args = const []]) {
       _step('detached-window: $what — геометрия $g');
       expect(g['maximized'], isFalse, reason: what);
       expect(
-        (g['width'] as num).toDouble(),
-        greaterThanOrEqualTo(fit(1100, areaW) - 20),
-        reason: '$what: ширина по умолчанию',
+        (g['frameWidth'] as num).toDouble(),
+        closeTo(areaW * 0.9, 1),
+        reason: '$what: внешняя ширина по умолчанию',
       );
       expect(
-        (g['height'] as num).toDouble(),
-        greaterThanOrEqualTo(fit(820, areaH) - 20),
-        reason: '$what: высота по умолчанию',
+        (g['frameHeight'] as num).toDouble(),
+        closeTo(areaH * 0.9, 1),
+        reason: '$what: внешняя высота по умолчанию',
       );
       expect(
         (g['minWidth'] as num).toDouble(),

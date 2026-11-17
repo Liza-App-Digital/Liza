@@ -54,7 +54,7 @@ extension ClientDownloadContentExtension on Client {
     bool rounded = false,
   }) async {
     // To stay compatible with previous storeKeys:
-    final cacheKey = isThumbnail
+    final legacyCacheKey = isThumbnail
         // ignore: deprecated_member_use
         ? mxc.getThumbnail(
             this,
@@ -65,13 +65,30 @@ extension ClientDownloadContentExtension on Client {
           )
         : mxc;
 
+    // Старые crop-записи могли содержать уменьшенный круг для уведомления.
+    // Новый ЛОКАЛЬНЫЙ ключ хранит только серверные байты. HTTP URI не меняем;
+    // fragment здесь не подходит — файловый кэш SDK его игнорирует.
+    final cacheKey = isThumbnail && thumbnailMethod == ThumbnailMethod.crop
+        ? legacyCacheKey.replace(
+            queryParameters: {
+              ...legacyCacheKey.queryParameters,
+              'liza_raw': '2',
+            },
+          )
+        : legacyCacheKey;
+
     final cachedData = await database.getFile(cacheKey);
     // Отдаём из кэша ТОЛЬКО если там настоящая картинка. Если в кэше осел
     // не-картинка (тело-ошибка, закэшенное как 200 во время переезда медиа) —
     // игнорируем кэш и перекачиваем свежим запросом (self-heal: битые «ранее
     // загруженные» превью сами чинятся при следующем показе).
     if (cachedData != null && looksLikeCacheableImage(cachedData)) {
-      return cachedData;
+      return rounded
+          ? _convertToCircularImage(
+              cachedData,
+              min(width ?? 64, height ?? 64).round(),
+            )
+          : cachedData;
     }
 
     final httpUri = isThumbnail
@@ -101,7 +118,7 @@ extension ClientDownloadContentExtension on Client {
     if (response.statusCode != 200) {
       throw Exception('Failed to download $requestUri: ${response.statusCode}');
     }
-    var imageData = response.bodyBytes;
+    final imageData = response.bodyBytes;
 
     // 200, но тело — не картинка (ошибка/HTML/обрезок). НЕ кэшируем мусор
     // (иначе «Invalid image data» залипнет в кэше), отдаём как есть — виджет
@@ -111,16 +128,17 @@ extension ClientDownloadContentExtension on Client {
       return imageData;
     }
 
-    if (rounded) {
-      imageData = await _convertToCircularImage(
-        imageData,
-        min(width ?? 64, height ?? 64).round(),
-      );
-    }
-
+    // Декодирование для уведомления может отклонить усечённую картинку с
+    // валидным magic. Сначала убеждаемся, что результат получен, иначе такой
+    // ответ закрепился бы на диске и все следующие попытки обходили бы сеть.
+    final result = rounded
+        ? await _convertToCircularImage(
+            imageData,
+            min(width ?? 64, height ?? 64).round(),
+          )
+        : imageData;
     await database.storeFile(cacheKey, imageData, 0);
-
-    return imageData;
+    return result;
   }
 }
 
@@ -129,37 +147,53 @@ Future<Uint8List> _convertToCircularImage(
   int size,
 ) async {
   final codec = await instantiateImageCodec(imageBytes);
-  final frame = await codec.getNextFrame();
-  final originalImage = frame.image;
+  try {
+    final frame = await codec.getNextFrame();
+    final originalImage = frame.image;
+    try {
+      final recorder = PictureRecorder();
+      final canvas = Canvas(recorder);
 
-  final recorder = PictureRecorder();
-  final canvas = Canvas(recorder);
+      final paint = Paint();
+      final rect = Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble());
 
-  final paint = Paint();
-  final rect = Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble());
+      final clipPath = Path()
+        ..addOval(
+          Rect.fromCircle(center: Offset(size / 2, size / 2), radius: size / 2),
+        );
 
-  final clipPath = Path()
-    ..addOval(
-      Rect.fromCircle(center: Offset(size / 2, size / 2), radius: size / 2),
-    );
+      canvas.clipPath(clipPath);
 
-  canvas.clipPath(clipPath);
+      canvas.drawImageRect(
+        originalImage,
+        Rect.fromLTWH(
+          0,
+          0,
+          originalImage.width.toDouble(),
+          originalImage.height.toDouble(),
+        ),
+        rect,
+        paint,
+      );
 
-  canvas.drawImageRect(
-    originalImage,
-    Rect.fromLTWH(
-      0,
-      0,
-      originalImage.width.toDouble(),
-      originalImage.height.toDouble(),
-    ),
-    rect,
-    paint,
-  );
-
-  final picture = recorder.endRecording();
-  final circularImage = await picture.toImage(size, size);
-
-  final byteData = await circularImage.toByteData(format: ImageByteFormat.png);
-  return byteData!.buffer.asUint8List();
+      final picture = recorder.endRecording();
+      try {
+        final circularImage = await picture.toImage(size, size);
+        try {
+          final byteData = await circularImage.toByteData(
+            format: ImageByteFormat.png,
+          );
+          return byteData!.buffer.asUint8List();
+        } finally {
+          circularImage.dispose();
+        }
+      } finally {
+        picture.dispose();
+      }
+    } finally {
+      originalImage.dispose();
+    }
+  } finally {
+    codec.dispose();
+  }
 }

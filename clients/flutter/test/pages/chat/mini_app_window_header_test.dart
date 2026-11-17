@@ -123,11 +123,13 @@ void main() {
               closeTooltip: 'Закрыть',
               onClose: () => closed++,
               onDragStart: () {},
+              onToggleMaximize: () {},
             ),
           ),
         ),
       );
       expect(find.byKey(const ValueKey('miniapp-window-attach')), findsNothing);
+      expect(find.byKey(const ValueKey('miniapp-window-maximize')), findsNothing);
       expect(find.byType(IconButton), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('miniapp-window-close')));
       expect(closed, 1);
@@ -168,12 +170,11 @@ void main() {
     );
   }
 
-  // AC:RL-miniapp-detached-window/29 — «увеличить можно весь экран»: ∀ {360,
-  // 1100} × {обычное, развёрнутое} кнопка «Развернуть/Восстановить» стоит между
-  // «Прикрепить» и крестиком, значок и подсказка по состоянию, переполнения нет.
+  // AC:RL-miniapp-detached-window/52 — 16.11 кнопка намеренно убрана;
+  // callback остаётся ненулевым: двойной клик и native resize работают.
   for (final width in [360.0, 1100.0]) {
     for (final maximized in [false, true]) {
-      testWidgets('AC-29 кнопка развернуть ($width, maximized=$maximized)', (
+      testWidgets('AC-52 без кнопки maximize ($width, maximized=$maximized)', (
         tester,
       ) async {
         var toggles = 0;
@@ -183,29 +184,23 @@ void main() {
           maximized: maximized,
           onToggle: () => toggles++,
         );
-        expect(find.byType(IconButton), findsNWidgets(3));
+        expect(find.byType(IconButton), findsNWidgets(2));
+        expect(
+          find.byKey(const ValueKey('miniapp-window-maximize')),
+          findsNothing,
+        );
+        expect(find.byIcon(Icons.crop_square), findsNothing);
+        expect(find.byIcon(Icons.filter_none), findsNothing);
+        expect(find.byTooltip('Развернуть на весь экран'), findsNothing);
+        expect(find.byTooltip('Восстановить размер'), findsNothing);
         final attachX = tester
             .getCenter(find.byKey(const ValueKey('miniapp-window-attach')))
-            .dx;
-        final maxX = tester
-            .getCenter(find.byKey(const ValueKey('miniapp-window-maximize')))
             .dx;
         final closeX = tester
             .getCenter(find.byKey(const ValueKey('miniapp-window-close')))
             .dx;
-        expect(attachX < maxX && maxX < closeX, isTrue);
-        expect(
-          find.byIcon(maximized ? Icons.filter_none : Icons.crop_square),
-          findsOneWidget,
-        );
-        expect(
-          find.byTooltip(
-            maximized ? 'Восстановить размер' : 'Развернуть на весь экран',
-          ),
-          findsOneWidget,
-        );
-        await tester.tap(find.byKey(const ValueKey('miniapp-window-maximize')));
-        expect(toggles, 1);
+        expect(attachX, lessThan(closeX));
+        expect(toggles, 0);
         expect(tester.takeException(), isNull);
       });
     }

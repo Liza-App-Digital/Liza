@@ -80,17 +80,25 @@ class TgWidgetTheme {
       themeParams.entries.every((e) => other.themeParams[e.key] == e.value);
 }
 
-/// Зона под временем сообщения (`contentSafeAreaInset`). Время накрывает низ
-/// виджета только когда подписи нет — иначе оно стоит под подписью.
+/// Зона, которую хост виджета закрывает своим хромом
+/// (`contentSafeAreaInset`). Низ и правый нижний угол — время сообщения;
+/// верх и правый край — кнопка разворота подробной версии.
 class TgWidgetInset {
+  final double top;
+  final double right;
   final double bottom;
   final double cornerRight;
 
-  const TgWidgetInset({this.bottom = 0, this.cornerRight = 0});
+  const TgWidgetInset({
+    this.top = 0,
+    this.right = 0,
+    this.bottom = 0,
+    this.cornerRight = 0,
+  });
 
   Map<String, Object> toJson() => {
-    'top': 0,
-    'right': 0,
+    'top': top.round(),
+    'right': right.round(),
     'bottom': bottom.round(),
     'left': 0,
     'cornerRight': cornerRight.round(),
@@ -98,8 +106,8 @@ class TgWidgetInset {
   };
 
   Map<String, String> get cssVars => {
-    '--tg-content-safe-area-inset-top': '0px',
-    '--tg-content-safe-area-inset-right': '0px',
+    '--tg-content-safe-area-inset-top': '${top.round()}px',
+    '--tg-content-safe-area-inset-right': '${right.round()}px',
     '--tg-content-safe-area-inset-bottom': '${bottom.round()}px',
     '--tg-content-safe-area-inset-left': '0px',
     '--tg-content-safe-area-corner-left': '0px',
@@ -109,9 +117,11 @@ class TgWidgetInset {
   @override
   bool operator ==(Object other) =>
       other is TgWidgetInset &&
+      other.top == top &&
+      other.right == right &&
       other.bottom == bottom &&
       other.cornerRight == cornerRight;
 
   @override
-  int get hashCode => Object.hash(bottom, cornerRight);
+  int get hashCode => Object.hash(top, right, bottom, cornerRight);
 }

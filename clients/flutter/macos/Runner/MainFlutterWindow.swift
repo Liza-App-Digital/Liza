@@ -52,10 +52,9 @@ class MainFlutterWindow: NSWindow {
 /// (канал `liza/miniapp_window`, см. mini_app_window.dart). Свой канал, а не
 /// window_manager: тот ставит себя делегатом окна и умеет terminate.
 class MiniAppWindowPlugin: NSObject, FlutterPlugin {
-  /// Геометрия окна в pt (заявка 13.11: «должен открываться большим»,
-  /// минимум ~800×600). Синхронно с windows/runner/mini_app_window_channel.cpp.
+  /// Геометрия окна в pt; минимум ~800×600.
+  /// Синхронно с windows/runner/mini_app_window_channel.cpp.
   /// Размер не запоминается: autosave тащил в каждое окно размер прошлого.
-  private static let defaultSize = NSSize(width: 1100, height: 820)
   private static let minimumSize = NSSize(width: 800, height: 600)
 
   private weak var registrar: FlutterPluginRegistrar?
@@ -191,10 +190,11 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
       MiniAppWindowPlugin.focus(window)
       result(nil)
     case "geometry":
-      // Контент, минимум и рабочая область в pt — для нативного стража.
+      // macOS width/height исторически измеряют frame, все размеры в pt.
       let area = window.screen?.visibleFrame ?? MiniAppWindowPlugin.screenArea()
       result([
         "width": window.frame.width, "height": window.frame.height,
+        "frameWidth": window.frame.width, "frameHeight": window.frame.height,
         "minWidth": window.minSize.width, "minHeight": window.minSize.height,
         "areaWidth": area.width, "areaHeight": area.height,
         "maximized": window.isZoomed,
@@ -238,7 +238,7 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
   /// Большое окно по центру экрана, на котором стоит Лиза.
   private static func defaultFrame() -> NSRect {
     let area = screenArea()
-    let size = fit(defaultSize)
+    let size = NSSize(width: area.width * 0.9, height: area.height * 0.9)
     return NSRect(
       x: area.midX - size.width / 2, y: area.midY - size.height / 2,
       width: size.width, height: size.height)

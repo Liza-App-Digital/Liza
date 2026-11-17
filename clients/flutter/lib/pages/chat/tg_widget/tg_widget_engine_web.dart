@@ -44,6 +44,13 @@ class _WebTgWidgetEngineState extends State<_WebTgWidgetEngine>
   JSFunction? _blurListener;
   Timer? _refocus;
   int _loads = 0;
+  bool _firstMessage = false;
+
+  /// Стадия наружу — только пока движок жив.
+  void _stage(String stage) {
+    if (!mounted) return;
+    widget.config.onStage(stage);
+  }
 
   @override
   void initState() {
@@ -71,12 +78,17 @@ class _WebTgWidgetEngineState extends State<_WebTgWidgetEngine>
       }
       final data = event.data;
       if (data != null && data.isA<JSString>()) {
+        if (!_firstMessage) {
+          _firstMessage = true;
+          _stage(TgWidgetEngineStage.firstMessage);
+        }
         widget.config.onMessage((data as JSString).toDart);
       }
     }
 
     void onLoad(web.Event _) {
       if (!mounted) return;
+      _stage(TgWidgetEngineStage.loadStopped);
       _loads++;
       if (_loads > 1) widget.config.onUnexpectedNavigation();
     }
@@ -109,7 +121,9 @@ class _WebTgWidgetEngineState extends State<_WebTgWidgetEngine>
       (int _) => slot.iframe ?? web.document.createElement('div'),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) widget.config.onCreated(this);
+      if (!mounted) return;
+      _stage(TgWidgetEngineStage.created);
+      widget.config.onCreated(this);
     });
   }
 

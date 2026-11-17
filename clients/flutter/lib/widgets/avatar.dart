@@ -107,6 +107,12 @@ class Avatar extends StatelessWidget {
     final innerSize = hasRing
         ? size - 2 * (StoryAvatarRing.ringWidth + StoryAvatarRing.gap)
         : size;
+    // Квадратный cover требует crop: scale портретного фото оставляет слишком
+    // мало пикселей по короткой стороне. Полная identity также отделяет DPR и
+    // не даёт поздней загрузке прежнего размера подменить новую аватарку.
+    final physicalSize = (innerSize * MediaQuery.devicePixelRatioOf(context))
+        .round();
+    final imageKey = 'avatar-crop-v2:${mxContent}_$physicalSize';
     final borderRadius =
         this.borderRadius ?? BorderRadius.circular(innerSize / 2);
     // final presenceUserId = this.presenceUserId; // используется в закомментированном presence-блоке
@@ -159,9 +165,10 @@ class Avatar extends StatelessWidget {
                     borderRadius: isHexagonal
                         ? BorderRadius.zero
                         : borderRadius,
-                    key: ValueKey(mxContent.toString()),
-                    cacheKey: '${mxContent}_$innerSize',
+                    key: ValueKey(imageKey),
+                    cacheKey: imageKey,
                     uri: mxContent,
+                    thumbnailMethod: ThumbnailMethod.crop,
                     fit: BoxFit.cover,
                     width: innerSize,
                     height: innerSize,

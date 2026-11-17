@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -20,9 +21,11 @@ import 'package:liza/utils/news_audience.dart';
 import 'package:liza/utils/push_acks.dart';
 import 'package:liza/utils/push_banner_id.dart';
 import 'package:liza/utils/push_client_resolver.dart';
+import 'package:liza/utils/push_event_metadata.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/push_helper.dart';
 import 'package:liza/utils/push_journal.dart';
+import 'package:liza/utils/notification_health.dart';
 import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/utils/screen_lock_state.dart';
 import 'package:liza/utils/strip_matrix_mentions.dart';
@@ -35,12 +38,32 @@ import 'package:liza/widgets/matrix.dart';
 const _localNotificationMaxAge = Duration(minutes: 5);
 
 extension LocalNotificationsExtension on MatrixState {
-  void _journalLocal(PushReason reason, Event event) {
+  void _journalLocal(
+    PushReason reason,
+    Event event, {
+    required Object? reservation,
+  }) {
+    final relation = pushLocalRelation(event.content['m.relates_to']);
+    // Submission ОС фиксируется независимо от успешности журнала.
+    if (reason == PushReason.shown) {
+      backgroundPush?.markLocalSubmitted(
+        event.eventId,
+        reservation: reservation,
+      );
+    }
     PushJournal.instance.record(
       PushStage.local,
       reason: reason,
       eventId: event.eventId,
       roomId: event.room.id,
+      accountName: event.room.client.clientName,
+      mediaKind: pushMediaKind(
+        event.messageType,
+        isVoice: event.content.containsKey('org.matrix.msc3245.voice'),
+      ),
+      relationKind: relation.kind,
+      relationTargetId: relation.targetId,
+      source: PushObservationSource.localEvent,
       state: WidgetsBinding.instance.lifecycleState,
     );
     final outcome = localAckOutcome(reason);
@@ -55,11 +78,20 @@ extension LocalNotificationsExtension on MatrixState {
     // Пост Liza News для других платформ: web/Windows/Linux/macOS показывают
     // уведомление из /sync мимо Sygnal, поэтому режем здесь, а не только там.
     final roomId = event.room.id;
+    final relation = pushLocalRelation(event.content['m.relates_to']);
     void skip(PushReason reason) => PushJournal.instance.record(
       PushStage.localSkip,
       reason: reason,
       eventId: event.eventId,
       roomId: roomId,
+      accountName: event.room.client.clientName,
+      mediaKind: pushMediaKind(
+        event.messageType,
+        isVoice: event.content.containsKey('org.matrix.msc3245.voice'),
+      ),
+      relationKind: relation.kind,
+      relationTargetId: relation.targetId,
+      source: PushObservationSource.localEvent,
       state: WidgetsBinding.instance.lifecycleState,
     );
     if (event.isHiddenByNewsAudience) return skip(PushReason.newsAudience);
@@ -128,9 +160,18 @@ extension LocalNotificationsExtension on MatrixState {
       );
       return skip(PushReason.apnsHandled);
     }
+    if (!mounted) return skip(PushReason.failed);
     // Отметку «показано» шлём ДО загрузки аватара (та ждёт сеть до 3 с): иначе
     // опоздавший APNs-пуш успеет проскочить нативный гейт и дать второй баннер.
-    backgroundPush?.markLocallyShown(event.eventId);
+    final reservation = backgroundPush?.markLocallyShown(
+      event.eventId,
+      originServerTs: event.originServerTs,
+      clientName: event.room.client.clientName,
+      msgtype: event.messageType,
+      isVoice: event.content.containsKey('org.matrix.msc3245.voice'),
+      relationKind: relation.kind,
+      relationTargetId: relation.targetId,
+    );
 
     final title = event.room.getLocalizedDisplayname(
       MatrixLocals(L10n.of(context)),
@@ -260,7 +301,9 @@ extension LocalNotificationsExtension on MatrixState {
     } else if (Platform.isMacOS) {
       final plugin = backgroundPush?.localNotificationsPlugin;
       if (plugin == null) {
-        Logs().w('macOS: BackgroundPush plugin not initialized, skipping notification');
+        Logs().w(
+          'macOS: BackgroundPush plugin not initialized, skipping notification',
+        );
         return;
       }
       // Аватар и payload — от клиента ВЛАДЕЛЬЦА комнаты, а не от активного:
@@ -318,10 +361,36 @@ extension LocalNotificationsExtension on MatrixState {
               _ => PushReason.failed,
             },
             event,
+            reservation: reservation,
           );
           return;
         }
       }
+      final localRequestId = pushNotificationId(roomClient.clientName, roomId);
+      final voice = event.content.containsKey('org.matrix.msc3245.voice');
+      void diagnostic(String stage, [String? outcome]) {
+        unawaited(
+          NativePushDiagnostics.recordLocal(
+            stage: stage,
+            eventId: event.eventId,
+            clientName: roomClient.clientName,
+            // flutter_local_notifications передаёт именно decimal id в UNRequest.
+            requestId: localRequestId.toString(),
+            media: switch (event.messageType) {
+              'm.audio' => voice ? 'voice' : 'audio',
+              'm.text' || 'm.notice' || 'm.emote' => 'text',
+              'm.image' => 'image',
+              'm.video' => 'video',
+              'm.file' => 'file',
+              _ => 'unknown',
+            },
+            voice: voice,
+            outcome: outcome,
+          ),
+        );
+      }
+
+      diagnostic('localSubmission');
       try {
         await plugin.show(
           // id со скоупом аккаунта: у двух своих аккаунтов в одной комнате
@@ -352,11 +421,13 @@ extension LocalNotificationsExtension on MatrixState {
             event.eventId,
           ).toString(),
         );
+        diagnostic('localResult', 'accepted');
         Logs().v('[Push] Local notification submitted to OS', event.eventId);
-        _journalLocal(PushReason.shown, event);
+        _journalLocal(PushReason.shown, event, reservation: reservation);
       } catch (e, s) {
+        diagnostic('localResult', 'failed');
         Logs().w('[Push] Local notification failed', e, s);
-        _journalLocal(PushReason.failed, event);
+        _journalLocal(PushReason.failed, event, reservation: reservation);
       }
     } else if (Platform.isWindows) {
       final plugin = backgroundPush?.localNotificationsPlugin;
@@ -370,9 +441,7 @@ extension LocalNotificationsExtension on MatrixState {
         roomId.hashCode,
         title,
         body,
-        const NotificationDetails(
-          windows: WindowsNotificationDetails(),
-        ),
+        const NotificationDetails(windows: WindowsNotificationDetails()),
         payload: LizaPushPayload(
           client.clientName,
           event.room.id,

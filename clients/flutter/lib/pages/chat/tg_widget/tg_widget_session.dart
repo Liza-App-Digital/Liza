@@ -16,7 +16,17 @@ import 'package:liza/pages/chat/tg_widget/tg_widget_tap.dart';
 import 'package:liza/pages/chat/tg_widget/tg_widget_theme.dart';
 import 'package:liza/pages/chat/tg_widget/tg_widget_trust.dart';
 
-enum TgWidgetStopReason { watchdog, domLimit, navigation }
+enum TgWidgetStopReason {
+  /// Шим молчал уже ПОСЛЕ старта: heartbeat встал.
+  watchdog,
+  domLimit,
+  navigation,
+
+  /// Документ так и не выполнился: ни одного сообщения шима. Это ошибка
+  /// загрузки движка (например, content-rule-list не скомпилировался и
+  /// flutter_inappwebview не вызвал load), а не зависший виджет.
+  loadFailed,
+}
 
 /// Что сессия просит у хоста (пузыря). Всё, что трогает UI/ОС, — здесь;
 /// сама сессия — чистая логика и проверяется без WebView.
@@ -52,6 +62,16 @@ class TgWidgetSessionContext {
   /// пользователя и сервер бота).
   final Set<String> mxcServers;
 
+  /// Развёрнутый хост (панель мини-аппа): документ скроллится, блок
+  /// `.liza-more` виден, фичи разворота нет.
+  final bool expanded;
+
+  /// Виджет просит открыть подробную версию (`LizaWidget.expand()`).
+  final void Function()? onExpand;
+
+  /// Виджет сам рисует кнопку разворота (`LizaWidget.takeOverExpand()`).
+  final void Function()? onExpandTakeOver;
+
   const TgWidgetSessionContext({
     required this.block,
     required this.trust,
@@ -63,6 +83,9 @@ class TgWidgetSessionContext {
     required this.storageKey,
     this.viewer,
     this.mxcServers = const {},
+    this.expanded = false,
+    this.onExpand,
+    this.onExpandTakeOver,
   });
 
   bool get isForward => trust == TgWidgetTrustKind.forwarded;
@@ -79,7 +102,10 @@ class TgWidgetSessionContext {
       trust == TgWidgetTrustKind.original &&
       chatType == 'private';
 
-  List<String> get lizaFeatures => verifiedBot ? const ['mxc'] : const [];
+  List<String> get lizaFeatures => [
+    if (verifiedBot) 'mxc',
+    if (verifiedBot && !expanded && block.hasDetails) 'expand',
+  ];
 
   String get botLocalpart {
     final id = block.botId;
@@ -124,6 +150,8 @@ class TgWidgetSession {
   DateTime? _hostStallAt;
   Duration _silence = Duration.zero;
   bool _sawBeat = false;
+  String? _engineStage;
+  String _stopDetail = '';
   bool _stopped = false;
   bool _disposed = false;
   bool _active;
@@ -211,6 +239,7 @@ class TgWidgetSession {
       buildTgWidgetDocument(
         widgetHtml: ctx.block.html,
         colorScheme: _theme.colorScheme,
+        expanded: ctx.expanded,
         config: buildConfig(transport: transport, parentOrigin: parentOrigin),
       );
 
@@ -237,12 +266,37 @@ class TgWidgetSession {
     if (!_active) return;
     _silence += delta;
     final limit = _sawBeat ? silenceLimit : startupGrace;
-    if (_silence > limit) {
-      _stop(
-        TgWidgetStopReason.watchdog,
-        _sawBeat ? 'silence' : 'no-heartbeat-at-start',
-      );
+    if (_silence <= limit) return;
+    if (_sawBeat) {
+      _stop(TgWidgetStopReason.watchdog, 'silence');
+      return;
     }
+    // Ни одного сообщения шима: отличаем «документ не выполнился» от
+    // «движок стадий не сообщал» — второе осталось молчанием сторожа.
+    final stage = _engineStage;
+    if (stage == null) {
+      _stop(TgWidgetStopReason.watchdog, 'no-heartbeat-at-start');
+    } else {
+      _stop(TgWidgetStopReason.loadFailed, 'stage=$stage');
+    }
+  }
+
+  /// Последняя стадия загрузки от движка ([TgWidgetEngineStage]); `null` —
+  /// движок стадий не сообщал.
+  String? get engineStage => _engineStage;
+
+  /// Подробность последней остановки (стадия загрузки, число узлов, провал
+  /// heartbeat). Дублирует хвост строки лога: по ней страж и разбор отличают
+  /// `loadFailed stage=loadStarted` от `watchdog gap=…`.
+  String get stopDetail => _stopDetail;
+
+  /// Стадия загрузки от движка. Только пишем: ошибка подресурса (заблокированная
+  /// картинка, отменённый запрос) — не повод гасить виджет, но по стадии видно,
+  /// почему документ не выполнился.
+  void onEngineStage(String stage) {
+    if (_disposed || _stopped) return;
+    _engineStage = stage;
+    Logs().v('[TgWidget] стадия движка: $stage');
   }
 
   /// На Web sandbox-iframe делит поток со страницей Лизы: долгий кадр Flutter
@@ -260,6 +314,7 @@ class TgWidgetSession {
   void _stop(TgWidgetStopReason reason, [String detail = '']) {
     if (_stopped || _disposed) return;
     _stopped = true;
+    _stopDetail = detail;
     _watchdog?.cancel();
     // warn, а не info: в релизной сборке info не печатается, и причину
     // остановки было не узнать.
@@ -340,6 +395,15 @@ class TgWidgetSession {
       case 'openLink':
         final url = _validLink(msg['url'], telegram: false);
         if (url != null && _consumeTap()) delegate.openLink(url);
+      case 'expand':
+        // Разворот — тоже действие по тапу: JS из таймера его не откроет.
+        if (ctx.lizaFeatures.contains('expand') && _consumeTap()) {
+          ctx.onExpand?.call();
+        }
+      case 'takeOverExpand':
+        if (ctx.lizaFeatures.contains('expand')) {
+          ctx.onExpandTakeOver?.call();
+        }
       case 'openTelegramLink':
         final url = _validLink(msg['url'], telegram: true);
         if (url == null) return;

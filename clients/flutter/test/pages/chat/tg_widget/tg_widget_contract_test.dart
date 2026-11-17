@@ -1,4 +1,5 @@
 // ledger:RL-telegram-widgets
+// ledger:RL-widget-apple-engine
 //
 // Контракт D13 (формат блока, подписанные байты), доверие (D4) и содержимое
 // шима/обёртки (D8, профиль 1 Telegram).
@@ -571,21 +572,68 @@ void main() {
     });
 
     // AC:RL-telegram-widgets/5
-    test('WKContentRuleList: блок «.*», исключение только data/blob/about', () {
-      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-      addTearDown(() => debugDefaultTargetPlatformOverride = null);
-      final rules = tgWidgetContentBlockers();
-      expect(rules.first.trigger.urlFilter, '.*');
-      expect(rules.first.action.type, ContentBlockerActionType.BLOCK);
-      expect(
-        rules.last.action.type,
-        ContentBlockerActionType.IGNORE_PREVIOUS_RULES,
-      );
-      final except = RegExp(rules.last.trigger.urlFilter);
-      expect(except.hasMatch('data:text/html,x'), isTrue);
-      expect(except.hasMatch('about:blank'), isTrue);
-      expect(except.hasMatch('https://data.example/'), isFalse);
-    });
+    // AC:RL-widget-apple-engine/1
+    test(
+      'WKContentRuleList: блок «.*», по правилу-исключению на схему, без дизъюнкции',
+      () {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        final rules = tgWidgetContentBlockers();
+        expect(rules.first.trigger.urlFilter, '.*');
+        expect(rules.first.action.type, ContentBlockerActionType.BLOCK);
+        // Regex-движок WebKit в content-rule-list (Yarr) НЕ умеет дизъюнкцию:
+        // «^(data|blob|about):» даёт «Disjunctions are not supported yet»,
+        // список не компилируется, и flutter_inappwebview на ошибке молча не
+        // зовёт load() — документ не выполняется, виджет падает в стопор.
+        // Поэтому шаблон проверяем как СТРОКУ: Dart-RegExp принял бы то, что
+        // WebKit отверг (именно так регресс 2.4.0+3807 и проехал).
+        for (final rule in rules) {
+          expect(
+            rule.trigger.urlFilter,
+            isNot(contains('|')),
+            reason: 'WebKit: disjunctions are not supported',
+          );
+        }
+        final except = rules.skip(1).toList();
+        expect(rules, hasLength(tgWidgetLocalSchemes.length + 1));
+        expect(
+          except.map((r) => r.trigger.urlFilter),
+          tgWidgetLocalSchemes.map((s) => '^$s:'),
+        );
+        for (final rule in except) {
+          expect(
+            rule.action.type,
+            ContentBlockerActionType.IGNORE_PREVIOUS_RULES,
+          );
+          // Исключение не должно открывать сеть: только свою схему.
+          expect(rule.trigger.urlFilter, isNot(contains('.*')));
+          expect(
+            RegExp(rule.trigger.urlFilter).hasMatch('https://evil.example/x'),
+            isFalse,
+          );
+        }
+        // Ровно те схемы, что пускает перехват: одна схема — одно правило.
+        // (data: без MIME не парсится, поэтому образцы — настоящие URL.)
+        const sample = {
+          'data': 'data:text/html,x',
+          'blob': 'blob:null/1',
+          'about': 'about:blank',
+        };
+        for (final scheme in tgWidgetLocalSchemes) {
+          final url = sample[scheme]!;
+          expect(
+            tgWidgetRequestAllowed(Uri.parse(url)),
+            isTrue,
+            reason: scheme,
+          );
+          expect(
+            except.where((r) => RegExp(r.trigger.urlFilter).hasMatch(url)),
+            hasLength(1),
+            reason: scheme,
+          );
+        }
+      },
+    );
 
     // AC:RL-telegram-widgets/5
     test('страховка: наши настройки чисты, любое ослабление — нарушение', () {
@@ -626,6 +674,7 @@ void main() {
               document: '<p>x</p>',
               onMessage: (_) {},
               onCreated: (_) => fail('движок создан'),
+              onStage: (_) {},
               onPointer: (_) {},
               onActivation: () {},
               onUnexpectedNavigation: () {},

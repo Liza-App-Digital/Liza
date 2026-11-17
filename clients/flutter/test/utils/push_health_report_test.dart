@@ -55,6 +55,11 @@ class _ThrowingJournal extends PushJournal {
     AppLifecycleState? state,
     String? eventId,
     String? roomId,
+    String? accountName,
+    PushMediaKind? mediaKind,
+    PushRelationKind? relationKind,
+    String? relationTargetId,
+    PushObservationSource? source,
     int? value,
     DateTime? now,
   }) => throw StateError('журнал сломан');
@@ -162,9 +167,16 @@ void main() {
     expect(j.entries.length, 1);
     final json = j.entries.single.toJson();
     expect(
-      json.keys.toSet().difference({'t', 's', 'r', 'st', 'e', 'rm', 'v'}),
+      json.keys.toSet().difference({
+        't', 's', 'r', 'st', 'e', 'rm', 'v', 'id', 'e128', 'src',
+        'run_id', 'process_role',
+      }),
       isEmpty,
     );
+    expect(json['run_id'], matches(RegExp(r'^[a-f0-9]{32}$')));
+    expect(json['process_role'], 'dart', reason: 'это сессия Dart-наблюдателя');
+    expect(json.containsKey('observed_build'), isFalse,
+        reason: 'неизвестная сборка не подставляется при экспорте');
     expect(json['r'], isNull, reason: 'причина не из перечня — не пишется');
     expect(json['e'], PushJournal.hash8(_secretEvent));
   });
@@ -551,10 +563,10 @@ void main() {
       final start = src.indexOf(
         'void showLocalNotification(Event event) async {',
       );
-      final gates = src.substring(
-        start,
-        src.indexOf('markLocallyShown(event.eventId)', start),
-      );
+      final mark = RegExp(r'markLocallyShown\(\s*event\.eventId[,)]')
+          .firstMatch(src.substring(start));
+      expect(mark, isNotNull);
+      final gates = src.substring(start, start + mark!.start);
       expect(
         RegExp(r'return;').hasMatch(gates),
         isFalse,

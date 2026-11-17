@@ -102,6 +102,10 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
                         || notification.request.content.userInfo["room_id"] as? String == roomId
                 }
                 .map { $0.request.identifier }
+            let matched = delivered.filter { ids.contains($0.request.identifier) }
+            for notification in matched.prefix(NativePushJournal.maxMatchedRequests) { observe(notification, stage: .deliveredObserved) }
+            NativePushJournal.shared?.enqueue(.removalRequested,
+                outcome: ids.isEmpty ? .skipped : .accepted, matchedRequestIds: ids)
             if !ids.isEmpty {
                 center.removeDeliveredNotifications(withIdentifiers: ids)
             }
@@ -128,9 +132,18 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
         let started = Date()
         func attempt() {
             center.getDeliveredNotifications { delivered in
-                let ids = delivered
-                    .filter { ($0.request.content.userInfo["event_id"] as? String) == eventId }
-                    .map { $0.request.identifier }
+                let matchedRequests = NativePushJournal.matchingRequests(delivered.map { $0.request }, eventId: eventId)
+                let matchedIds = Set(matchedRequests.map { $0.identifier })
+                let matched = delivered.filter { matchedIds.contains($0.request.identifier) }
+                let ids = matched.map { $0.request.identifier }
+                for notification in matched.prefix(NativePushJournal.maxMatchedRequests) {
+                    observe(notification, stage: .deliveredObserved)
+                }
+                if !ids.isEmpty || Date().timeIntervalSince(started) >= deadline {
+                    NativePushJournal.shared?.enqueue(.removalRequested,
+                        context: NativePushJournal.Context(eventId: eventId),
+                        outcome: ids.isEmpty ? .skipped : .accepted, matchedRequestIds: ids)
+                }
                 if !ids.isEmpty {
                     center.removeDeliveredNotifications(withIdentifiers: ids)
                     completion(Int(Date().timeIntervalSince(started) * 1000))
@@ -152,9 +165,9 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
     /// `userInfo["event_id"]` — у локальных уведомлений плагина его нет.
     static func isEventDelivered(eventId: String, completion: @escaping (Bool) -> Void) {
         UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
-            completion(delivered.contains {
-                ($0.request.content.userInfo["event_id"] as? String) == eventId
-            })
+            let matched = delivered.filter { ($0.request.content.userInfo["event_id"] as? String) == eventId }
+            for notification in matched.prefix(NativePushJournal.maxMatchedRequests) { observe(notification, stage: .deliveredObserved) }
+            completion(!matched.isEmpty)
         }
     }
 
@@ -193,15 +206,35 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
                 content.attachments = [attachment]
             }
             let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+            let diagnostic = NativePushJournal.context(content.userInfo, requestId: request.identifier,
+                                                         source: .local, render: .dartLocal)
+            NativePushJournal.shared?.enqueue(.localSubmission, context: diagnostic)
             center.add(request) { error in
                 completion(error == nil ? "shown" : "failed")
+                NativePushJournal.shared?.enqueue(.localResult, context: diagnostic,
+                                                outcome: error == nil ? .accepted : .failed)
             }
         }
+    }
+
+    /// Факт API presence/decision, не доказательство видимости или звука ОС.
+    static func observe(_ notification: UNNotification, stage: NativePushJournal.Stage,
+                        outcome: NativePushJournal.Outcome? = nil, presentationOptions: UInt? = nil) {
+        let remote = notification.request.trigger is UNPushNotificationTrigger
+        let render: NativePushJournal.RenderSource = remote ? .apnsOriginal
+            : (notification.request.identifier.hasSuffix(".formatted") ? .nativeFormatted : .dartLocal)
+        let context = NativePushJournal.context(notification.request.content.userInfo,
+            requestId: notification.request.identifier, source: remote ? .remote : .local, render: render)
+        NativePushJournal.shared?.enqueue(stage, context: context, outcome: outcome, presentationOptions: presentationOptions,
+                                         observedDate: stage == .deliveredObserved ? notification.date : nil)
     }
 
     static func deliveredRoomIds(completion: @escaping ([String]) -> Void) {
         UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
             var rooms: [String] = []
+            NativePushJournal.shared?.enqueue(.deliveredObserved,
+                matchedRequestIds: delivered.map { $0.request.identifier })
+            for notification in delivered.prefix(NativePushJournal.maxMatchedRequests) { observe(notification, stage: .deliveredObserved) }
             for notification in delivered {
                 let content = notification.request.content
                 let roomId = (content.userInfo["room_id"] as? String)
@@ -513,6 +546,19 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             result(MacApnsPushPlugin.appCopies())
         case "getScreenLocked":
             result(MacApnsPushPlugin.isScreenLocked())
+        case "recordLocalDiagnostic":
+            guard let args = call.arguments as? [String: Any],
+                  let requestId = args["requestId"] as? String,
+                  let stage = (args["stage"] as? String).flatMap(NativePushJournal.Stage.init(rawValue:)),
+                  stage == .localSubmission || stage == .localResult else { return result(false) }
+            var context = NativePushJournal.context([
+                "event_id": args["eventId"] as? String ?? "",
+                "client_name": args["clientName"] as? String ?? ""
+            ], requestId: requestId, source: .local, render: .dartLocal)
+            context.media = (args["media"] as? String).flatMap(NativePushJournal.Media.init(rawValue:)) ?? .unknown
+            context.voice = args["voice"] as? Bool
+            let outcome = (args["outcome"] as? String).flatMap(NativePushJournal.Outcome.init(rawValue:))
+            result(NativePushJournal.shared?.enqueue(stage, context: context, outcome: outcome) ?? false)
         case "readDiagnosticJournal":
             DispatchQueue.global(qos: .utility).async {
                 let entries = NativePushJournal.shared?.read()
@@ -571,7 +617,7 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
     }
 
     public static func didFailToRegisterForRemoteNotifications(error: Error) {
-        NativePushJournal.shared?.append(.token, reason: .registration_failed)
+        NativePushJournal.shared?.enqueue(.token, reason: .registration_failed)
         queue.sync {
             if let pending = pendingTokenResult {
                 pending(FlutterError(
@@ -585,6 +631,7 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
     }
 
     public static func didReceiveRemoteNotification(userInfo: [String: Any]) {
+        NativePushJournal.shared?.enqueue(.received, context: NativePushJournal.context(userInfo))
         DispatchQueue.main.async {
             queue.sync {
                 channel?.invokeMethod("onMessage", arguments: userInfo)

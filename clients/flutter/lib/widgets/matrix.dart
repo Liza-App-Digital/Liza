@@ -41,6 +41,7 @@ import 'package:liza/utils/push_client_resolver.dart';
 import 'package:liza/utils/push_acks.dart';
 import 'package:liza/utils/push_probe_api.dart';
 import 'package:liza/utils/push_journal.dart';
+import 'package:liza/utils/push_incident_exporter.dart';
 import 'package:liza/utils/uia_request_manager.dart';
 import 'package:liza/utils/single_space_service.dart';
 import 'package:liza/pages/chat/events/audio_autoplay_service.dart';
@@ -970,6 +971,15 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     // Восстановленные сессии `loggedIn` не получают (см. syncIdentity) —
     // атрибуцию ставим здесь явно.
     _syncMonitoringIdentity();
+    _pushIncidentExporter?.dispose();
+    _pushIncidentExporter = Monitoring.createPushIncidentExporter(
+      accounts: () => Monitoring.collectPushAccounts(
+        widget.clients,
+        registrations: backgroundPush?.pusherRegisteredByClient ?? const {},
+      ),
+      platform: pushReportPlatform(),
+      canSend: () => mounted,
+    )?..start();
     _pushReportTimer?.cancel();
     _pushReportTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       unawaited(_maybeReportPushHealth());
@@ -1253,10 +1263,13 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
   ]);
 
   Timer? _pushReportTimer;
+  PushIncidentExporter? _pushIncidentExporter;
   bool _pushReportInFlight = false;
 
   /// Один сборщик для startup/resume/tick и ручного действия.
   Future<void> _maybeReportPushHealth() async {
+    // Replay инцидентов не находится за суточным gate и имеет свой flight.
+    unawaited(_pushIncidentExporter?.replay());
     await _collectPushHealth();
   }
 
@@ -1326,6 +1339,10 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
           since: DateTime.now().subtract(const Duration(hours: 24)),
         ),
         journalTail: PushJournal.tail(entries, Monitoring.pushReportTailBytes),
+        journalCoverage: journal.exportCoverage(
+          entries,
+          Monitoring.pushReportTailBytes,
+        ),
         acks: acks,
       );
       // M6: тот же блок — на приёмник подтверждений (если включён на сервере).
@@ -1423,6 +1440,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
       s.cancel();
     }
     _pushReportTimer?.cancel();
+    _pushIncidentExporter?.dispose();
     _networkRecoveryTrigger?.dispose();
     _failedSendRetryService?.dispose();
     client.httpClient.close();

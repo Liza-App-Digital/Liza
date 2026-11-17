@@ -12,7 +12,7 @@ import hashlib
 import json
 from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
-from uuid import uuid5
+from uuid import UUID, uuid5
 
 from aioapns.common import NotificationResult, PushType
 
@@ -80,6 +80,13 @@ DEVICE_EXAMPLE_WITH_SOUND_DEFAULT_PAYLOAD = {
 
 
 class ApnsTestCase(testutils.TestCase):
+    def _diagnostic_fields(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        # Динамический UUID проверяется отдельно; остальной payload по-прежнему
+        # сравнивается целиком, включая запрет любых лишних полей.
+        trace = message["liza_dispatch_id"]
+        self.assertEqual(str(UUID(trace)), trace)
+        return {"liza_dispatch_id": trace, "liza_dispatch_attempt": 0}
+
     def setUp(self) -> None:
         self.apns_mock_class = patch("sygnal.apnspushkin.APNs").start()
         self.apns_mock = MagicMock()
@@ -198,6 +205,7 @@ class ApnsTestCase(testutils.TestCase):
 
         self.assertEqual(
             {
+                **self._diagnostic_fields(notification_req.message),
                 "room_id": "!slw48wfj34rtnrf:example.com",
                 "event_id": "$qTOWWTEL48yPm3uT-gdNhFcoHxfKbZuqRVnnWWSkGBs",
                 "aps": {
@@ -250,6 +258,7 @@ class ApnsTestCase(testutils.TestCase):
 
         self.assertEqual(
             {
+                **self._diagnostic_fields(notification_req.message),
                 "room_id": "!slw48wfj34rtnrf:example.com",
                 "event_id": "$qTOWWTEL48yPm3uT-gdNhFcoHxfKbZuqRVnnWWSkGBs",
                 "unread_count": 2,
@@ -314,6 +323,7 @@ class ApnsTestCase(testutils.TestCase):
 
         self.assertEqual(
             {
+                **self._diagnostic_fields(notification_req.message),
                 "room_id": "!slw48wfj34rtnrf:example.com",
                 "event_id": "$qTOWWTEL48yPm3uT-gdNhFcoHxfKbZuqRVnnWWSkGBs",
                 "aps": {
@@ -428,6 +438,7 @@ class ApnsTestCase(testutils.TestCase):
 
         self.assertEqual(
             {
+                **self._diagnostic_fields(notification_req.message),
                 "room_id": "!slw48wfj34rtnrf:example.com",
                 "event_id": "$qTOWWTEL48yPm3uT-gdNhFcoHxfKbZuqRVnnWWSkGBs",
                 "aps": {

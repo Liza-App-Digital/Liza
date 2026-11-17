@@ -180,4 +180,95 @@ void main() {
     );
     expect(() => entries.single['id'] = 'changed', throwsUnsupportedError);
   });
+  // AC:RL-push-native-diagnostics/10
+  test('observable native fields preserve correlation and reject raw data', () {
+    final now = DateTime.utc(2026, 11, 16);
+    const uuid = '00000000-0000-0000-0000-000000000001';
+    const hash = '0123456789abcdef0123456789abcdef';
+    final entries = NativePushDiagnostics.sanitize([
+      {
+        'id': uuid,
+        't': now.millisecondsSinceEpoch,
+        's': 'removalRequested',
+        'event_hash': hash,
+        'account_hash': hash,
+        'request_hash': hash,
+        'run_id': uuid,
+        'dispatch_id': uuid,
+        'dispatch_attempt': 2,
+        'observed_build': '4700',
+        'process_role': 'runner',
+        'capture_policy': 'async_best_effort',
+        'media': 'voice',
+        'voice': true,
+        'content_shape': 'object',
+        'render_source': 'apnsOriginal',
+        'render_recipe': 'unknown',
+        'source': 'remote',
+        'outcome': 'accepted',
+        'observed_date': now.millisecondsSinceEpoch - 1000,
+        'matched_count': 12,
+        'matched_request_hashes': List.filled(12, hash),
+        'matches_truncated': true,
+        'body': 'PRIVATE_BODY',
+        'client_name': 'PRIVATE_ACCOUNT',
+      },
+    ], now: now);
+    expect(entries.single['account_hash'], hash);
+    expect(entries.single['request_hash'], hash);
+    expect(entries.single['run_id'], uuid);
+    expect(entries.single['observed_build'], '4700');
+    expect(entries.single['capture_policy'], 'async_best_effort');
+    expect(entries.single['render_recipe'], 'unknown');
+    expect(entries.single['dispatch_attempt'], 2);
+    expect(entries.single['matched_request_hashes'], hasLength(8));
+    expect(entries.single['matched_count'], 12);
+    expect(entries.single['matches_truncated'], true);
+    expect(jsonEncode(entries), isNot(contains('PRIVATE_')));
+    final invalid = NativePushDiagnostics.sanitize([
+      {
+        ...entries.single,
+        'account_hash': 'PRIVATE_ACCOUNT',
+        'run_id': 'PRIVATE_RUN',
+        'observed_build': 'PRIVATE_BUILD',
+        'dispatch_attempt': -1,
+        'media': 'PRIVATE_FILE',
+        'render_recipe': 'PRIVATE_BODY',
+      },
+    ], now: now);
+    expect(jsonEncode(invalid), isNot(contains('PRIVATE_')));
+    expect(invalid.single.containsKey('dispatch_attempt'), isFalse);
+  });
+  // AC:RL-push-native-diagnostics/10
+  test('requested presentation masks are bounded and never imply OS output', () {
+    final now = DateTime.utc(2026, 11, 16);
+    final values = <Object>[0, 1, 2, 26, 65535, -1, 65536, true, 'sound'];
+    final entries = NativePushDiagnostics.sanitize([
+      for (final value in values.indexed)
+        {
+          'id':
+              '00000000-0000-0000-0000-${value.$1.toString().padLeft(12, '0')}',
+          't': now.millisecondsSinceEpoch,
+          's': 'presentation',
+          'presentation_options': value.$2,
+        },
+    ], now: now);
+    expect(
+      entries.map((entry) => entry['presentation_options']).whereType<int>(),
+      [0, 1, 2, 26, 65535],
+    );
+    expect(
+      entries
+          .skip(5)
+          .every((entry) => !entry.containsKey('presentation_options')),
+      isTrue,
+    );
+    expect(
+      entries.every(
+        (entry) =>
+            !entry.containsKey('os_sound') && !entry.containsKey('os_display'),
+      ),
+      isTrue,
+    );
+  });
 }

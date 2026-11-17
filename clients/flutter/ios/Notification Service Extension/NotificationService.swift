@@ -13,6 +13,7 @@ class NotificationService: UNNotificationServiceExtension {
 
     var contentHandler: ((UNNotificationContent) -> Void)?
     var bestAttemptContent: UNMutableNotificationContent?
+    private var diagnosticContext: NativePushJournal.Context?
     var diagnosticJournal: NativePushJournal? = NativePushJournal.shared
     /// Для host-тестов: вне бандла UNUserNotificationCenter.current() падает.
     var readBannerSweep: (String?, UserDefaults?, @escaping (Int) -> Void) -> Void = {
@@ -20,15 +21,18 @@ class NotificationService: UNNotificationServiceExtension {
     }
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
-        let eventId = request.content.userInfo["event_id"] as? String
         let journal = diagnosticJournal
-        journal?.append(.nseReceived, eventId: eventId,
-                        sent: NativePushJournal.sentMs(request.content.userInfo["liza_sent_ms"]))
+        let receivedContext = NativePushJournal.context(request.content.userInfo, requestId: request.identifier)
+        var outputContext = receivedContext
+        diagnosticContext = receivedContext
+        journal?.enqueue(.nseReceived, context: receivedContext)
         // Обёртка наблюдает прежние вызовы, не меняет payload/число callback.
         let originalHandler = contentHandler
         let contentHandler: (UNNotificationContent) -> Void = { content in
-            journal?.append(.nseCompleted, eventId: eventId)
             originalHandler(content)
+            var completed = outputContext
+            if content.title.isEmpty && content.body.isEmpty { completed.recipe = .empty }
+            journal?.enqueue(.nseCompleted, context: completed)
         }
         self.contentHandler = contentHandler
         bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
@@ -43,7 +47,7 @@ class NotificationService: UNNotificationServiceExtension {
             let defaults = UserDefaults(suiteName: appGroup())
             let clientName = request.content.userInfo["client_name"] as? String
             readBannerSweep(clientName, defaults) { [weak self] removed in
-                journal?.append(.nseSuppressed, value: removed)
+                journal?.enqueue(.nseSuppressed, value: removed, context: receivedContext)
                 self?.finishClearing()
             }
             return
@@ -55,7 +59,7 @@ class NotificationService: UNNotificationServiceExtension {
             guard let roomId = bestAttemptContent.userInfo["room_id"] as? String,
                   let _ = bestAttemptContent.userInfo["event_id"] as? String else {
                 os_log("[LizaPushHelper] Room ID or Event ID is missing!")
-                journal?.append(.nseError, eventId: eventId)
+                journal?.enqueue(.nseError, context: receivedContext)
                 let emptyContent = UNMutableNotificationContent()
                 contentHandler(emptyContent)
                 return
@@ -138,6 +142,9 @@ class NotificationService: UNNotificationServiceExtension {
                 bestAttemptContent.body = fallbackBody
             }
 
+            outputContext = NativePushJournal.context(request.content.userInfo, requestId: request.identifier,
+                                                       render: .nseFormatted)
+            diagnosticContext = outputContext
             // Set sound and interruption level.
             // UNNotificationSound(named:) looks for the file in the app/extension bundle.
             bestAttemptContent.sound = UNNotificationSound(named: UNNotificationSoundName("liza_ding.aiff"))
@@ -168,7 +175,7 @@ class NotificationService: UNNotificationServiceExtension {
             pending.enter()
             let clientName = bestAttemptContent.userInfo["client_name"] as? String
             readBannerSweep(clientName, badgeDefaults) { removed in
-                if removed > 0 { journal?.append(.nseSwept, eventId: eventId, value: removed) }
+                if removed > 0 { journal?.enqueue(.nseSwept, value: removed, context: receivedContext) }
                 pending.leave()
             }
             var avatarUrl: URL?
@@ -258,7 +265,7 @@ class NotificationService: UNNotificationServiceExtension {
     }
 
     override func serviceExtensionTimeWillExpire() {
-        diagnosticJournal?.append(.nseExpired, eventId: bestAttemptContent?.userInfo["event_id"] as? String)
+        diagnosticJournal?.enqueue(.nseExpired, context: diagnosticContext)
         if isClearing {
             finishClearing()
             return

@@ -1,4 +1,5 @@
 // ledger:RL-telegram-widgets
+// ledger:RL-widget-apple-engine
 // guard.render:real-widget
 // ignore_for_file: depend_on_referenced_packages
 //
@@ -458,6 +459,20 @@ void main() {
   });
 
   group('сторож и повтор', () {
+    // AC:RL-widget-apple-engine/3
+    testWidgets('стадии движка доходят до сессии пузыря', (tester) async {
+      await tester.pumpWidget(
+        app(ListView(children: [bubble(widgetEvent(r'$stg'))])),
+      );
+      await settle(tester);
+      // Фейковый движок, как настоящий: created → loadStarted → loadStopped
+      // до onCreated. Значит пузырь прокинул onStage в сессию.
+      expect(
+        stateOf(tester, r'$stg').session!.engineStage,
+        TgWidgetEngineStage.loadStopped,
+      );
+    });
+
     testWidgets(
       '«Widget stopped»: одна повторная попытка при следующем показе, потом стоп',
       (tester) async {
@@ -897,6 +912,157 @@ void main() {
         async.elapse(const Duration(seconds: 30));
         expect(server.count('/liza/v1/widgets/sh'), 3);
       });
+    });
+  });
+
+  group('подробная версия', () {
+    // AC:RL-telegram-widgets/12
+    const detailsHtml =
+        '<div id="w">Кратко</div><div class="liza-more">Подробно</div>';
+    final opened = <(String, String)>[];
+
+    setUp(() {
+      opened.clear();
+      TgWidgetBubble.debugOpenExpanded = (event, timeline, title) {
+        opened.add((event.eventId, title));
+      };
+    });
+
+    tearDown(() {
+      TgWidgetBubble.debugOpenExpanded = null;
+    });
+
+    Map<String, Object?> detailsBlock({
+      String sender = _bot,
+      bool sign = true,
+    }) => widgetBlockJson(
+      html: detailsHtml,
+      sender: sender,
+      botId: sender,
+      sign: sign,
+    );
+
+    testWidgets('проверенный бот с блоком: уголок есть, тап открывает панель', (
+      tester,
+    ) async {
+      final event = widgetEvent(r'$d1', block: detailsBlock());
+      await tester.pumpWidget(app(ListView(children: [bubble(event)])));
+      await settle(tester);
+
+      expect(find.byKey(const ValueKey('tg-widget-expand')), findsOneWidget);
+      final session = stateOf(tester, r'$d1').session!;
+      expect(session.ctx.lizaFeatures, contains('expand'));
+      final inset = session.buildConfig(transport: 'native')['inset']! as Map;
+      expect(inset['top'], 40);
+      expect(inset['right'], 40);
+      expect(
+        session.buildDocument(transport: 'native'),
+        contains('html.liza-compact .liza-more{display:none!important}'),
+      );
+
+      await tester.tap(find.byKey(const ValueKey('tg-widget-expand')));
+      await tester.pump();
+      expect(opened, [(r'$d1', 'Счётчик')]);
+    });
+
+    testWidgets('без блока подробностей уголка нет', (tester) async {
+      final event = widgetEvent(r'$d2');
+      await tester.pumpWidget(app(ListView(children: [bubble(event)])));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('tg-widget-expand')), findsNothing);
+    });
+
+    testWidgets('непроверенный бот: уголок только после «Запустить»', (
+      tester,
+    ) async {
+      final event = widgetEvent(
+        r'$d3',
+        sender: _otherBot,
+        block: detailsBlock(sender: _otherBot),
+      );
+      await tester.pumpWidget(app(ListView(children: [bubble(event)])));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('tg-widget-expand')), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('tg-widget-start')));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('tg-widget-expand')), findsOneWidget);
+    });
+
+    testWidgets('подпись не прошла: уголка нет', (tester) async {
+      final event = widgetEvent(r'$d4', block: detailsBlock(sign: false));
+      await tester.pumpWidget(app(ListView(children: [bubble(event)])));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('tg-widget-expand')), findsNothing);
+    });
+
+    testWidgets('виджет забрал кнопку: клиентский уголок исчез', (
+      tester,
+    ) async {
+      final event = widgetEvent(r'$d5', block: detailsBlock());
+      await tester.pumpWidget(app(ListView(children: [bubble(event)])));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('tg-widget-expand')), findsOneWidget);
+
+      FakeEngines.live.single.emit({'t': 'takeOverExpand'});
+      await tester.pump();
+      expect(find.byKey(const ValueKey('tg-widget-expand')), findsNothing);
+    });
+
+    testWidgets('LizaWidget.expand(): только по тапу', (tester) async {
+      final event = widgetEvent(r'$d6', block: detailsBlock());
+      await tester.pumpWidget(app(ListView(children: [bubble(event)])));
+      await settle(tester);
+      final engine = FakeEngines.live.single;
+
+      engine.emit({'t': 'expand'});
+      await tester.pump();
+      expect(opened, isEmpty);
+
+      engine.hostTap();
+      engine.emit({'t': 'expand'});
+      await tester.pump();
+      expect(opened, [(r'$d6', 'Счётчик')]);
+    });
+
+    testWidgets('развёрнутый хост: без уголка, скролл, видимые подробности', (
+      tester,
+    ) async {
+      final event = widgetEvent(r'$d7', block: detailsBlock());
+      await tester.pumpWidget(
+        app(
+          SizedBox(
+            height: 500,
+            child: TgWidgetBubble(
+              key: const ValueKey('expanded'),
+              event: event,
+              timeline: null,
+              ownMessage: false,
+              textColor: Colors.black,
+              linkColor: Colors.blue,
+              expanded: true,
+            ),
+          ),
+        ),
+      );
+      await settle(tester);
+
+      expect(
+        find.byKey(const ValueKey('tg-widget-expanded-area')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('tg-widget-expand')), findsNothing);
+      final config = FakeEngines.live.single.config;
+      expect(config.scrollable, isTrue);
+      expect(config.document, contains('liza-expanded'));
+      expect(
+        config.document,
+        contains('html.liza-expanded .liza-more{display:block!important}'),
+      );
+      final session = tester
+          .state<TgWidgetBubbleState>(find.byKey(const ValueKey('expanded')))
+          .session!;
+      expect(session.ctx.lizaFeatures, isNot(contains('expand')));
     });
   });
 }

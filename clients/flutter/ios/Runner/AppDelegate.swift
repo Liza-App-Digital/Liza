@@ -248,6 +248,17 @@ enum LizaShareMedia {
     willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
+    let originalCompletion = completionHandler
+    let completionHandler: (UNNotificationPresentationOptions) -> Void = { options in
+      originalCompletion(options)
+      let remote = notification.request.trigger is UNPushNotificationTrigger
+      let context = NativePushJournal.context(notification.request.content.userInfo,
+        requestId: notification.request.identifier, source: remote ? .remote : .local,
+        render: remote ? .unknown : .dartLocal)
+      NativePushJournal.shared?.enqueue(.presentation, context: context,
+        outcome: options.isEmpty ? .suppressed : (remote ? .bannerSoundList : .plugin),
+        presentationOptions: options.rawValue)
+    }
     let userInfo = notification.request.content.userInfo
     let isRemote = notification.request.trigger is UNPushNotificationTrigger
     let appActive = UIApplication.shared.applicationState == .active

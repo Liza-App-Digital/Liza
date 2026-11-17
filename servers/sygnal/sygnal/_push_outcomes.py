@@ -87,6 +87,43 @@ def _hash128(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
 
 
+def emit_dispatch_trace(
+    log: NotificationLoggerAdapter,
+    pushkey: str,
+    event_id: str,
+    dispatch_id: str,
+    attempt: int,
+    apns_id: str,
+    attached: bool,
+    phase: str = "prepared",
+    status: Optional[int] = None,
+) -> None:
+    """Связь серверной попытки с payload; не меняет PUSH_OUTCOME-контракт.
+
+    dispatch_id создан сервером один раз на вызов dispatch, apns_id — отдельно
+    выбранный идентификатор запроса провайдеру. Ни один не является OS request ID.
+    """
+    log.info(
+        "PUSH_DISPATCH_TRACE %s",
+        json.dumps(
+            {
+                "provider": "apns",
+                "pushkey_hash": _hash128(pushkey),
+                "event_hash": _hash128(event_id),
+                "dispatch_id": dispatch_id,
+                "attempt": attempt,
+                "attempt_scope": "sygnal_dispatch",
+                "phase": phase,
+                "status": status,
+                "apns_id": apns_id,
+                "payload_trace": "attached" if attached else "omitted_size_limit",
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+    )
+
+
 def emit_apns_id(
     log: NotificationLoggerAdapter,
     pushkey: str,

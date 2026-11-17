@@ -27,6 +27,7 @@ import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/news_audience.dart';
 import 'package:liza/utils/notification_background_handler.dart';
 import 'package:liza/utils/push_client_resolver.dart';
+import 'package:liza/utils/push_event_metadata.dart';
 import 'package:liza/utils/push_helper.dart';
 import 'package:liza/utils/push_journal.dart';
 import 'package:liza/utils/push_probe_api.dart';
@@ -37,6 +38,23 @@ import '../config/app_config.dart';
 import '../config/setting_keys.dart';
 import '../widgets/matrix.dart';
 import 'platform_infos.dart';
+
+class _LocalBannerObservation {
+  _LocalBannerObservation({
+    this.originServerTs,
+    this.clientName,
+    required this.mediaKind,
+    required this.relationKind,
+    this.relationTargetId,
+  });
+
+  final DateTime? originServerTs;
+  final String? clientName;
+  final PushMediaKind mediaKind;
+  final PushRelationKind relationKind;
+  final String? relationTargetId;
+  DateTime? submittedAt;
+}
 
 class NoTokenException implements Exception {
   String get cause => 'Cannot get firebase token';
@@ -387,20 +405,49 @@ class BackgroundPush {
   /// Нужен, чтобы опоздавший APNs-пуш того же события не дал второй баннер.
   /// Ограничен по размеру: держать всю историю незачем, дубль возможен только
   /// в окне «локально показали → приехал пуш».
-  final _locallyShownEventIds = <String>[];
+  final _locallyShownEventIds = <String, _LocalBannerObservation>{};
   static const _locallyShownLimit = 200;
 
-  void markLocallyShown(String eventId) {
-    if (eventId.isEmpty) return;
+  Object? markLocallyShown(
+    String eventId, {
+    DateTime? originServerTs,
+    String? clientName,
+    String? msgtype,
+    bool isVoice = false,
+    PushRelationKind relationKind = PushRelationKind.unknown,
+    String? relationTargetId,
+  }) {
+    if (eventId.isEmpty) return null;
     _locallyShownEventIds.remove(eventId);
-    _locallyShownEventIds.add(eventId);
+    _locallyShownEventIds[eventId] = _LocalBannerObservation(
+      originServerTs: originServerTs,
+      clientName: clientName?.isNotEmpty == true ? clientName : null,
+      mediaKind: pushMediaKind(msgtype, isVoice: isVoice),
+      relationKind: relationKind,
+      relationTargetId: relationTargetId,
+    );
     if (_locallyShownEventIds.length > _locallyShownLimit) {
-      _locallyShownEventIds.removeAt(0);
+      _locallyShownEventIds.remove(_locallyShownEventIds.keys.first);
+    }
+    return _locallyShownEventIds[eventId];
+  }
+
+  /// Отдельно от раннего резерва: только успешный ответ API уведомлений ОС.
+  /// Это не свидетельство видимого баннера или звука.
+  void markLocalSubmitted(
+    String eventId, {
+    required Object? reservation,
+    DateTime? now,
+  }) {
+    final current = _locallyShownEventIds[eventId];
+    if (current != null && identical(current, reservation)) {
+      current.submittedAt = now ?? DateTime.now();
     }
   }
 
   @visibleForTesting
-  bool isLocallyShown(String eventId) => _locallyShownEventIds.contains(eventId);
+  bool isLocallyShown(String eventId) =>
+      _locallyShownEventIds.containsKey(eventId);
 
   /// События, по которым APNs-пуш УЖЕ дошёл до этого процесса (`onMessage`;
   /// на macOS его зовёт `willPresent`, на iOS — `didReceiveRemoteNotification`,
@@ -457,8 +504,9 @@ class BackgroundPush {
   /// сообщения. Прочитанность берём из [Room.isUnreadOrInvited] (тот же
   /// инвариант, что у бейджа), а НЕ из `notificationCount` — он server-stuck в
   /// федеративных и mentions-only комнатах.
-  Future<bool> shouldSuppressNativeBanner(Map<String, dynamic> userInfo) async =>
-      (await classifyNativeBanner(userInfo)).suppress;
+  Future<bool> shouldSuppressNativeBanner(
+    Map<String, dynamic> userInfo,
+  ) async => (await classifyNativeBanner(userInfo)).suppress;
 
   /// Ответ `willPresent` (его macOS зовёт ТОЛЬКО у активного приложения).
   /// Активная ветка натива по неоткрытому чату баннер не рисует — считает, что
@@ -480,35 +528,39 @@ class BackgroundPush {
     return nativeBannerGateFor(
       verdict.decision,
       userInfo['event_id'] as String?,
+      observation: userInfo,
     );
   }
 
   @visibleForTesting
   NativeBannerGate nativeBannerGateFor(
     ApnsBannerDecision decision,
-    String? eventId,
-  ) {
+    String? eventId, {
+    Map<String, dynamic>? observation,
+  }) {
+    void note(PushReason reason) =>
+        _journalGate(reason, eventId, observation: observation);
     switch (decision) {
       case ApnsBannerDecision.suppressLocal:
       case ApnsBannerDecision.suppressRead:
-        _journalGate(PushReason.suppress, eventId);
+        note(PushReason.suppress);
         return NativeBannerGate.suppress;
       case ApnsBannerDecision.unknownEvent:
         if (eventId == null || eventId.isEmpty) {
-          _journalGate(PushReason.silent, eventId);
+          note(PushReason.silent);
           return NativeBannerGate.silent;
         }
         if (isLocallyShown(eventId)) {
-          _journalGate(PushReason.suppress, eventId);
+          note(PushReason.suppress);
           return NativeBannerGate.suppress;
         }
         markNativelyReceived(eventId);
         Logs().v('[Push] Native banner: push ahead of sync', eventId);
-        _journalGate(PushReason.banner, eventId);
+        note(PushReason.banner);
         return NativeBannerGate.banner;
       case ApnsBannerDecision.show:
       case ApnsBannerDecision.noEvent:
-        _journalGate(PushReason.silent, eventId);
+        note(PushReason.silent);
         return NativeBannerGate.silent;
     }
   }
@@ -521,13 +573,23 @@ class BackgroundPush {
     ApnsBannerDecision.noEvent => PushReason.noEvent,
   };
 
-  void _journalGate(PushReason reason, String? eventId) =>
-      PushJournal.instance.record(
-        PushStage.gate,
-        reason: reason,
-        eventId: eventId,
-        state: WidgetsBinding.instance.lifecycleState,
-      );
+  void _journalGate(
+    PushReason reason,
+    String? eventId, {
+    Map<String, dynamic>? observation,
+  }) {
+    final account = observation?['client_name'];
+    PushJournal.instance.record(
+      PushStage.gate,
+      reason: reason,
+      eventId: eventId,
+      accountName: account is String && account.isNotEmpty ? account : null,
+      mediaKind: pushApnsMediaKind(observation ?? const {}),
+      relationKind: PushRelationKind.unknown,
+      source: PushObservationSource.apnsPreview,
+      state: WidgetsBinding.instance.lifecycleState,
+    );
+  }
 
   /// Тот же предикат, но с именем причины и временем известного события —
   /// для решения на приходе пуша ([handleApnsMessage]) и телеметрии.
@@ -538,7 +600,15 @@ class BackgroundPush {
     final eventId = userInfo['event_id'] as String?;
     if (eventId != null && eventId.isNotEmpty && isLocallyShown(eventId)) {
       Logs().v('[Push] Suppress native banner: already shown locally', eventId);
-      return const ApnsBannerVerdict(ApnsBannerDecision.suppressLocal);
+      final local = _locallyShownEventIds[eventId]!;
+      return ApnsBannerVerdict(
+        ApnsBannerDecision.suppressLocal,
+        originServerTs:
+            local.clientName != null &&
+                local.clientName == userInfo['client_name']
+            ? local.originServerTs
+            : null,
+      );
     }
     if (roomId == null || roomId.isEmpty || eventId == null || eventId.isEmpty) {
       return const ApnsBannerVerdict(ApnsBannerDecision.noEvent);
@@ -551,12 +621,16 @@ class BackgroundPush {
       senderId: userInfo['sender'] as String?,
     );
     final room = target.getRoomById(roomId);
-    if (room == null) return const ApnsBannerVerdict(ApnsBannerDecision.unknownEvent);
+    if (room == null) {
+      return const ApnsBannerVerdict(ApnsBannerDecision.unknownEvent);
+    }
     // ТОЛЬКО локальная база: `Room.getEventById` при промахе идёт в сеть
     // (`/rooms/../event/..`), а это синхронный участок показа баннера — сетевой
     // запрос здесь означал бы задержку и лишний трафик на каждый пуш.
     final known = await target.database.getEventById(eventId, room);
-    if (known == null) return const ApnsBannerVerdict(ApnsBannerDecision.unknownEvent);
+    if (known == null) {
+      return const ApnsBannerVerdict(ApnsBannerDecision.unknownEvent);
+    }
     if (room.isUnreadOrInvited) {
       return ApnsBannerVerdict(
         ApnsBannerDecision.show,
@@ -606,20 +680,40 @@ class BackgroundPush {
     Future<void> Function(Map<String, dynamic> raw)? clearing,
     PushJournal? journal,
   }) async {
+    // Возраст до callback Dart, а не время транспорта APNs до ОС.
+    // Ожидание retract не должно искусственно увеличивать эту величину.
+    final receivedAt = now ?? DateTime.now();
+    final callbackState = WidgetsBinding.instance.lifecycleState;
+    final appState = callbackState?.name ?? 'unknown';
     final raw = Map<String, dynamic>.from(message['data'] ?? message);
     final jr = journal ?? PushJournal.instance;
+    // Диагностическая принадлежность только из payload, без routing fallback.
+    final rawClientName = raw['client_name'];
+    final accountName = rawClientName is String && rawClientName.isNotEmpty
+        ? rawClientName
+        : null;
+    final apnsMediaKind = pushApnsMediaKind(raw);
     // Журнал — наблюдатель: его сбой не трогает решение и retract
     // (RL-macos-push-late-apns-retract AC-7, RL-push-health-report AC-7).
-    void note(PushReason reason, {String? eventId, int? latencyS, DateTime? at}) {
+    void note(
+      PushReason reason, {
+      String? eventId,
+      int? latencyS,
+      DateTime? at,
+    }) {
       try {
         jr.record(
           PushStage.apns,
           reason: reason,
           eventId: eventId,
           roomId: raw['room_id'] as String?,
-          state: WidgetsBinding.instance.lifecycleState,
+          accountName: accountName,
+          mediaKind: apnsMediaKind,
+          relationKind: PushRelationKind.unknown,
+          source: PushObservationSource.apnsPreview,
+          state: callbackState,
           value: latencyS,
-          now: at,
+          now: at ?? receivedAt,
         );
       } catch (_) {}
     }
@@ -632,7 +726,14 @@ class BackgroundPush {
       return const ApnsMessageOutcome(ApnsBannerDecision.noEvent);
     }
     final eventId = raw['event_id'] as String? ?? '';
-    final deliverFn = deliver ??
+    final local = _locallyShownEventIds[eventId];
+    // Снимок ДО await: завершение local show во время retract не доказывает,
+    // что ОС приняла локальное уведомление до этого callback.
+    final submittedAt = local?.submittedAt;
+    final localAccountMatches =
+        local?.clientName != null && local!.clientName == raw['client_name'];
+    final deliverFn =
+        deliver ??
         (Map<String, dynamic> r) => pushHelper(
               PushNotification.fromJson(r),
               clients: clients,
@@ -647,7 +748,10 @@ class BackgroundPush {
     if (eventId.isNotEmpty && isNativelyReceived(eventId)) {
       Logs().v('[Push] apns duplicate onMessage ignored', eventId);
       note(PushReason.duplicate, eventId: eventId);
-      return const ApnsMessageOutcome(ApnsBannerDecision.noEvent, duplicate: true);
+      return const ApnsMessageOutcome(
+        ApnsBannerDecision.noEvent,
+        duplicate: true,
+      );
     }
     // До всего остального: `showLocalNotification` из догоняющего sync смотрит
     // на эту отметку (RL-macos-push-banner-read-suppress AC-10).
@@ -658,6 +762,38 @@ class BackgroundPush {
       return const ApnsMessageOutcome(ApnsBannerDecision.noEvent);
     }
     final verdict = await classifyNativeBanner(raw);
+    final origin = verdict.originServerTs;
+    final latency = origin == null ? null : receivedAt.difference(origin);
+    note(
+      _journalReason(verdict.decision),
+      eventId: eventId,
+      latencyS: latency?.inSeconds,
+      at: receivedAt,
+    );
+    final hasCollision = verdict.decision == ApnsBannerDecision.suppressLocal &&
+        localAccountMatches &&
+        submittedAt != null &&
+        !submittedAt.isAfter(receivedAt);
+    if (hasCollision) {
+      // Самодостаточная улика ДО await retract и любого report/throttle.
+      // Даже ошибка/зависание снятия не уничтожит известную цепочку.
+      try {
+        jr.record(
+          PushStage.collision,
+          reason: PushReason.suppressLocal,
+          eventId: eventId,
+          roomId: raw['room_id'] as String?,
+          accountName: accountName,
+          mediaKind: local.mediaKind,
+          relationKind: local.relationKind,
+          relationTargetId: local.relationTargetId,
+          source: PushObservationSource.localEvent,
+          state: callbackState,
+          value: receivedAt.difference(submittedAt).inMilliseconds,
+          now: receivedAt,
+        );
+      } catch (_) {}
+    }
     var retractResult = 'n/a';
     if (verdict.suppress) {
       final ms = retract != null
@@ -671,6 +807,10 @@ class BackgroundPush {
               ms == null ? PushReason.retractMissed : PushReason.retractFound,
           eventId: eventId,
           roomId: raw['room_id'] as String?,
+          accountName: accountName,
+          mediaKind: apnsMediaKind,
+          relationKind: PushRelationKind.unknown,
+          source: PushObservationSource.apnsPreview,
           state: WidgetsBinding.instance.lifecycleState,
           value: ms,
         );
@@ -678,22 +818,13 @@ class BackgroundPush {
     } else {
       await deliverFn(raw);
     }
-    final moment = now ?? DateTime.now();
-    final origin = verdict.originServerTs;
-    final latency = origin == null ? null : moment.difference(origin);
     final outcome = ApnsMessageOutcome(
       verdict.decision,
       latency: latency,
       retract: retractResult,
     );
-    note(
-      _journalReason(verdict.decision),
-      eventId: eventId,
-      latencyS: latency?.inSeconds,
-      at: moment,
-    );
     try {
-      final state = WidgetsBinding.instance.lifecycleState?.name ?? 'unknown';
+      final state = appState;
       Logs().v(
         '[Push] apns latency=${latency == null ? 'unknown' : '${latency.inSeconds}s'} '
         'decision=${verdict.decision.name} retract=$retractResult state=$state',
@@ -710,6 +841,24 @@ class BackgroundPush {
           report(reason, tags);
         } else {
           Monitoring.reportPushIssue(reason, tags: tags);
+        }
+      }
+      if (hasCollision) {
+        final tags = <String, String>{
+          'push.observation': 'collision_risk',
+          'push.media_kind': local.mediaKind.name,
+          'push.local_to_callback_ms':
+              '${receivedAt.difference(submittedAt).inMilliseconds}',
+          'push.retract': retractResult,
+          'push.app_state': state,
+        };
+        // Успех API local show + callback APNs — риск пересечения, а не
+        // свидетельство двух видимых баннеров/звуков. Частоту ограничивает
+        // существующий Monitoring.reportPushIssue (10 мин per-reason).
+        if (report != null) {
+          report('apns_local_collision', tags);
+        } else {
+          Monitoring.reportPushIssue('apns_local_collision', tags: tags);
         }
       }
     } catch (e, s) {

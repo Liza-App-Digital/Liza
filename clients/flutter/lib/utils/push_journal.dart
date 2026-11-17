@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState;
@@ -59,7 +60,26 @@ enum PushStage {
   /// Пишется по `suppressLocal`/`suppressRead`: без него не отличить «вспышка
   /// ≤0,4 с» от «баннер остался на экране».
   retract,
+
+  /// APNs callback после успешной локальной отправки: риск двойного баннера,
+  /// а не доказательство показа. `value` — мс от отправки до callback.
+  collision,
 }
+
+/// Только наблюдённый тип; отсутствие метаданных не означает `other`.
+enum PushMediaKind { voice, audio, other, unknown }
+
+enum PushRelationKind {
+  none,
+  reply,
+  replace,
+  thread,
+  annotation,
+  other,
+  unknown,
+}
+
+enum PushObservationSource { localEvent, apnsPreview, native, localSubmission }
 
 /// Закрытый перечень причин. Свободного текста журнал не принимает
 /// (инвариант `RL-push-health-report`: в телеметрию нельзя протащить текст
@@ -113,7 +133,7 @@ enum PushReason {
   authEphemeral,
 }
 
-/// Одна запись журнала. Поля — только числа, enum и hash8.
+/// Одна запись журнала. Поля — только числа, enum, хэши и ID записи.
 @immutable
 class PushJournalEntry {
   const PushJournalEntry({
@@ -124,6 +144,15 @@ class PushJournalEntry {
     this.eventHash,
     this.roomHash,
     this.value,
+    this.recordId,
+    this.eventHash128,
+    this.accountHash128,
+    this.mediaKind,
+    this.relationKind,
+    this.relationTargetHash128,
+    this.source,
+    this.runId,
+    this.observedBuild,
   });
 
   final int timeMs;
@@ -133,15 +162,36 @@ class PushJournalEntry {
   final String? eventHash;
   final String? roomHash;
   final int? value;
+  final String? recordId;
+  final String? eventHash128;
+  final String? accountHash128;
+  final PushMediaKind? mediaKind;
+  final PushRelationKind? relationKind;
+  final String? relationTargetHash128;
+  final PushObservationSource? source;
+  final String? runId;
+  final String? observedBuild;
 
   Map<String, Object> toJson() => {
     't': timeMs,
     's': stage.name,
     if (reason != null) 'r': reason!.name,
     if (state != null) 'st': state!.name,
-    if (eventHash != null) 'e': eventHash!,
-    if (roomHash != null) 'rm': roomHash!,
+    if (_valid(eventHash, _hashRe) != null) 'e': eventHash!,
+    if (_valid(roomHash, _hashRe) != null) 'rm': roomHash!,
     if (value != null) 'v': value!,
+    if (_valid(recordId, _recordIdRe) != null) 'id': recordId!,
+    if (_valid(eventHash128, _hash128Re) != null) 'e128': eventHash128!,
+    if (_valid(accountHash128, _hash128Re) != null) 'a128': accountHash128!,
+    if (mediaKind != null) 'kind': mediaKind!.name,
+    if (relationKind != null) 'rel': relationKind!.name,
+    if (_valid(relationTargetHash128, _hash128Re) != null)
+      'target128': relationTargetHash128!,
+    if (source != null) 'src': source!.name,
+    if (_valid(runId, _hash128Re) != null) 'run_id': runId!,
+    if (_valid(runId, _hash128Re) != null) 'process_role': 'dart',
+    if (_valid(observedBuild, _buildRe) != null)
+      'observed_build': observedBuild!,
   };
 
   /// Терпимый разбор: битая или чужая строка → null, а не исключение
@@ -161,9 +211,22 @@ class PushJournalEntry {
         stage: stage,
         reason: _byName(PushReason.values, raw['r']),
         state: _byName(AppLifecycleState.values, raw['st']),
-        eventHash: e is String && _isHash(e) ? e : null,
-        roomHash: rm is String && _isHash(rm) ? rm : null,
+        eventHash: _valid(e, _hashRe),
+        roomHash: _valid(rm, _hashRe),
         value: v is int ? v : null,
+        recordId: _valid(raw['id'], _recordIdRe),
+        eventHash128: _valid(raw['e128'], _hash128Re),
+        accountHash128: _valid(raw['a128'], _hash128Re),
+        mediaKind:
+            _byName(PushMediaKind.values, raw['kind']) ??
+            (raw['kind'] is String ? PushMediaKind.unknown : null),
+        relationKind:
+            _byName(PushRelationKind.values, raw['rel']) ??
+            (raw['rel'] is String ? PushRelationKind.unknown : null),
+        relationTargetHash128: _valid(raw['target128'], _hash128Re),
+        source: _byName(PushObservationSource.values, raw['src']),
+        runId: _valid(raw['run_id'], _hash128Re),
+        observedBuild: _valid(raw['observed_build'], _buildRe),
       );
     } catch (_) {
       return null;
@@ -179,7 +242,11 @@ class PushJournalEntry {
   }
 
   static final _hashRe = RegExp(r'^[0-9a-f]{8}$');
-  static bool _isHash(String s) => _hashRe.hasMatch(s);
+  static final _hash128Re = RegExp(r'^[0-9a-f]{32}$');
+  static final _recordIdRe = RegExp(r'^[0-9a-f]{32}-[0-9]{1,20}$');
+  static final _buildRe = RegExp(r'^[0-9][0-9.]{0,31}$');
+  static String? _valid(Object? value, RegExp pattern) =>
+      value is String && pattern.hasMatch(value) ? value : null;
 }
 
 /// Структурный журнал пути уведомлений на устройстве.
@@ -210,42 +277,77 @@ class PushJournal {
   static String hash8(String value) =>
       sha256.convert(utf8.encode(value)).toString().substring(0, 8);
 
+  /// SHA-256/128 — тот же вектор, что `pushAckHash` и Sygnal.
+  static String hash128(String value) =>
+      sha256.convert(utf8.encode(value)).toString().substring(0, 32);
+
   final List<PushJournalEntry> _entries = [];
   final List<String> _pending = [];
   File? _file;
+  Future<void>? _initializing;
+  Timer? _flushTimer;
+  bool _needsCompaction = false;
   int? _lastSyncMs;
+  int _sequence = 0;
+  int _ringEvictions = 0;
+  int _pendingEvictions = 0;
+  int _diskEvictions = 0;
+  int _persistenceFailures = 0;
+  late final String _writerId = _newWriterId();
+  String? _observedBuild;
+  final Set<void Function(PushJournalEntry)> _observers = {};
+
+  /// Только будущие записи: build при экспорте не подменяет build наблюдения.
+  void configureObservedBuild(String? build) {
+    _observedBuild = PushJournalEntry._valid(build, PushJournalEntry._buildRe);
+  }
+
+  void addObserver(void Function(PushJournalEntry) observer) =>
+      _observers.add(observer);
+  void removeObserver(void Function(PushJournalEntry) observer) =>
+      _observers.remove(observer);
+
+  static String _newWriterId() {
+    final random = Random.secure();
+    return List.generate(
+      16,
+      (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
+  }
 
   List<PushJournalEntry> get entries => List.unmodifiable(_entries);
 
   /// Подключить файл и подтянуть прошлые записи. Вызывается один раз из
   /// главного изолята после `FileLogger.init`.
-  Future<void> init() async {
-    if (kIsWeb || _file != null) return;
+  Future<void> init() {
+    if (kIsWeb || _file != null) return Future.value();
+    return _initializing ??= _initFile().whenComplete(
+      () => _initializing = null,
+    );
+  }
+
+  Future<void> _initFile() async {
     try {
       final dir = await getApplicationSupportDirectory();
       final file = File('${dir.path}/$_fileName');
-      // Записанное до готовности файла (init идёт не блокируя старт; холодный
-      // старт от пуша пишет первым) — тоже на диск, и на первом старте, когда
-      // файла ещё нет.
-      final early = _entries.map((e) => jsonEncode(e.toJson())).toList();
+      final loaded = <PushJournalEntry>[];
       if (await file.exists()) {
         final lines = await file.readAsLines();
         final start = lines.length > maxEntries ? lines.length - maxEntries : 0;
-        final loaded = <PushJournalEntry>[];
         for (final line in lines.skip(start)) {
           final e = PushJournalEntry.tryParse(line);
           if (e != null) loaded.add(e);
         }
-        _entries.insertAll(0, loaded);
-        _trim();
-        if (await file.length() > _maxFileBytes) {
-          await file.writeAsString(_serialize(_entries), flush: true);
-        }
       }
-      _pending.addAll(early);
+      // После последнего await берём ВСЕ текущие записи. record уже положил
+      // их в pending, включая поступившие во время чтения файла.
+      _needsCompaction = file.existsSync() && file.lengthSync() > _maxFileBytes;
+      _entries.insertAll(0, loaded);
+      _trim();
       _file = file;
-      Timer.periodic(const Duration(seconds: 5), (_) => flush());
+      _flushTimer = Timer.periodic(const Duration(seconds: 5), (_) => flush());
     } catch (e) {
+      _persistenceFailures++;
       debugPrint('PushJournal init failed: $e');
     }
   }
@@ -256,6 +358,11 @@ class PushJournal {
     AppLifecycleState? state,
     String? eventId,
     String? roomId,
+    String? accountName,
+    PushMediaKind? mediaKind,
+    PushRelationKind? relationKind,
+    String? relationTargetId,
+    PushObservationSource? source,
     int? value,
     DateTime? now,
   }) {
@@ -268,10 +375,38 @@ class PushJournal {
         eventHash: eventId == null || eventId.isEmpty ? null : hash8(eventId),
         roomHash: roomId == null || roomId.isEmpty ? null : hash8(roomId),
         value: value,
+        recordId: '$_writerId-${++_sequence}',
+        eventHash128: eventId == null || eventId.isEmpty
+            ? null
+            : hash128(eventId),
+        accountHash128: accountName == null || accountName.isEmpty
+            ? null
+            : hash128(accountName),
+        mediaKind: mediaKind,
+        relationKind: relationKind,
+        relationTargetHash128:
+            relationTargetId == null || relationTargetId.isEmpty
+            ? null
+            : hash128(relationTargetId),
+        source: source,
+        runId: _writerId,
+        observedBuild: _observedBuild,
       );
       _entries.add(entry);
       _trim();
-      if (_file != null) _pending.add(jsonEncode(entry.toJson()));
+      _pending.add(jsonEncode(entry.toJson()));
+      if (_pending.length > maxEntries) {
+        final lost = _pending.length - maxEntries;
+        _pendingEvictions += lost;
+        _pending.removeRange(0, lost);
+      }
+      // Наблюдатель копирует critical record и flush до первого await. Ошибка
+      // одного слушателя не меняет решение уведомления и остальных слушателей.
+      for (final observer in List.of(_observers)) {
+        try {
+          observer(entry);
+        } catch (_) {}
+      }
     } catch (_) {
       // Наблюдатель: сбой записи не должен трогать путь уведомления.
     }
@@ -291,6 +426,7 @@ class PushJournal {
       stage,
       reason: PushJournalEntry._byName(PushReason.values, args['reason']),
       eventId: eventId is String ? eventId : null,
+      source: PushObservationSource.native,
       value: value is int ? value : null,
       now: timeMs is int ? DateTime.fromMillisecondsSinceEpoch(timeMs) : null,
     );
@@ -314,30 +450,51 @@ class PushJournal {
 
   void flush() {
     final file = _file;
-    if (file == null || _pending.isEmpty) return;
+    if (file == null || (_pending.isEmpty && !_needsCompaction)) return;
     try {
       final data = '${_pending.join('\n')}\n';
-      _pending.clear();
+      final fileBytes = file.existsSync() ? file.lengthSync() : 0;
       // Без fsync: журнал диагностический, потеря хвоста при kill допустима, а
       // fsync на UI-изоляте раз в 5 с — это микрофризы на медленном диске.
-      if (file.existsSync() && file.lengthSync() > _maxFileBytes) {
-        file.writeAsStringSync(_serialize(_entries));
+      if (_needsCompaction ||
+          fileBytes + utf8.encode(data).length > _maxFileBytes) {
+        final retained = tail(_entries, _maxFileBytes);
+        final count = retained.isEmpty
+            ? 0
+            : '\n'.allMatches(retained).length + 1;
+        final evicted = _entries.length - count;
+        final omittedPending = _entries
+            .take(evicted)
+            .map((entry) => jsonEncode(entry.toJson()))
+            .toSet();
+        file.writeAsStringSync(retained.isEmpty ? '' : '$retained\n');
+        // Меняем память и счётчики только после успешной записи: failed IO
+        // оставляет весь хвост для повтора. Кольцо соответствует файлу, поэтому
+        // следующий flush не посчитает то же вытеснение повторно.
+        _diskEvictions += evicted;
+        _ringEvictions += evicted;
+        _pendingEvictions += _pending.where(omittedPending.contains).length;
+        _entries.removeRange(0, evicted);
       } else {
         file.writeAsStringSync(data, mode: FileMode.append);
       }
+      // IO синхронное: между записью и очисткой record не вклинится.
+      // При ошибке сохраняем ограниченную очередь для следующего flush.
+      _pending.clear();
+      _needsCompaction = false;
     } catch (e) {
+      _persistenceFailures++;
       debugPrint('PushJournal flush failed: $e');
     }
   }
 
   void _trim() {
     if (_entries.length > maxEntries) {
-      _entries.removeRange(0, _entries.length - maxEntries);
+      final lost = _entries.length - maxEntries;
+      _ringEvictions += lost;
+      _entries.removeRange(0, lost);
     }
   }
-
-  static String _serialize(List<PushJournalEntry> entries) =>
-      '${entries.map((e) => jsonEncode(e.toJson())).join('\n')}\n';
 
   /// Хвост журнала (новейшие записи) JSONL-строкой не длиннее [maxBytes].
   static String tail(List<PushJournalEntry> entries, int maxBytes) {
@@ -353,11 +510,47 @@ class PushJournal {
     return lines.reversed.join('\n');
   }
 
+  /// Покрытие ровно того снимка, из которого построен экспортируемый хвост.
+  /// Счётчики относятся к процессу, а не ко всей истории установки.
+  Map<String, Object> exportCoverage(
+    List<PushJournalEntry> snapshot,
+    int maxBytes,
+  ) {
+    final exported = tail(snapshot, maxBytes);
+    final count = exported.isEmpty ? 0 : '\n'.allMatches(exported).length + 1;
+    final times = snapshot.skip(snapshot.length - count).map((e) => e.timeMs);
+    return {
+      'retained_entries': snapshot.length,
+      'exported_entries': count,
+      'tail_truncated': count < snapshot.length,
+      if (count > 0) 'first_exported_ms': times.reduce(min),
+      if (count > 0) 'last_exported_ms': times.reduce(max),
+      'ring_evictions_since_start': _ringEvictions,
+      'pending_evictions_since_start': _pendingEvictions,
+      // Подмножество ring_evictions: записи, вытесненные из снимка именно
+      // байтовым пределом файла (повторная компакция их не пересчитывает).
+      'disk_evictions_since_start': _diskEvictions,
+      'persistence_failures_since_start': _persistenceFailures,
+      'counter_scope': 'process_lifetime',
+      'crash_tail': 'best_effort_5s',
+    };
+  }
+
   @visibleForTesting
   void resetForTest() {
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    _file = null;
+    _needsCompaction = false;
     _entries.clear();
     _pending.clear();
     _lastSyncMs = null;
+    _ringEvictions = 0;
+    _pendingEvictions = 0;
+    _diskEvictions = 0;
+    _persistenceFailures = 0;
+    _observedBuild = null;
+    _observers.clear();
   }
 }
 
@@ -381,6 +574,7 @@ abstract final class PushJournalStats {
       'apns_received': 0,
       'local_shown': 0,
       'local_failed': 0,
+      'collision_risk': 0,
       'badge_writes': 0,
       'sleep_count': 0,
       'sleep_minutes': 0,
@@ -408,6 +602,8 @@ abstract final class PushJournalStats {
         case PushStage.badge:
           out['badge_writes'] = out['badge_writes']! + 1;
           if (e.value != null) out['badge_last'] = e.value!;
+        case PushStage.collision:
+          out['collision_risk'] = out['collision_risk']! + 1;
         // Сон дисплея — отдельный счётчик: процесс при нём живёт, а сон
         // системы останавливает всё, включая доставку APNs в процесс.
         case PushStage.sleep when e.reason == PushReason.screens:

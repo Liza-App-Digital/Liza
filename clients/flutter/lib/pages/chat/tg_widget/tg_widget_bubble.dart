@@ -16,6 +16,7 @@ import 'package:liza/pages/chat/events/linkified_span.dart';
 import 'package:liza/pages/chat/events/media_caption.dart';
 import 'package:liza/pages/chat/tg_widget/tg_widget_api.dart';
 import 'package:liza/pages/chat/tg_widget/tg_widget_engine.dart';
+import 'package:liza/pages/chat/tg_widget/tg_widget_expanded_opener.dart';
 import 'package:liza/pages/chat/tg_widget/tg_widget_model.dart';
 import 'package:liza/pages/chat/tg_widget/tg_widget_runtime.dart';
 import 'package:liza/pages/chat/tg_widget/tg_widget_session.dart';
@@ -103,6 +104,10 @@ class TgWidgetBubble extends StatefulWidget {
   final Widget? trailingTime;
   final bool isPreview;
 
+  /// Развёрнутый хост (панель мини-аппа): полная высота, прокрутка и видимый
+  /// блок `.liza-more`. Тот же код, подпись и trust, что и в пузыре.
+  final bool expanded;
+
   const TgWidgetBubble({
     super.key,
     required this.event,
@@ -112,9 +117,15 @@ class TgWidgetBubble extends StatefulWidget {
     required this.linkColor,
     this.trailingTime,
     this.isPreview = false,
+    this.expanded = false,
   });
 
   static TgWidgetSignatureVerifier verifier = const VodozemacTgWidgetVerifier();
+
+  /// Шов для тестов: чем открывать развёрнутый виджет. `null` — настоящая
+  /// панель мини-аппа.
+  @visibleForTesting
+  static TgWidgetExpandedOpener? debugOpenExpanded;
 
   /// Сколько раз сторож останавливал виджет сообщения: после первой
   /// остановки — одна повторная попытка при следующем показе, после второй —
@@ -147,7 +158,12 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
   ScrollPosition? _position;
   bool _visibilityScheduled = false;
   bool _wasVisible = false;
+  bool _expandTakenOver = false;
+  Timer? _visibilityRetry;
   final GlobalKey _timeKey = GlobalKey();
+
+  /// Зона, которую уголок разворота отдаёт виджету (кнопка + отступ).
+  static const double _expandReserve = 40;
 
   @visibleForTesting
   TgWidgetPhase get phase => _phase;
@@ -159,6 +175,41 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
   TgWidgetSlot get slot => _slot;
 
   TgWidgetBlock get _b => _block!;
+
+  /// Уголок разворота: только подписанный виджет с блоком подробностей,
+  /// который уже можно запускать (проверенный бот или нажато «Запустить»).
+  bool get _showExpand =>
+      !widget.expanded &&
+      !widget.isPreview &&
+      !_expandTakenOver &&
+      _block != null &&
+      _b.hasDetails &&
+      TgWidgetEngines.supported &&
+      _trust != TgWidgetTrustKind.captionOnly &&
+      (_phase == TgWidgetPhase.idle ||
+          _phase == TgWidgetPhase.live ||
+          _phase == TgWidgetPhase.stopped);
+
+  void _openExpanded() {
+    if (!_showExpand) return;
+    final caption = (widget.event.content['body'] as String?)?.trim() ?? '';
+    final title = caption.isEmpty
+        ? L10n.of(context).widgetExpandedTitle
+        : caption;
+    (TgWidgetBubble.debugOpenExpanded ?? openTgWidgetExpanded)(
+      widget.event,
+      widget.timeline,
+      title,
+    );
+  }
+
+  /// Виджет сам нарисовал кнопку разворота — клиентский уголок убираем.
+  void _takeOverExpand() {
+    if (!mounted || _expandTakenOver) return;
+    setState(() => _expandTakenOver = true);
+    final session = _session;
+    if (session != null) unawaited(session.setInset(_inset()));
+  }
 
   Client get _client => widget.event.room.client;
 
@@ -181,6 +232,22 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
     if (!TgWidgetEngines.supported) {
       _phase = TgWidgetPhase.unsupported;
       return;
+    }
+    // В панели мини-аппа виджет монтируется под ещё не выехавшую панель:
+    // первый кадр невидим, а подписки на прокрутку ленты здесь нет. Пока
+    // панель выезжает, перепроверяем видимость, иначе виджет так и остался
+    // бы в idle без живого WebView.
+    if (widget.expanded) {
+      var tries = 0;
+      _visibilityRetry = Timer.periodic(const Duration(milliseconds: 250), (
+        timer,
+      ) {
+        if (!mounted || _slot != TgWidgetSlot.none || ++tries > 8) {
+          timer.cancel();
+          return;
+        }
+        _scheduleVisibility();
+      });
     }
     unawaited(_api.scopes());
     unawaited(
@@ -324,6 +391,7 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
     _position?.removeListener(_scheduleVisibility);
     _position?.isScrollingNotifier.removeListener(_onScrolling);
     _parkTimer?.cancel();
+    _visibilityRetry?.cancel();
     TgWidgetLiveBudget.instance.remove(this);
     _unwatch?.call();
     _session?.dispose();
@@ -407,6 +475,9 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
         storageKey: _storageKey,
         viewer: _viewer,
         mxcServers: tgWidgetMxcServers(_client, _b.botId),
+        expanded: widget.expanded,
+        onExpand: _openExpanded,
+        onExpandTakeOver: _takeOverExpand,
       ),
       delegate: this,
       api: _api,
@@ -462,10 +533,18 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
   );
 
   TgWidgetInset _inset() {
-    if (_b.hasCaption) return const TgWidgetInset();
+    if (widget.expanded) return const TgWidgetInset();
+    final reserve = _showExpand ? _expandReserve : 0.0;
+    if (_b.hasCaption) {
+      return TgWidgetInset(top: reserve, right: reserve);
+    }
     final box = _timeKey.currentContext?.findRenderObject();
-    if (box is! RenderBox || !box.hasSize) return const TgWidgetInset();
+    if (box is! RenderBox || !box.hasSize) {
+      return TgWidgetInset(top: reserve, right: reserve);
+    }
     return TgWidgetInset(
+      top: reserve,
+      right: reserve,
       bottom: box.size.height + 4,
       cornerRight: box.size.width + 8,
     );
@@ -497,7 +576,7 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
 
   @override
   void onWidgetSize(double contentHeight) {
-    if (!mounted || _b.height != 0) return;
+    if (!mounted || widget.expanded || _b.height != 0) return;
     final before = _areaHeight;
     final after = TgWidgetSize.clampHeight(contentHeight);
     if (after == before && _contentHeight != null) return;
@@ -513,7 +592,7 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
   /// (в перевёрнутой ленте так и есть), `top` — держим верхний край, кроме
   /// случая «пользователь внизу ленты»: там прилипаем к низу.
   void _compensate(double delta) {
-    if (!mounted) return;
+    if (!mounted || widget.expanded) return;
     final scrollable = Scrollable.maybeOf(context);
     final pos = scrollable?.position;
     final ro = context.findRenderObject();
@@ -716,6 +795,18 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
       );
     }
 
+    if (widget.expanded) {
+      return SizedBox(
+        key: const ValueKey('tg-widget-expanded-area'),
+        width: double.infinity,
+        height: double.infinity,
+        child: ClipRRect(
+          borderRadius: BorderRadius.zero,
+          child: _areaContent(theme, l10n),
+        ),
+      );
+    }
+
     final width = block.width == 0
         ? double.infinity
         : block.width.toDouble().clamp(
@@ -744,6 +835,8 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
                 bottom: 4,
                 child: KeyedSubtree(key: _timeKey, child: widget.trailingTime!),
               ),
+            if (_showExpand)
+              Positioned(top: 4, right: 4, child: _expandChip(theme, l10n)),
           ],
         ),
       ),
@@ -756,6 +849,29 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
     );
   }
 
+  Widget _expandChip(ThemeData theme, L10n l10n) => Semantics(
+    button: true,
+    label: l10n.widgetExpand,
+    child: Material(
+      color: theme.colorScheme.surface.withAlpha(230),
+      elevation: 1,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        key: const ValueKey('tg-widget-expand'),
+        onTap: _openExpanded,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(
+            Icons.open_in_full_rounded,
+            size: 16,
+            color: theme.colorScheme.onSurface,
+          ),
+        ),
+      ),
+    ),
+  );
+
   Widget _areaContent(ThemeData theme, L10n l10n) {
     final session = _session;
     final document = _document;
@@ -765,9 +881,11 @@ class TgWidgetBubbleState extends State<TgWidgetBubble>
           document: document,
           onMessage: session.handleRaw,
           onCreated: session.attach,
+          onStage: session.onEngineStage,
           onPointer: session.onPointer,
           onActivation: session.onActivation,
           onUnexpectedNavigation: session.onUnexpectedNavigation,
+          scrollable: widget.expanded,
         ),
       );
       // Превью инлайн-результата: тап выбирает результат, виджету он не

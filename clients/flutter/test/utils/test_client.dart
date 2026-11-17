@@ -35,7 +35,11 @@ Future<Client> prepareTestClient({
     },
     database: await MatrixSdkDatabase.init(
       'test',
-      database: await databaseFactoryFfi.openDatabase(':memory:'),
+      // Каждый fixture-клиент владеет своей БД, включая одинаковый memory path.
+      database: await databaseFactoryFfi.openDatabase(
+        ':memory:',
+        options: OpenDatabaseOptions(singleInstance: false),
+      ),
       sqfliteFactory: databaseFactoryFfi,
     ),
     supportedLoginTypes: {

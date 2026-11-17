@@ -4,12 +4,14 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:matrix/matrix.dart';
+import 'package:provider/provider.dart';
 
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_overlay.dart';
 import 'package:liza/pages/chat/mini_app_window.dart';
+import 'package:liza/widgets/app_lock.dart';
 import 'package:liza/widgets/layouts/two_column_layout.dart';
 
 import '../../utils/test_client.dart';
@@ -73,6 +75,8 @@ void main() {
     WidgetTester tester,
     Size size, {
     bool twoColumn = false,
+    Brightness brightness = Brightness.light,
+    bool pinActive = false,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
@@ -82,7 +86,16 @@ void main() {
         localizationsDelegates: L10n.localizationsDelegates,
         supportedLocales: L10n.supportedLocales,
         locale: const Locale('ru'),
-        builder: (context, child) => MiniAppOverlay(child: child!),
+        theme: ThemeData(brightness: brightness),
+        builder: (context, child) {
+          final overlay = MiniAppOverlay(child: child!);
+          return pinActive
+              ? Provider<AppLock>.value(
+                  value: _HeaderTestAppLock(),
+                  child: overlay,
+                )
+              : overlay;
+        },
         home: _ProbeHome(
           twoColumn: twoColumn,
           onInit: () => homeInits++,
@@ -95,10 +108,14 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  void openShop({String path = '', bool allowDetach = true}) => manager.open(
+  void openShop({
+    String path = '',
+    bool allowDetach = true,
+    String name = 'Магазин',
+  }) => manager.open(
     appUrl: 'https://shop.example.invalid/',
     appId: 'shop',
-    appName: 'Магазин',
+    appName: name,
     room: room,
     appStartPath: path,
     allowDetach: allowDetach,
@@ -113,7 +130,7 @@ void main() {
   );
 
   Rect panelRect(WidgetTester tester) =>
-      tester.getRect(find.byKey(const ValueKey('miniapp-content-shop')));
+      tester.getRect(find.byKey(const ValueKey('miniapp-host-panel')));
 
   group('MiniAppManager', () {
     test('режим выводится из ширины и планшета: только sheet и side', () {
@@ -259,6 +276,392 @@ void main() {
           }
           expect(find.byType(PopupMenuButton<String>), findsNothing);
         });
+      }
+    }
+
+    testWidgets(
+      '5% от mouse-down восстанавливает исходный размер и держит до up',
+      (tester) async {
+        // AC:RL-miniapp-adaptive-window/52 AC:RL-miniapp-adaptive-window/53
+        // AC:RL-miniapp-adaptive-window/54 AC:RL-miniapp-adaptive-window/60
+        await pumpHost(tester, const Size(1920, 900));
+        openShop();
+        manager.panelWidth.value = 517;
+        await tester.pumpAndSettle();
+        final start = panelRect(tester).left;
+        final gesture = await tester.startGesture(
+          Offset(start, 450),
+          kind: PointerDeviceKind.mouse,
+        );
+        for (var i = 1; i <= 20; i++) {
+          await gesture.moveTo(Offset(start - i * 12, 450));
+          await tester.pump();
+        }
+        await gesture.moveTo(const Offset(700, 450));
+        await tester.pump();
+        expect(manager.panelFilled.value, isTrue);
+        await gesture.moveTo(const Offset(600, 450));
+        await tester.pump();
+        await gesture.moveTo(const Offset(695.9, 450));
+        await tester.pump();
+        expect(
+          manager.panelFilled.value,
+          isTrue,
+          reason: '4.99% от running minimum',
+        );
+        await gesture.moveTo(const Offset(696, 450));
+        await tester.pump();
+        expect(
+          manager.panelFilled.value,
+          isFalse,
+          reason: 'ровно 5%, без slop',
+        );
+        expect(panelRect(tester).width, 517);
+        for (final x in [200.0, 1500.0, 100.0]) {
+          await gesture.moveTo(Offset(x, 450));
+          await tester.pump();
+          expect(panelRect(tester).width, 517, reason: 'restore locked до up');
+        }
+        await gesture.up();
+        await tester.pumpAndSettle();
+        final next = await tester.startGesture(
+          Offset(panelRect(tester).left, 450),
+          kind: PointerDeviceKind.mouse,
+        );
+        await next.moveBy(const Offset(40, 0));
+        await tester.pump();
+        expect(panelRect(tester).width, 477);
+        await next.up();
+        await tester.pumpAndSettle();
+        expect(contentInits['shop'], 1);
+        expect(homeInits, 1);
+      },
+    );
+
+    testWidgets('filled: отдельный жест считает 5% от down без slop', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/53
+      await pumpHost(tester, const Size(1440, 900));
+      openShop();
+      manager.panelWidth.value = 512;
+      manager.panelFilled.value = true;
+      await tester.pumpAndSettle();
+      final start = tester.getCenter(
+        find.byKey(const ValueKey('miniapp-host-divider')),
+      );
+      final g = await tester.startGesture(start, kind: PointerDeviceKind.mouse);
+      await g.moveBy(const Offset(71.9, 0));
+      await tester.pump();
+      expect(manager.panelFilled.value, isTrue);
+      await g.moveBy(const Offset(.1, 0));
+      await tester.pump();
+      expect(manager.panelFilled.value, isFalse);
+      expect(panelRect(tester).width, 512);
+      await g.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('зона24 и палочка4×40, gutter обновляется без пересоздания', (
+      tester,
+    ) async {
+      // AC:RL-miniapp-adaptive-window/55 AC:RL-miniapp-adaptive-window/56
+      // AC:RL-miniapp-adaptive-window/57 AC:RL-miniapp-adaptive-window/58
+      await pumpHost(tester, const Size(1440, 900), twoColumn: true);
+      openShop();
+      await tester.pumpAndSettle();
+      final handle = find.byKey(const ValueKey('miniapp-host-divider'));
+      final content = find.byKey(const ValueKey('miniapp-content-shop'));
+      for (final filled in [false, true]) {
+        manager.panelFilled.value = filled;
+        await tester.pump();
+        final hit = tester.getRect(handle);
+        expect(hit.width, 24);
+        expect(
+          tester.getSize(find.byKey(const ValueKey('miniapp-resize-pill'))),
+          const Size(4, 40),
+        );
+        expect(tester.getRect(content).left, hit.right);
+        for (final dx in [1.0, 23.0]) {
+          final g = await tester.startGesture(
+            Offset(tester.getRect(handle).left + dx, 450),
+            kind: PointerDeviceKind.mouse,
+          );
+          await g.moveBy(const Offset(-2, 0));
+          await tester.pump();
+          expect(
+            manager.panelResizing.value,
+            isTrue,
+            reason: 'захват по краю $dx',
+          );
+          await g.up();
+          await tester.pumpAndSettle();
+        }
+      }
+      for (final width in [
+        680.0,
+        800.0,
+        840.0,
+        841.0,
+        900.0,
+        1200.0,
+        1280.0,
+        1281.0,
+        1440.0,
+      ]) {
+        tester.view.physicalSize = Size(width, 900);
+        manager.panelFilled.value = true;
+        await tester.pumpAndSettle();
+        expect(
+          panelRect(tester).left,
+          width >= 1281 ? 80 : 0,
+          reason: '$width',
+        );
+        final hit = tester.getRect(handle);
+        expect(hit.left, greaterThanOrEqualTo(0));
+        expect(
+          tester.getRect(content).left,
+          hit.right,
+          reason: 'native bounds вне hit area до down',
+        );
+        expect(columnModes.last, width >= 1281);
+        expect(
+          find.byType(TwoColumnLayout),
+          width >= 1281 ? findsOneWidget : findsNothing,
+        );
+        for (final dx in [1.0, 23.0]) {
+          final g = await tester.startGesture(
+            Offset(tester.getRect(handle).left + dx, 450),
+            kind: PointerDeviceKind.mouse,
+          );
+          await g.moveBy(const Offset(-2, 0));
+          await tester.pump();
+          expect(
+            manager.panelResizing.value,
+            isTrue,
+            reason: 'width=$width edge=$dx',
+          );
+          await g.up();
+          await tester.pumpAndSettle();
+        }
+      }
+      tester.view.physicalSize = const Size(600, 900);
+      await tester.pumpAndSettle();
+      expect(tester.getRect(content).left, 0, reason: 'sheet gutter0');
+      expect(contentInits['shop'], 1);
+      expect(homeInits, 1);
+    });
+
+    testWidgets(
+      'resize: чужой pointer не завершает, owner up/cancel/hover очищает',
+      (tester) async {
+        // AC:RL-miniapp-adaptive-window/59
+        await pumpHost(tester, const Size(1440, 900));
+        openShop();
+        await tester.pumpAndSettle();
+        final handle = find.byKey(const ValueKey('miniapp-host-divider'));
+        for (final end in ['up', 'cancel', 'hover']) {
+          final g = await tester.startGesture(
+            tester.getCenter(handle),
+            kind: PointerDeviceKind.mouse,
+          );
+          await g.moveBy(const Offset(-40, 0));
+          await tester.pump();
+          expect(manager.panelResizing.value, isTrue);
+          await tester.sendEventToBinding(
+            const PointerUpEvent(pointer: 999, device: 7),
+          );
+          await tester.sendEventToBinding(
+            const PointerCancelEvent(pointer: 999, device: 7),
+          );
+          await tester.sendEventToBinding(
+            const PointerHoverEvent(pointer: 999, device: 7),
+          );
+          await tester.pump();
+          expect(
+            manager.panelResizing.value,
+            isTrue,
+            reason: 'чужое устройство',
+          );
+          if (end == 'hover') {
+            await tester.sendEventToBinding(
+              const PointerHoverEvent(
+                pointer: 77,
+                device: 1,
+                kind: PointerDeviceKind.mouse,
+              ),
+            );
+          } else if (end == 'cancel') {
+            await g.cancel();
+          } else {
+            await g.up();
+          }
+          await tester.pumpAndSettle();
+          expect(manager.panelResizing.value, isFalse, reason: end);
+          expect(
+            find.byKey(const ValueKey('miniapp-host-shield')),
+            findsNothing,
+          );
+          if (end == 'hover') await g.cancel();
+        }
+        expect(contentInits['shop'], 1);
+      },
+    );
+
+    for (final interruption in [
+      'close',
+      'detach',
+      'noapps',
+      'width',
+      'sheet',
+      'inactive',
+      'dispose',
+    ]) {
+      testWidgets(
+        'resize: cleanup на $interruption и последующий drag работает',
+        (tester) async {
+          // AC:RL-miniapp-adaptive-window/59
+          await pumpHost(tester, const Size(1440, 900));
+          openShop();
+          await tester.pumpAndSettle();
+          final handle = find.byKey(const ValueKey('miniapp-host-divider'));
+          final g = await tester.startGesture(
+            tester.getCenter(handle),
+            kind: PointerDeviceKind.mouse,
+          );
+          await g.moveBy(const Offset(-40, 0));
+          await tester.pump();
+          expect(manager.panelResizing.value, isTrue);
+          switch (interruption) {
+            case 'close':
+              manager.close('shop');
+            case 'detach':
+              manager.detach('shop');
+            case 'noapps':
+              manager.closeAll();
+            case 'width':
+              tester.view.physicalSize = const Size(1400, 900);
+            case 'sheet':
+              tester.view.physicalSize = const Size(600, 900);
+            case 'inactive':
+              tester.binding.handleAppLifecycleStateChanged(
+                AppLifecycleState.inactive,
+              );
+            case 'dispose':
+              await tester.pumpWidget(const SizedBox());
+          }
+          await tester.pumpAndSettle();
+          expect(manager.panelResizing.value, isFalse, reason: interruption);
+          expect(
+            find.byKey(const ValueKey('miniapp-host-shield')),
+            findsNothing,
+          );
+          await g.cancel();
+          if (interruption == 'inactive') {
+            tester.binding.handleAppLifecycleStateChanged(
+              AppLifecycleState.resumed,
+            );
+          }
+          manager.closeAll();
+          await pumpHost(tester, const Size(1440, 900));
+          openShop();
+          await tester.pumpAndSettle();
+          final next = await tester.startGesture(
+            tester.getCenter(handle),
+            kind: PointerDeviceKind.mouse,
+          );
+          await next.moveBy(const Offset(20, 0));
+          await tester.pump();
+          expect(manager.panelResizing.value, isTrue);
+          await next.up();
+          await tester.pumpAndSettle();
+          expect(manager.panelResizing.value, isFalse);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+
+    for (final longTitle in [false, true]) {
+      for (final brightness in Brightness.values) {
+        for (final windows in [false, true]) {
+          for (final pinActive in windows ? [false, true] : [false]) {
+            for (final layout in const [
+              (name: 'sheet', width: 390.0, tablet: false),
+              (name: 'narrow', width: 900.0, tablet: false),
+              (name: 'wide', width: 1440.0, tablet: false),
+              (name: 'tablet', width: 1366.0, tablet: true),
+            ]) {
+              testWidgets('close справа, detach непосредственно слева: '
+                  '${layout.name}, long=$longTitle, ${brightness.name}, '
+                  'windows=$windows, PIN=$pinActive', (tester) async {
+                // AC:RL-miniapp-adaptive-window/51
+                manager.windowsSupported = windows;
+                MiniAppOverlay.isTablet = (_) => layout.tablet;
+                final title = longTitle
+                    ? 'Очень длинное название мини-приложения с магазином, корзиной и оформлением заказа'
+                    : 'Магазин';
+                await pumpHost(
+                  tester,
+                  Size(layout.width, 900),
+                  brightness: brightness,
+                  pinActive: pinActive,
+                );
+                openShop(allowDetach: false, name: title);
+                await tester.pumpAndSettle();
+                final close = find.byKey(const ValueKey('miniapp-close'));
+                final detach = find.byKey(const ValueKey('miniapp-detach'));
+                final closeRect = tester.getRect(close);
+                final titleRect = tester.getRect(find.text(title));
+                final panel = panelRect(tester);
+                final hasDetach = windows && !pinActive;
+                final row = find
+                    .ancestor(of: close, matching: find.byType(Row))
+                    .first;
+                final buttons = find.descendant(
+                  of: row,
+                  matching: find.byType(IconButton),
+                );
+                expect(buttons, findsNWidgets(hasDetach ? 2 : 1));
+                expect(
+                  tester.widget<IconButton>(buttons.last).key,
+                  const ValueKey('miniapp-close'),
+                );
+                expect(closeRect.right, panel.right - 4);
+                expect(titleRect.left, greaterThanOrEqualTo(panel.left));
+                expect(titleRect.right, lessThanOrEqualTo(closeRect.left));
+                if (hasDetach) {
+                  final detachRect = tester.getRect(detach);
+                  expect(
+                    closeRect.left,
+                    detachRect.right,
+                    reason: 'непосредственно соседние действия',
+                  );
+                  expect(titleRect.right, lessThanOrEqualTo(detachRect.left));
+                } else {
+                  expect(
+                    detach,
+                    findsNothing,
+                    reason: 'окна не поддержаны или активен PIN',
+                  );
+                }
+                for (final button in buttons.evaluate()) {
+                  final rect = tester.getRect(find.byWidget(button.widget));
+                  expect(rect.left, greaterThanOrEqualTo(panel.left));
+                  expect(rect.right, lessThanOrEqualTo(panel.right));
+                }
+                expect(
+                  tester.widget<Text>(find.text(title)).overflow,
+                  TextOverflow.ellipsis,
+                );
+                expect(
+                  tester.takeException(),
+                  isNull,
+                  reason: 'без RenderFlex overflow',
+                );
+              });
+            }
+          }
+        }
       }
     }
 
@@ -805,23 +1208,24 @@ void main() {
     });
 
     testWidgets(
-      'потянуть обратно — резко в закреплённое с шириной по указателю',
+      'потянуть обратно на5% — восстановить исходную закреплённую ширину',
       (tester) async {
         // AC:RL-miniapp-adaptive-window/32
+        // Пересмотр16.11: возврат к снимку, а не ширина по указателю.
         await openSide(tester);
         await dragTo(tester, 400);
         expect(manager.panelFilled.value, isTrue);
 
         await dragTo(tester, 900);
         expect(manager.panelFilled.value, isFalse);
-        expect(panelRect(tester).left, 900);
-        expect(panelRect(tester).width, 540);
+        expect(panelRect(tester).left, 1000);
+        expect(panelRect(tester).width, 440);
         expect(contentInits['shop'], 1);
 
         await dragTo(tester, 400);
         await dragTo(tester, 2000);
         expect(manager.panelFilled.value, isFalse);
-        expect(panelRect(tester).width, kMiniAppMinPanelWidth);
+        expect(panelRect(tester).width, 440);
       },
     );
 
@@ -855,6 +1259,84 @@ void main() {
       expect(manager.panelFilled.value, isFalse);
       expect(panelRect(tester).left, 1000);
     });
+
+    for (final dialogFirst in [false, true]) {
+      testWidgets(
+        'Back во время resize очищает старый pointer, dialog=$dialogFirst',
+        (tester) async {
+          // AC:RL-miniapp-adaptive-window/35 AC:RL-miniapp-adaptive-window/59
+          await openSide(tester);
+          manager.panelFilled.value = true;
+          await tester.pumpAndSettle();
+          final g = await tester.startGesture(
+            tester.getCenter(divider),
+            kind: PointerDeviceKind.mouse,
+          );
+          await tester.pump();
+          expect(manager.panelResizing.value, isTrue);
+          if (dialogFirst) {
+            // Настоящий dialog панели, открытый программно при удержанном down.
+            tester
+                .widget<TextButton>(
+                  find.byKey(
+                    const ValueKey('fake-content-dialog'),
+                    skipOffstage: false,
+                  ),
+                )
+                .onPressed!();
+            await tester.pumpAndSettle();
+            expect(find.text('fake-dialog'), findsOneWidget);
+          }
+          await tester.binding.handlePopRoute();
+          await tester.pumpAndSettle();
+          expect(
+            manager.panelResizing.value,
+            isFalse,
+            reason: 'Back завершает resize до await maybePop',
+          );
+          expect(
+            find.byKey(const ValueKey('miniapp-host-shield')),
+            findsNothing,
+          );
+          if (dialogFirst) {
+            expect(find.text('fake-dialog'), findsNothing);
+            expect(
+              manager.panelFilled.value,
+              isTrue,
+              reason: 'первый Back закрывает только dialog',
+            );
+            await tester.binding.handlePopRoute();
+            await tester.pumpAndSettle();
+          }
+          expect(manager.panelFilled.value, isFalse);
+          final restored = panelRect(tester);
+          await g.moveBy(const Offset(1, 0));
+          await tester.pump();
+          expect(
+            manager.panelFilled.value,
+            isFalse,
+            reason: 'старый pointer не раскрывает панель заново',
+          );
+          expect(manager.panelResizing.value, isFalse);
+          expect(panelRect(tester), restored);
+          await g.up();
+          await tester.pumpAndSettle();
+          final next = await tester.startGesture(
+            tester.getCenter(divider),
+            kind: PointerDeviceKind.mouse,
+          );
+          await next.moveBy(const Offset(40, 0));
+          await tester.pump();
+          expect(manager.panelResizing.value, isTrue);
+          expect(panelRect(tester).width, restored.width - 40);
+          await next.up();
+          await tester.pumpAndSettle();
+          expect(manager.panelResizing.value, isFalse);
+          expect(contentInits['shop'], 1);
+          expect(homeInits, 1);
+        },
+      );
+    }
 
     testWidgets('закрытие miniApp сбрасывает режим на всё окно', (
       tester,
@@ -905,7 +1387,7 @@ class _ProbeHomeState extends State<_ProbeHome> {
     widget.onScope(LizaThemes.isColumnMode(context));
     // Сверху — кликабельный «заголовок чата» во всю ширину: в двойном экране
     // бегунок лежит поверх него и не должен красть тапы.
-    if (!widget.twoColumn) {
+    if (!widget.twoColumn || !LizaThemes.isColumnMode(context)) {
       return Scaffold(
         body: Column(
           children: [
@@ -968,4 +1450,10 @@ class _FakeContentState extends State<_FakeContent> {
       ),
     );
   }
+}
+
+// Только вход production miniAppDetachAllowed; шапка и её раскладка реальные.
+class _HeaderTestAppLock extends AppLock {
+  @override
+  bool get isActive => true;
 }

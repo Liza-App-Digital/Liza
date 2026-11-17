@@ -2,9 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'package:matrix/matrix.dart';
+
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/themes.dart';
 import 'package:liza/pages/chat/chat.dart';
+import 'package:liza/pages/chat/widget_generating_card.dart';
+import 'package:liza/utils/widget_progress.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/matrix.dart';
 
@@ -14,6 +18,30 @@ class TypingIndicators extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final store = WidgetProgressStore.of(controller.room.client);
+    return ListenableBuilder(
+      listenable: store,
+      builder: (context, _) {
+        final progress = store.forRoom(controller.room.id);
+        if (progress == null || !progress.active) return _buildTyping(context);
+        final member = controller.room.getState(
+          EventTypes.RoomMember,
+          progress.senderId,
+        );
+        final avatar = member?.content.tryGet<String>('avatar_url');
+        final name =
+            member?.content.tryGet<String>('displayname') ?? progress.senderId;
+        return WidgetGeneratingRow(
+          avatarUrl: avatar != null ? Uri.tryParse(avatar) : null,
+          name: name,
+          isAi: Matrix.of(context).isAiUser(progress.senderId),
+          progress: progress,
+        );
+      },
+    );
+  }
+
+  Widget _buildTyping(BuildContext context) {
     final theme = Theme.of(context);
 
     const avatarSize = Avatar.defaultSize / 2;
@@ -62,8 +90,9 @@ class TypingIndicators extends StatelessWidget {
                           size: avatarSize,
                           mxContent: typingUsers.first.avatarUrl,
                           name: typingUsers.first.calcDisplayname(),
-                          isHexagonal: Matrix.of(context)
-                              .isAiUser(typingUsers.first.id),
+                          isHexagonal: Matrix.of(
+                            context,
+                          ).isAiUser(typingUsers.first.id),
                         ),
                       if (typingUsers.length == 2)
                         Padding(
@@ -76,9 +105,11 @@ class TypingIndicators extends StatelessWidget {
                             name: typingUsers.length == 2
                                 ? typingUsers.last.calcDisplayname()
                                 : '+${typingUsers.length - 1}',
-                            isHexagonal: typingUsers.length == 2 &&
-                                Matrix.of(context)
-                                    .isAiUser(typingUsers.last.id),
+                            isHexagonal:
+                                typingUsers.length == 2 &&
+                                Matrix.of(
+                                  context,
+                                ).isAiUser(typingUsers.last.id),
                           ),
                         ),
                     ],

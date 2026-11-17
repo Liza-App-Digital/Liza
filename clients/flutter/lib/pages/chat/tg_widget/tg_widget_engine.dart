@@ -14,6 +14,25 @@ abstract class TgWidgetEngineHandle {
   Future<Uint8List?> snapshot();
 }
 
+/// Стадии загрузки документа, которые движок сообщает хосту. Строки, а не
+/// enum: в `error:` уходит код от плагина, и хост пишет стадию в лог как есть.
+abstract final class TgWidgetEngineStage {
+  /// WebView создан, документ ещё не начал грузиться.
+  static const String created = 'created';
+
+  /// Навигация документа началась.
+  static const String loadStarted = 'loadStarted';
+
+  /// Документ загружен (шим мог не выполниться — например, при ошибке
+  /// компиляции content-rule-list плагин `load` не зовёт вовсе).
+  static const String loadStopped = 'loadStopped';
+
+  /// Первое сообщение шима: мост живой, документ действительно выполнился.
+  static const String firstMessage = 'firstMessage';
+
+  static String failed(Object code) => 'error:$code';
+}
+
 class TgWidgetEngineConfig {
   /// Документ-обёртка (`buildTgWidgetDocument`).
   final String document;
@@ -22,9 +41,17 @@ class TgWidgetEngineConfig {
   final void Function(String raw) onMessage;
   final void Function(TgWidgetEngineHandle handle) onCreated;
 
+  /// Стадия загрузки (см. [TgWidgetEngineStage]). Нужна, чтобы «документ не
+  /// запустился» отличалось от «виджет завис после старта»: иначе оба случая
+  /// выглядят как остановка по молчанию шима.
+  final ValueChanged<String> onStage;
+
   /// Касания поверх виджета, которые видит Flutter (нативно). Гейт тапа
   /// живёт только здесь: мост виджета — недоверенный канал.
   final ValueChanged<PointerEvent> onPointer;
+
+  /// Развёрнутый вид: документ скроллится. В пузыре профиль 1 без прокрутки.
+  final bool scrollable;
 
   /// Web: пользователь активировал iframe (хостовый сигнал, не из моста).
   final VoidCallback onActivation;
@@ -36,9 +63,11 @@ class TgWidgetEngineConfig {
     required this.document,
     required this.onMessage,
     required this.onCreated,
+    required this.onStage,
     required this.onPointer,
     required this.onActivation,
     required this.onUnexpectedNavigation,
+    this.scrollable = false,
   });
 }
 

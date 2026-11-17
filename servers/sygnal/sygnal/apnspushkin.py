@@ -41,7 +41,12 @@ from sygnal._clean_body import (
     media_caption,
 )
 from sygnal._news_audience import device_platform
-from sygnal._push_outcomes import SENT_MS_KEY, PushOutcome, emit_apns_id
+from sygnal._push_outcomes import (
+    SENT_MS_KEY,
+    PushOutcome,
+    emit_apns_id,
+    emit_dispatch_trace,
+)
 from sygnal._sent_cache import SENT_CACHE_TTL_SECONDS, SentCache, client_name_of
 from sygnal.exceptions import (
     NotificationDispatchException,
@@ -401,6 +406,7 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
         collapse_key: Optional[str] = None,
         clearing: bool = False,
         stable: bool = False,
+        dispatch_id: Optional[str] = None,
     ) -> List[str]:
         """
         Actually attempts to dispatch the notification once.
@@ -420,6 +426,31 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
         )
         outcome.emit("attempt", "dispatch")
 
+        attached = False
+
+        def trace(phase: str, status: Optional[int] = None) -> None:
+            if event_id and not clearing and dispatch_id is not None:
+                emit_dispatch_trace(
+                    log, device.pushkey, event_id, dispatch_id, attempt,
+                    notif_id, attached, phase, status,
+                )
+
+        # Метка конкретного dispatch, отдельно от стабильного apns-id и OS
+        # request identifier. Диагностика не режет контент и не меняет fallback:
+        # если финальный payload полон, пропуск метки явно остаётся в логе.
+        if event_id and not clearing and dispatch_id is not None:
+            traced_payload = {
+                **shaved_payload,
+                "liza_dispatch_id": dispatch_id,
+                "liza_dispatch_attempt": attempt,
+            }
+            attached = not apnstruncate.is_too_long(
+                traced_payload, self.MAX_JSON_BODY_SIZE
+            )
+            if attached:
+                shaved_payload = traced_payload
+            trace("prepared")
+
         # Some client libraries will provide the push token in hex format already. Avoid
         # attempting to convert from base 64 to hex.
         try:
@@ -428,6 +459,7 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
             else:
                 device_token = device.pushkey
         except Exception:
+            trace("invalid_token")
             outcome.emit("error", "invalid_request")
             raise NotificationDispatchException("Invalid APNs token encoding") from None
 
@@ -449,26 +481,31 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
             # MaxAttemptsExceeded — пул исчерпал попытки connect/ConnectionClosed;
             # это не наследник ConnectionError, раньше уходил в unexpected_error
             # без повтора.
+            trace("connection_failure")
             outcome.emit("retryable", "connection_failure")
             raise TemporaryNotificationDispatchException(
                 "aioapns Connection Failure"
             ) from None
         except ApnsSendTimeout:
+            trace("timeout")
             outcome.emit("retryable", "provider_timeout")
             raise TemporaryNotificationDispatchException(
                 "APNs request timed out"
             ) from None
         except Exception:
+            trace("unexpected_error")
             outcome.emit("error", "unexpected_error")
             raise NotificationDispatchException("APNs request failed") from None
 
         try:
             code = int(response.status)
         except (TypeError, ValueError):
+            trace("invalid_response")
             outcome.emit("error", "invalid_response")
             raise NotificationDispatchException("Invalid APNs status") from None
 
         span.set_tag(tags.HTTP_STATUS_CODE, code)
+        trace("provider_response", code)
 
         RESPONSE_STATUS_CODES_COUNTER.labels(pushkin=self.name, code=code).inc()
 
@@ -629,6 +666,7 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                 else None
             )
 
+            dispatch_id = str(uuid4())
             for retry_number in range(self.MAX_TRIES):
                 try:
                     span_tags = {"retry_num": retry_number}
@@ -654,6 +692,7 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                             collapse_key=collapse_key,
                             clearing=clearing,
                             stable=stable_id is not None,
+                            dispatch_id=dispatch_id,
                         )
                         if not failed and sent_key is not None:
                             self.sent_cache.remember(sent_key)
@@ -888,6 +927,14 @@ class ApnsPushkin(ConcurrencyLimitedPushkin):
                         content_display = body_text
                     elif n.content["msgtype"] == "m.emote":
                         action_display = body_text
+                    elif (
+                        n.type == "m.room.message" and n.content["msgtype"] == "m.audio"
+                    ):
+                        # У неактивного Mac нет NSE/willPresent: APS fallback
+                        # показывается как есть. Имя аудиофайла не подпись.
+                        # Используем уже поставленные loc-key: новые voice/audio
+                        # ключи без capability сломали бы старые клиенты.
+                        content_display = media_caption(n.content)
                     else:
                         # fallback: 'body' should always be user-visible text
                         # in an m.room.message.

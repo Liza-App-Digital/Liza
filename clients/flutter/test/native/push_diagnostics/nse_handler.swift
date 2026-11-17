@@ -25,6 +25,13 @@ struct NSEHandlerTest {
                 assert(result.title.isEmpty && result.body.isEmpty)
             }
             assert(calls == 1)
+            if let entries = service.diagnosticJournal?.read() {
+                // AC:RL-push-native-diagnostics/10 — request сохраняется у всех стадий.
+                assert(entries.count == 3)
+                assert(entries.allSatisfy { $0["request_hash"] as? String == NativePushJournal.hash("test") })
+                let completed = entries.first { $0["s"] as? String == "nseCompleted" }!
+                assert(completed["render_recipe"] as? String == "empty")
+            }
         }
         print("NotificationService: callback with healthy/failed diagnostic storage PASS")
 

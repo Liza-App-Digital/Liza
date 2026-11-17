@@ -207,6 +207,38 @@ void main() {
       await tester.pumpAndSettle();
       manager.panelFilled.value = false;
       await tester.pumpAndSettle();
+      // AC:RL-miniapp-adaptive-window/51 AC:RL-miniapp-adaptive-window/58
+      // HTML сохраняет toggle, постоянную Padding и State12→24→0.
+      for (final width in [1600.0, 1200.0, 600.0, 1600.0]) {
+        tester.view.physicalSize = Size(width, 900);
+        manager.panelFilled.value = true;
+        await tester.pumpAndSettle();
+        final panel = tester.getRect(
+          find.byKey(const ValueKey('miniapp-host-panel')),
+        );
+        final content = tester.getRect(
+          find.byKey(ValueKey('content-${manager.activeAppId}')),
+        );
+        expect(
+          content.left - panel.left,
+          width < 680
+              ? 0
+              : width < 1281
+              ? 24
+              : 12,
+        );
+        final toggle = find.byKey(const ValueKey('fluid-page-chatlist-toggle'));
+        final close = find.byKey(const ValueKey('miniapp-close'));
+        if (width >= 680) {
+          expect(toggle, findsOneWidget);
+          expect(
+            tester.getRect(close).left,
+            greaterThanOrEqualTo(tester.getRect(toggle).right),
+          );
+        } else {
+          expect(toggle, findsNothing);
+        }
+      }
       expect(contentInits, 1);
       expect(homeInits, 1);
     },

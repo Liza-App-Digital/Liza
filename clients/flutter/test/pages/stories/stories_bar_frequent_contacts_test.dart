@@ -2,8 +2,8 @@
 // ledger:RL-stories-bar-frequent-contacts
 //
 // РЕАЛЬНЫЙ виджет StoriesBar над тестовым Client: после «Мой сторис» идут
-// частые собеседники по числу сообщений в DM (локальная БД), без Лизы и
-// ботов, без точки «в сети» и без кольца; тап открывает личный чат.
+// недавние DM (локальная БД), без главного чата Лизы; остальные боты
+// сохраняются, тап открывает личный чат.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -88,7 +88,10 @@ void main() {
     }
   }
 
-  Future<GoRouter> pumpBar(WidgetTester tester) async {
+  Future<GoRouter> pumpBar(
+    WidgetTester tester, {
+    bool withLizaStory = false,
+  }) async {
     late SharedPreferences prefs;
     await tester.runAsync(() async {
       SharedPreferences.setMockInitialValues({});
@@ -101,8 +104,64 @@ void main() {
       await addDm('@bob:example.invalid', 5, ageMin: 10);
       await addDm('@carol:example.invalid', 2, ageMin: 30);
       await addDm('@shop_bot:bots.liza.ru', 20, ageMin: 60);
-      await addDm('@liza:bots.liza.ru', 30, ageMin: 90);
+      await addDm(MatrixState.lizaMxid, 30, ageMin: 90);
       await addDm('@helper:example.invalid', 9);
+      // Кэш заведомо содержит Лизу: фильтр должен работать и без пересчёта.
+      await FrequentContactsCache.instance.refreshIfStale(client);
+      // Роль ещё не загружена; идентичность не должна зависеть от неё.
+      // ignore: deprecated_member_use
+      client.presences[MatrixState.lizaMxid] = CachedPresence(
+        PresenceType.online,
+        0,
+        null,
+        true,
+        MatrixState.lizaMxid,
+      );
+      if (withLizaStory) {
+        const roomId = '!liza-story:example.invalid';
+        final room = Room(id: roomId, client: client);
+        client.rooms.add(room);
+        room.setState(
+          Event(
+            eventId: r'$create-story',
+            senderId: MatrixState.lizaMxid,
+            originServerTs: DateTime.now(),
+            type: EventTypes.RoomCreate,
+            stateKey: '',
+            content: const {'com.liza.chat.type': 'stories'},
+            room: room,
+          ),
+        );
+        await client.handleSync(
+          SyncUpdate(
+            nextBatch: 'liza-story',
+            rooms: RoomsUpdate(
+              join: {
+                roomId: JoinedRoomUpdate(
+                  timeline: TimelineUpdate(
+                    events: [
+                      MatrixEvent(
+                        eventId: r'$liza-story',
+                        senderId: MatrixState.lizaMxid,
+                        originServerTs: DateTime.now(),
+                        type: EventTypes.Message,
+                        content: {
+                          'msgtype': 'm.image',
+                          'com.liza.story': {
+                            'expires_ts':
+                                DateTime.now().millisecondsSinceEpoch + 3600000,
+                            'overlays': [],
+                          },
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              },
+            ),
+          ),
+        );
+      }
     });
     matrix = _MatrixWithClient(client, prefs);
     final router = GoRouter(
@@ -149,7 +208,7 @@ void main() {
   }
 
   testWidgets('порядок: «Мой сторис» → остальные по времени последнего '
-      'сообщения (боты и Лиза считаются); без кольца и точки «в сети»', (
+      'сообщения (боты остаются, главный чат Лизы скрыт); без кольца', (
     tester,
   ) async {
     await pumpBar(tester);
@@ -164,14 +223,12 @@ void main() {
       isTrue,
       reason: 'свежий диалог левее: helper, bob, carol',
     );
-    // Категория 3 (31d9cfe0): боты и Лиза не исключаются, идут по давности.
+    // Категория 3: остальные боты остаются, главный чат Лизы исключён.
     final shop = tester.getCenter(_tile('@shop_bot:bots.liza.ru')).dx;
-    final liza = tester.getCenter(_tile('@liza:bots.liza.ru')).dx;
-    expect(
-      carol < shop && shop < liza,
-      isTrue,
-      reason: 'боты правее по давности',
-    );
+    // AC:RL-stories-bar-frequent-contacts/10
+    expect(_tile(MatrixState.lizaMxid), findsNothing);
+    // AC:RL-stories-bar-frequent-contacts/11
+    expect(carol < shop, isTrue, reason: 'боты правее по давности');
     // AC:RL-stories-bar-frequent-contacts/7
     for (final id in [
       '@helper:example.invalid',
@@ -189,6 +246,45 @@ void main() {
       );
     }
     expect(find.bySemanticsLabel('Открыть чат с bob'), findsOneWidget);
+    await teardown(tester);
+  });
+
+  testWidgets('главный чат Лизы скрыт после загрузки роли и повторного '
+      'mount с прогретым кэшем', (tester) async {
+    final router = await pumpBar(tester);
+    final cached = FrequentContactsCache.instance.cached(client.userID);
+    expect(cached.any((d) => d.userId == MatrixState.lizaMxid), isTrue);
+    // AC:RL-stories-bar-frequent-contacts/10
+    expect(_tile(MatrixState.lizaMxid), findsNothing);
+    matrix.aiIds.add(MatrixState.lizaMxid);
+    matrix.userRoleService.rolesVersion.value++;
+    await tester.pump();
+    expect(_tile(MatrixState.lizaMxid), findsNothing);
+    router.go('/rooms/temporary');
+    await tester.pumpAndSettle();
+    router.go('/');
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+    }
+    expect(FrequentContactsCache.instance.cached(client.userID), same(cached));
+    expect(_tile(MatrixState.lizaMxid), findsNothing);
+    expect(_tile('@shop_bot:bots.liza.ru'), findsOneWidget);
+    await teardown(tester);
+  });
+
+  testWidgets('активная публикация Лизы сохраняется без DM-дубля', (
+    tester,
+  ) async {
+    await pumpBar(tester, withLizaStory: true);
+    // AC:RL-stories-bar-frequent-contacts/12
+    final authorAvatar = find.byWidgetPredicate(
+      (w) => w is Avatar && w.name == 'liza' && w.storyRing != null,
+    );
+    expect(authorAvatar, findsOneWidget);
+    expect(_tile(MatrixState.lizaMxid), findsNothing);
     await teardown(tester);
   });
 

@@ -309,6 +309,8 @@ class _StoriesBarState extends State<StoriesBar>
     final matrix = Matrix.of(context);
     final shown = <String>{
       ?client.userID,
+      // Главный чат Лизы закреплён в списке чатов, в ленте не дублируем.
+      MatrixState.lizaMxid,
       for (final room in otherRooms) ?client.storyOwnerOf(room),
     };
     final online = rankOnlineContacts(

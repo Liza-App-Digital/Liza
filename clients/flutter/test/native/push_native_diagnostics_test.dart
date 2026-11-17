@@ -9,6 +9,9 @@ void main() {
   // AC:RL-push-native-diagnostics/4
   // AC:RL-push-native-diagnostics/5
   // AC:RL-push-native-diagnostics/6
+  // AC:RL-push-native-diagnostics/10
+  // AC:RL-push-native-diagnostics/11
+  // AC:RL-push-native-diagnostics/13
   // AC:RL-push-native-diagnostics/8
   // ledger:RL-push-clearing-alert-v2
   // AC:RL-push-clearing-alert-v2/6 — nse_handler.swift: пуш снятия v2

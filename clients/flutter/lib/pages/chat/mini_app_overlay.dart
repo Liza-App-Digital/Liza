@@ -10,6 +10,7 @@ import 'package:liza/pages/chat/mini_app_host_api.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/pages/chat/mini_app_web_view.dart';
 import 'package:liza/pages/chat/mini_app_window.dart';
+import 'package:liza/pages/chat/tg_widget/tg_widget_expanded_view.dart';
 import 'package:liza/utils/adaptive_orientation.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/widgets/layouts/mini_app_host_scope.dart';
@@ -119,7 +120,14 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
   bool get _resizing => _manager.panelResizing.value;
   set _resizing(bool value) => _manager.panelResizing.value = value;
   double _resizeStartLeft = 0;
-  double _resizeDx = 0;
+  double _resizeDownX = 0;
+  double _resizeWindowWidth = 0;
+  double _resizePinnedWidth = 0;
+  double? _filledMinX;
+  bool _restoreLocked = false;
+  int? _resizePointer;
+  int? _resizeDevice;
+  String? _resizeContentKey;
   bool _globalRouteAdded = false;
 
   @override
@@ -139,8 +147,7 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
 
   @override
   void dispose() {
-    _removeGlobalRoute();
-    _manager.panelResizing.value = false;
+    _onResizeEnd(notify: false);
     WidgetsBinding.instance.removeObserver(this);
     _manager.removeListener(_onManagerChanged);
     _slideController.dispose();
@@ -154,6 +161,9 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
   @override
   Future<bool> didPopRoute() async {
     if (!_manager.hasApps) return false;
+    // Back меняет навигацию/геометрию вне pointer-жеста. Завершаем session
+    // до await: это нужно и когда maybePop закроет только диалог панели.
+    _onResizeEnd();
     final active = _manager.activeApp;
     final navigator = _panelNavigatorKey.currentState;
     if (navigator != null && await navigator.maybePop()) return true;
@@ -172,7 +182,16 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     return true;
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) _onResizeEnd();
+  }
+
   void _onManagerChanged() {
+    if (!_manager.hasApps ||
+        _manager.activeApp?.contentKey != _resizeContentKey) {
+      _onResizeEnd();
+    }
     if (!_manager.hasApps) {
       // Панель уже убрана из дерева — без анимации, иначе приложение ещё
       // 300 мс сжато рядом с пустым местом.
@@ -213,18 +232,24 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     _manager.close(active.appId);
   }
 
-  // Левый край панели считаем от точки старта по суммарному смещению: тогда
-  // граница не дёргается, когда курсор ушёл за предел и возвращается. Режим
-  // «на всё окно» — чистая функция положения указателя: левее середины окна
-  // панель прыгает до колонки пространств, правее — обратно к закреплённой.
   double _panelLeft(double windowWidth) => _manager.panelFilled.value
-      ? LizaThemes.navRailWidth
+      ? (miniAppKeepsColumnsFor(windowWidth) ? LizaThemes.navRailWidth : 0)
       : windowWidth -
             clampMiniAppPanelWidth(_manager.panelWidth.value, windowWidth);
 
-  void _onResizeStart(double windowWidth) {
+  // Снимок берём именно на down: распознаватель drag добавил бы slop к
+  // порогу возврата и потерял первые изменения исходной pinned-ширины.
+  void _onResizeStart(PointerDownEvent event, double windowWidth) {
+    if (_resizePointer != null || event.buttons != kPrimaryButton) return;
+    _resizePointer = event.pointer;
+    _resizeDevice = event.device;
+    _resizeContentKey = _manager.activeApp?.contentKey;
     _resizeStartLeft = _panelLeft(windowWidth);
-    _resizeDx = 0;
+    _resizeDownX = event.position.dx;
+    _resizeWindowWidth = windowWidth;
+    _resizePinnedWidth = _manager.panelWidth.value;
+    _filledMinX = _manager.panelFilled.value ? event.position.dx : null;
+    _restoreLocked = false;
     if (!_globalRouteAdded) {
       GestureBinding.instance.pointerRouter.addGlobalRoute(_onGlobalPointer);
       _globalRouteAdded = true;
@@ -232,15 +257,19 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     setState(() => _resizing = true);
   }
 
-  /// Страховка поверх распознавателя: любое отпускание или наведение без
-  /// нажатой кнопки завершает перетаскивание, даже если up-событие распознаватель
-  /// не получил.
   void _onGlobalPointer(PointerEvent event) {
-    if (!_resizing) return;
-    if (event is PointerUpEvent ||
-        event is PointerCancelEvent ||
-        event is PointerHoverEvent) {
+    if (_resizePointer == null) return;
+    // Hover от того же устройства восстанавливает потерянный native up.
+    // Pointer id у hover может отличаться; чужая мышь/палец session не завершает.
+    if (event is PointerHoverEvent && event.device == _resizeDevice) {
       _onResizeEnd();
+      return;
+    }
+    if (event.pointer != _resizePointer) return;
+    if (event is PointerUpEvent || event is PointerCancelEvent) {
+      _onResizeEnd();
+    } else if (event is PointerMoveEvent) {
+      _onResize(event.position.dx);
     }
   }
 
@@ -250,12 +279,29 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     _globalRouteAdded = false;
   }
 
-  void _onResize(double dx, double windowWidth) {
-    _resizeDx += dx;
-    final left = _resizeStartLeft + _resizeDx;
-    final filled = left < windowWidth / 2;
-    _manager.panelFilled.value = filled;
-    if (!filled) {
+  void _onResize(double pointerX) {
+    if (_restoreLocked) return;
+    final windowWidth = _resizeWindowWidth;
+    if (_manager.panelFilled.value) {
+      final minX = math.min(_filledMinX ?? pointerX, pointerX);
+      _filledMinX = minX;
+      if (pointerX - minX + 1e-8 >= windowWidth * .05) {
+        _restoreLocked = true;
+        _manager.panelWidth.value = clampMiniAppPanelWidth(
+          _resizePinnedWidth,
+          windowWidth,
+        );
+        _manager.panelFilled.value = false;
+      }
+      return;
+    }
+    final left = _resizeStartLeft + pointerX - _resizeDownX;
+    if (left < windowWidth / 2) {
+      // Сохраняем исходную ширину и для следующего, отдельного filled-жеста.
+      _manager.panelWidth.value = _resizePinnedWidth;
+      _filledMinX = pointerX;
+      _manager.panelFilled.value = true;
+    } else {
       _manager.panelWidth.value = clampMiniAppPanelWidth(
         windowWidth - left,
         windowWidth,
@@ -263,9 +309,19 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     }
   }
 
-  void _onResizeEnd() {
+  void _onResizeEnd({bool notify = true}) {
     _removeGlobalRoute();
-    if (_resizing && mounted) setState(() => _resizing = false);
+    _resizePointer = null;
+    _resizeDevice = null;
+    _resizeContentKey = null;
+    _filledMinX = null;
+    _restoreLocked = false;
+    if (!_resizing) return;
+    if (notify && mounted) {
+      setState(() => _resizing = false);
+    } else {
+      _resizing = false;
+    }
   }
 
   @override
@@ -280,38 +336,36 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
     MiniAppWindows.instance.theme = Theme.of(context);
     // Режим сменился посреди перетаскивания границы (поворот, ширина окна) —
     // ручка размонтирована и onEnd не придёт: не оставляем висеть щит.
-    if (mode == MiniAppLayoutMode.sheet && _resizing) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _onResizeEnd());
+    if (_resizing &&
+        (mode == MiniAppLayoutMode.sheet || size.width != _resizeWindowWidth)) {
+      final pointer = _resizePointer;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_resizePointer == pointer) _onResizeEnd();
+      });
     }
 
     final panel = hasApps
         ? KeyedSubtree(
             key: _panelKey,
-            child: _MiniAppLayoutScope(
-              mode: mode,
-              wide: wide,
-              onDragUpdate: _onDragUpdate,
-              onDragEnd: _onDragEnd,
-              child: Material(
-                elevation: 16,
-                borderRadius: mode == MiniAppLayoutMode.sheet && !wide
-                    ? const BorderRadius.vertical(top: Radius.circular(14))
-                    : BorderRadius.zero,
-                clipBehavior: Clip.antiAlias,
-                color: Theme.of(context).colorScheme.surface,
-                // Свой Navigator: хост смонтирован НАД Router, и без него
-                // showDialog/PopupMenuButton/Tooltip из miniApp падают
-                // («context does not include a Navigator»).
-                // HeroControllerScope.none: MaterialApp отдаёт свой
-                // HeroController Navigator'у роутера, второй Navigator с тем же
-                // контроллером падает («can not be shared by multiple»).
-                child: HeroControllerScope.none(
-                  child: Navigator(
-                    key: _panelNavigatorKey,
-                    onGenerateRoute: (_) => PageRouteBuilder<void>(
-                      pageBuilder: (_, _, _) => const _MiniAppPanelBody(),
-                      transitionDuration: Duration.zero,
-                    ),
+            child: Material(
+              elevation: 16,
+              borderRadius: mode == MiniAppLayoutMode.sheet && !wide
+                  ? const BorderRadius.vertical(top: Radius.circular(14))
+                  : BorderRadius.zero,
+              clipBehavior: Clip.antiAlias,
+              color: Theme.of(context).colorScheme.surface,
+              // Свой Navigator: хост смонтирован НАД Router, и без него
+              // showDialog/PopupMenuButton/Tooltip из miniApp падают
+              // («context does not include a Navigator»).
+              // HeroControllerScope.none: MaterialApp отдаёт свой
+              // HeroController Navigator'у роутера, второй Navigator с тем же
+              // контроллером падает («can not be shared by multiple»).
+              child: HeroControllerScope.none(
+                child: Navigator(
+                  key: _panelNavigatorKey,
+                  onGenerateRoute: (_) => PageRouteBuilder<void>(
+                    pageBuilder: (_, _, _) => const _MiniAppPanelBody(),
+                    transitionDuration: Duration.zero,
                   ),
                 ),
               ),
@@ -356,7 +410,12 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
             );
             panelMq = mq.copyWith(size: panelRect.size);
             if (t == 1) {
-              dividerRect = Rect.fromLTWH(left - 4, 0, 8, size.height);
+              dividerRect = Rect.fromLTWH(
+                left == 0 ? 0 : left - 12,
+                0,
+                24,
+                size.height,
+              );
             }
           case MiniAppLayoutMode.sheet:
             // Лист стартует сразу под статус-баром — без лишнего зазора
@@ -390,7 +449,7 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
                   compactChatList:
                       mode == MiniAppLayoutMode.side &&
                       miniAppKeepsColumnsFor(size.width) &&
-                      _manager.activeApp?.kind == MiniAppKind.html &&
+                      (_manager.activeApp?.isPageLike ?? false) &&
                       _manager.chatListCompactable.value &&
                       !_manager.chatListExpanded.value,
                   child: widget.child,
@@ -407,7 +466,18 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
                     data: panelMq,
                     // Одинаковая обёртка во всех режимах (меняются только
                     // параметры) — WebView не переподвешивается.
-                    child: panel,
+                    child: _MiniAppLayoutScope(
+                      mode: mode,
+                      wide: wide,
+                      contentInset: mode == MiniAppLayoutMode.sheet
+                          ? 0
+                          : panelRect.left == 0
+                          ? 24
+                          : 12,
+                      onDragUpdate: _onDragUpdate,
+                      onDragEnd: _onDragEnd,
+                      child: panel,
+                    ),
                   ),
                 ),
               ),
@@ -425,9 +495,7 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
                 key: const ValueKey('miniapp-host-divider'),
                 rect: dividerRect,
                 child: _PanelResizeHandle(
-                  onStart: () => _onResizeStart(size.width),
-                  onUpdate: (dx) => _onResize(dx, size.width),
-                  onEnd: _onResizeEnd,
+                  onDown: (event) => _onResizeStart(event, size.width),
                 ),
               ),
           ],
@@ -443,12 +511,14 @@ class _MiniAppOverlayState extends State<MiniAppOverlay>
 class _MiniAppLayoutScope extends InheritedWidget {
   final MiniAppLayoutMode mode;
   final bool wide;
+  final double contentInset;
   final GestureDragUpdateCallback onDragUpdate;
   final GestureDragEndCallback onDragEnd;
 
   const _MiniAppLayoutScope({
     required this.mode,
     required this.wide,
+    required this.contentInset,
     required this.onDragUpdate,
     required this.onDragEnd,
     required super.child,
@@ -459,7 +529,9 @@ class _MiniAppLayoutScope extends InheritedWidget {
 
   @override
   bool updateShouldNotify(_MiniAppLayoutScope oldWidget) =>
-      mode != oldWidget.mode || wide != oldWidget.wide;
+      mode != oldWidget.mode ||
+      wide != oldWidget.wide ||
+      contentInset != oldWidget.contentInset;
 }
 
 /// Содержимое панели: шапка + WebView всех открытых miniApp + локальный тост.
@@ -518,13 +590,14 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
     final startPath = state is MiniAppWebViewContentState
         ? await state.currentStartPath()
         : null;
+    if (!mounted || _manager.activeApp != app) return;
     _manager.detach(app.appId, startPath: startPath);
   }
 
   GlobalKey _keyFor(MiniAppInstance app) {
     return _contentKeys.putIfAbsent(
       app.contentKey,
-      () => app.kind == MiniAppKind.html
+      () => app.isPageLike
           ? GlobalKey()
           : GlobalKey<MiniAppWebViewContentState>(),
     );
@@ -552,11 +625,16 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
               onDragEnd: scope.onDragEnd,
               onDetach:
                   miniAppDetachAllowed(context) &&
-                      _manager.activeApp?.kind != MiniAppKind.html
+                      _manager.activeApp?.kind == MiniAppKind.miniApp
                   ? _detachActiveApp
                   : null,
             ),
-            Expanded(child: _buildContentStack()),
+            Expanded(
+              child: Padding(
+                padding: EdgeInsets.only(left: scope.contentInset),
+                child: _buildContentStack(),
+              ),
+            ),
           ],
         ),
         if (_toast != null)
@@ -586,6 +664,13 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
               ? KeyedSubtree(
                   key: _keyFor(app),
                   child: debugBuilder(context, app),
+                )
+              : app.kind == MiniAppKind.widget
+              ? TgWidgetExpandedView(
+                  key: _keyFor(app),
+                  event: app.widgetEvent!,
+                  timeline: app.widgetTimeline,
+                  title: app.appName,
                 )
               : app.kind == MiniAppKind.html
               ? FluidPageView(
@@ -641,31 +726,23 @@ class _MiniAppPanelBodyState extends State<_MiniAppPanelBody> {
 
 /// Граница боковой панели — тянется мышью.
 class _PanelResizeHandle extends StatelessWidget {
-  final VoidCallback onStart;
-  final ValueChanged<double> onUpdate;
-  final VoidCallback onEnd;
+  final PointerDownEventListener onDown;
 
-  const _PanelResizeHandle({
-    required this.onStart,
-    required this.onUpdate,
-    required this.onEnd,
-  });
+  const _PanelResizeHandle({required this.onDown});
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return MouseRegion(
       cursor: SystemMouseCursors.resizeColumn,
-      child: GestureDetector(
+      child: Listener(
         behavior: HitTestBehavior.opaque,
-        onHorizontalDragStart: (_) => onStart(),
-        onHorizontalDragUpdate: (d) => onUpdate(d.delta.dx),
-        onHorizontalDragEnd: (_) => onEnd(),
-        onHorizontalDragCancel: onEnd,
+        onPointerDown: onDown,
         child: Semantics(
           label: L10n.of(context).miniAppResizePanel,
           child: Center(
             child: Container(
+              key: const ValueKey('miniapp-resize-pill'),
               width: 4,
               height: 40,
               decoration: BoxDecoration(
@@ -680,7 +757,7 @@ class _PanelResizeHandle extends StatelessWidget {
   }
 }
 
-/// Header открытого miniApp: ✕, название и «Открепить в отдельное окно».
+/// Header открытого miniApp: название, «Открепить» и крайний справа крестик.
 class _MiniAppHeader extends StatelessWidget {
   final MiniAppInstance? app;
   final MiniAppManager manager;
@@ -735,14 +812,6 @@ class _MiniAppHeader extends StatelessWidget {
               child: Row(
                 children: [
                   const SizedBox(width: 4),
-                  IconButton(
-                    key: const ValueKey('miniapp-close'),
-                    tooltip: L10n.of(context).close,
-                    icon: const Icon(Icons.close, size: 22),
-                    onPressed: () {
-                      if (app != null) manager.close(app!.appId);
-                    },
-                  ),
                   Expanded(
                     child: Text(
                       appName,
@@ -750,13 +819,12 @@ class _MiniAppHeader extends StatelessWidget {
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
                       ),
-                      textAlign: TextAlign.center,
+                      textAlign: TextAlign.start,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  if (app?.kind == MiniAppKind.html &&
-                      mode == MiniAppLayoutMode.side)
+                  if (app?.isPageLike == true && mode == MiniAppLayoutMode.side)
                     ValueListenableBuilder<bool>(
                       valueListenable: manager.chatListExpanded,
                       builder: (context, expanded, _) => IconButton(
@@ -782,6 +850,14 @@ class _MiniAppHeader extends StatelessWidget {
                       icon: const Icon(Icons.open_in_new, size: 20),
                       onPressed: onDetach,
                     ),
+                  IconButton(
+                    key: const ValueKey('miniapp-close'),
+                    tooltip: L10n.of(context).close,
+                    icon: const Icon(Icons.close, size: 22),
+                    onPressed: () {
+                      if (app != null) manager.close(app!.appId);
+                    },
+                  ),
                   const SizedBox(width: 4),
                 ],
               ),

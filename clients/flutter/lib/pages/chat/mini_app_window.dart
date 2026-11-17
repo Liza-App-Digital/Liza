@@ -151,7 +151,11 @@ class MiniAppWindowConfig {
 
 /// Окно ОС одного открепленного mini App (со стороны главного движка).
 class _MiniAppWindow {
-  _MiniAppWindow(this.contentKey);
+  _MiniAppWindow(this.contentKey, this.launchSessionId);
+
+  // Идентичность создания окна, не меняется при navigate/deep-link.
+  final String launchSessionId;
+  bool ready = false;
 
   /// Какой контент окно должно показывать сейчас.
   String contentKey;
@@ -204,7 +208,10 @@ class MiniAppWindows {
   }
 
   Future<void> _create(MiniAppInstance app) async {
-    final window = _windows[app.appId] = _MiniAppWindow(app.contentKey);
+    final window = _windows[app.appId] = _MiniAppWindow(
+      app.contentKey,
+      app.interactiveSessionId,
+    );
     final config = MiniAppWindowConfig.of(app, theme);
     try {
       final controller = await WindowController.create(
@@ -237,7 +244,11 @@ class MiniAppWindows {
   /// Новый deep-link для уже открытого окна — пересоздать контент в нём.
   void _sync(String appId, _MiniAppWindow window) {
     final controller = window.controller;
-    if (controller == null || window.sentKey == window.contentKey) return;
+    if (controller == null ||
+        !window.ready ||
+        window.sentKey == window.contentKey) {
+      return;
+    }
     final app = _manager.detachedApps
         .where((a) => a.appId == appId)
         .firstOrNull;
@@ -254,14 +265,17 @@ class MiniAppWindows {
   }
 
   void _focus(String appId) {
-    final controller = _windows[appId]?.controller;
-    if (controller != null) _invoke(controller, 'focus');
+    final window = _windows[appId];
+    final controller = window?.controller;
+    if (controller != null && window!.ready) _invoke(controller, 'focus');
   }
 
   void _close(_MiniAppWindow window) {
     final controller = window.controller;
     // Ещё создаётся — закроем, когда create вернётся (см. _create).
-    if (controller != null) _invoke(controller, 'close');
+    if (controller != null && window.ready) _invoke(controller, 'close');
+    // До ready отмену увидит сам child: закрытие не зависит от ещё
+    // незарегистрированного канала и скрытое окно не успеет показаться.
   }
 
   void _invoke(WindowController controller, String method, [Object? args]) {
@@ -403,6 +417,24 @@ class MiniAppWindows {
   Future<Object?> _handleHostCall(MethodCall call) async {
     final args = Map<String, Object?>.from(call.arguments as Map);
     final appId = args['app_id'] as String;
+    if (call.method == 'windowReady') {
+      final window = _windows[appId];
+      final app = _manager.detachedApps
+          .where((app) => app.appId == appId)
+          .firstOrNull;
+      // Старый child после close/reopen не получает разрешение нового окна.
+      // Проверяем launch session, а не contentKey: deep-link может измениться
+      // ещё до готовности движка, но должен использовать то же окно.
+      if (window == null ||
+          app == null ||
+          !app.sessionCurrent ||
+          window.launchSessionId != args['session_id']) {
+        return false;
+      }
+      window.ready = true;
+      _sync(appId, window);
+      return true;
+    }
     if (call.method != 'reportError') _hostFor(appId, args);
     switch (call.method) {
       case 'windowVisibility':
@@ -535,6 +567,9 @@ class RemoteMiniAppHostApi
 
   Future<void> close() => _call<void>('close');
 
+  Future<bool> windowReady() async =>
+      await _call<bool>('windowReady') == true;
+
   Future<void> reportVisibility(Map<Object?, Object?> snapshot) =>
       _call<void>('windowVisibility', {'snapshot': snapshot});
 }
@@ -601,8 +636,8 @@ final bool miniAppWindowFrameless =
 enum MiniAppWindowEdge { top, topLeft, topRight }
 
 /// Единственная шапка отдельного окна: название, «Прикрепить к Лизе»,
-/// «Развернуть/Восстановить», крестик. Без [onAttach] нет «Прикрепить»
-/// (жидкая страница живёт в окне), без [onToggleMaximize] — «Развернуть».
+/// крестик. Без [onAttach] нет «Прикрепить» (жидкая страница живёт в окне).
+/// [onToggleMaximize] сохраняет двойной клик по названию без отдельной кнопки.
 /// [onResizeStart] — полоса верхнего края (Windows), скрыта у развёрнутого окна.
 class MiniAppWindowHeader extends StatefulWidget {
   final String title;
@@ -686,7 +721,6 @@ class _MiniAppWindowHeaderState extends State<MiniAppWindowHeader> {
 
   @override
   Widget build(BuildContext context) {
-    final toggle = widget.onToggleMaximize;
     final row = Row(
       children: [
         Expanded(
@@ -723,18 +757,6 @@ class _MiniAppWindowHeaderState extends State<MiniAppWindowHeader> {
               ),
             ),
             onPressed: widget.onAttach,
-          ),
-        if (toggle != null)
-          IconButton(
-            key: const ValueKey('miniapp-window-maximize'),
-            tooltip: widget.maximized
-                ? widget.restoreTooltip
-                : widget.maximizeTooltip,
-            icon: Icon(
-              widget.maximized ? Icons.filter_none : Icons.crop_square,
-              size: widget.maximized ? 16 : 20,
-            ),
-            onPressed: toggle,
           ),
         IconButton(
           key: const ValueKey('miniapp-window-close'),
@@ -851,7 +873,7 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
   @override
   void initState() {
     super.initState();
-    widget.controller.setWindowMethodHandler(_handleWindowCall);
+    unawaited(_presentWhenReady());
     _nativeWindow.setMethodCallHandler((call) async {
       if (call.method == 'visibilityChanged') {
         await _reportVisibility(
@@ -859,16 +881,52 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
         );
       }
     });
-    _nativeWindow
-        .invokeMethod<void>('present', {
-          'title': _config.appName,
-          'frameless': miniAppWindowFrameless,
-        })
-        .then((_) => _reportVisibility());
     // Снимок страхует пропущенное native notification и смену главного окна.
     _visibilityTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       unawaited(_reportVisibility());
     });
+  }
+
+  bool _closing = false;
+  bool _presented = false;
+
+  Future<void> _closeNativeBestEffort() async {
+    try {
+      await _nativeWindow.invokeMethod<void>('close');
+    } catch (e) {
+      Logs().w('[MiniAppWindow] native close: $e');
+    }
+  }
+
+  Future<void> _presentWhenReady() async {
+    try {
+      await widget.controller
+          .setWindowMethodHandler(_handleWindowCall)
+          .timeout(_rpcTimeout);
+      if (!mounted || _closing) return;
+      final allowed = await RemoteMiniAppHostApi.fromConfig(widget.config)
+          .windowReady();
+      if (!mounted || _closing) return;
+      if (!allowed) {
+        _closing = true;
+        await _closeNativeBestEffort();
+        return;
+      }
+      await _nativeWindow.invokeMethod<void>('present', {
+        'title': _config.appName,
+        'frameless': miniAppWindowFrameless,
+      });
+      if (!mounted || _closing) return;
+      _presented = true;
+      await _reportVisibility();
+    } catch (e) {
+      // Нет ответа main/регистрации — скрытое окно не должно стать orphan.
+      Logs().w('[MiniAppWindow] readiness: $e');
+      if (mounted && !_closing) {
+        _closing = true;
+        await _closeNativeBestEffort();
+      }
+    }
   }
 
   Future<Object?> _handleWindowCall(MethodCall call) async {
@@ -876,6 +934,7 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
       case 'interactiveVisibility':
         return _nativeVisibility();
       case 'navigate':
+        if (_closing || !mounted) return null;
         final config = MiniAppWindowConfig.fromJson(
           Map<String, Object?>.from(call.arguments as Map),
         );
@@ -887,13 +946,18 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
         await _nativeWindow.invokeMethod<void>('setTitle', {
           'title': config.appName,
         });
-        await _nativeWindow.invokeMethod<void>('focus');
+        if (_presented && !_closing && mounted) {
+          await _nativeWindow.invokeMethod<void>('focus');
+        }
       case 'focus':
-        await _nativeWindow.invokeMethod<void>('focus');
+        if (_presented && !_closing && mounted) {
+          await _nativeWindow.invokeMethod<void>('focus');
+        }
       case 'close':
+        _closing = true;
         // Сначала ответить: закрытое окно уносит с собой движок, и ответ
         // после закрытия уже некому отправить — вызывающий ждал бы вечно.
-        Timer.run(() => _nativeWindow.invokeMethod<void>('close'));
+        Timer.run(() => unawaited(_closeNativeBestEffort()));
       case 'geometry':
         // Размеры окна в dp — нативный страж RL-miniapp-detached-window/26–29.
         return _nativeWindow.invokeMapMethod<Object?, Object?>('geometry');
@@ -934,8 +998,8 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
     }
   }
 
-  // Окно разворачивают не только кнопкой шапки (Snap, Win+↑) — значок
-  // «Развернуть/Восстановить» берёт состояние из снимка окна.
+  // Snap/Win+↑ меняют состояние без двойного клика: верхняя полоса resize
+  // берёт maximized из нативного снимка окна.
   void _syncMaximized(Map<Object?, Object?> snapshot) {
     final maximized = snapshot['maximized'];
     if (mounted && maximized is bool && maximized != _maximized) {

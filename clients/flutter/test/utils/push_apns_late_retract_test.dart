@@ -11,6 +11,7 @@
 //
 // ledger:RL-macos-push-late-apns-retract
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -169,6 +170,284 @@ void main() {
     expect(out.decision, ApnsBannerDecision.noEvent);
     expect(probe.delivered.length, 3);
     expect(probe.retracted.length, 2);
+  }, skip: !Platform.isMacOS);
+
+  // ledger:RL-macos-push-collision-observability
+  // AC:RL-macos-push-collision-observability/1
+  // AC:RL-macos-push-collision-observability/2
+  test('успешная локальная отправка сохраняет возраст и даёт один сигнал '
+      'риска пересечения каналов без содержимого сообщения', () async {
+    final now = DateTime(2026, 11, 16, 12);
+    final reservation = push.markLocallyShown(
+      r'$voice',
+      originServerTs: now.subtract(const Duration(minutes: 3)),
+      clientName: a.clientName,
+      msgtype: 'm.audio',
+      isVoice: true,
+    );
+    push.markLocalSubmitted(
+      r'$voice',
+      reservation: reservation,
+      now: now.subtract(const Duration(seconds: 1)),
+    );
+    final raw = {..._push(r'$voice'), 'client_name': a.clientName};
+    final out = await handle(raw, now: now);
+    await handle(raw, now: now);
+    expect(out.decision, ApnsBannerDecision.suppressLocal);
+    expect(out.latency, const Duration(minutes: 3));
+    expect(probe.retracted, [r'$voice']);
+    expect(probe.reports.map((r) => r.$1), [
+      'apns_late_2m',
+      'apns_local_collision',
+    ]);
+    final tags = probe.reports.last.$2;
+    expect(tags['push.media_kind'], 'voice');
+    expect(tags['push.local_to_callback_ms'], '1000');
+    expect(tags['push.observation'], 'collision_risk');
+    final values = tags.toString();
+    expect(values, isNot(contains(r'$voice')));
+    expect(values, isNot(contains(_room)));
+    expect(values, isNot(contains(a.clientName)));
+  }, skip: !Platform.isMacOS);
+
+  // AC:RL-macos-push-collision-observability/3
+  test('pending, неизвестный аккаунт, другой аккаунт и позднейший submitted '
+      'не означают пересечения успешных отправок', () async {
+    final now = DateTime(2026, 11, 16, 12);
+    for (final scenario in ['pending', 'missing', 'empty', 'other', 'future']) {
+      final id = '\$$scenario';
+      final reservation = push.markLocallyShown(
+        id,
+        clientName: scenario == 'empty' ? '' : a.clientName,
+        msgtype: 'm.audio',
+      );
+      if (scenario != 'pending') {
+        push.markLocalSubmitted(
+          id,
+          reservation: reservation,
+          now: scenario == 'future'
+              ? now.add(const Duration(seconds: 1))
+              : now.subtract(const Duration(seconds: 1)),
+        );
+      }
+      await handle({
+        ..._push(id),
+        if (scenario != 'missing')
+          'client_name': switch (scenario) {
+            'other' => 'another-client',
+            'empty' => '',
+            _ => a.clientName,
+          },
+      }, now: now);
+    }
+    expect(probe.reports, isEmpty);
+  }, skip: !Platform.isMacOS);
+
+  // AC:RL-macos-push-collision-observability/1
+  // AC:RL-macos-push-collision-observability/2
+  test('быстрое пересечение тоже наблюдается, тип ограничен закрытым набором',
+      () async {
+    final now = DateTime(2026, 11, 16, 12);
+    for (final (msgtype, isVoice, expected) in [
+      ('m.audio', true, 'voice'),
+      ('m.audio', false, 'audio'),
+      ('m.file', true, 'other'),
+      (null, true, 'unknown'),
+    ]) {
+      final id = '\$$expected';
+      final reservation = push.markLocallyShown(
+        id,
+        originServerTs: now.subtract(const Duration(seconds: 1)),
+        clientName: a.clientName,
+        msgtype: msgtype,
+        isVoice: isVoice,
+      );
+      push.markLocalSubmitted(id, reservation: reservation, now: now);
+      await handle({..._push(id), 'client_name': a.clientName}, now: now);
+      expect(probe.reports.last.$1, 'apns_local_collision');
+      expect(probe.reports.last.$2['push.media_kind'], expected);
+    }
+    expect(probe.reports.length, 4);
+  }, skip: !Platform.isMacOS);
+
+  // AC:RL-macos-push-collision-observability/4
+  test('дедуп и метаданные вытесняются вместе, повторный резерв не наследует '
+      'старую submission', () async {
+    final now = DateTime(2026, 11, 16, 12);
+    final old = push.markLocallyShown(r'$old', clientName: a.clientName);
+    push.markLocalSubmitted(r'$old', reservation: old, now: now);
+    for (var i = 0; i < 200; i++) {
+      push.markLocallyShown('\$filler$i');
+    }
+    expect(push.isLocallyShown(r'$old'), isFalse);
+    push.markLocalSubmitted(r'$old', reservation: old, now: now);
+    push.markLocallyShown(r'$old', clientName: a.clientName);
+    await handle({..._push(r'$old'), 'client_name': a.clientName}, now: now);
+    expect(probe.reports, isEmpty);
+  }, skip: !Platform.isMacOS);
+
+  // AC:RL-macos-push-collision-observability/5
+  test('возраст считается на входе, до ожидания retract', () async {
+    final before = DateTime.now();
+    push.markLocallyShown(
+      r'$wait',
+      originServerTs: before,
+      clientName: a.clientName,
+    );
+    final out = await push.handleApnsMessage(
+      {..._push(r'$wait'), 'client_name': a.clientName},
+      retract: (_) async {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        return 250;
+      },
+      deliver: probe.deliver,
+      report: probe.report,
+    );
+    expect(out.latency, isNotNull);
+    expect(out.latency!.inMilliseconds, lessThan(200));
+  }, skip: !Platform.isMacOS);
+
+  // AC:RL-macos-push-collision-observability/6
+  test(
+    'успех старого резерва не подтверждает новый резерв другого аккаунта',
+    () async {
+      final now = DateTime(2026, 11, 16, 12);
+      final old = push.markLocallyShown(
+        r'$shared',
+        clientName: 'first-account',
+      );
+      push.markLocallyShown(r'$shared', clientName: a.clientName);
+      push.markLocalSubmitted(r'$shared', reservation: old, now: now);
+      await handle({
+        ..._push(r'$shared'),
+        'client_name': a.clientName,
+      }, now: now);
+      expect(probe.reports, isEmpty);
+    },
+    skip: !Platform.isMacOS,
+  );
+
+  // AC:RL-macos-push-collision-observability/7
+  test(
+    'submission во время await retract не меняет снимок на входе callback',
+    () async {
+      final reservation = push.markLocallyShown(
+        r'$pending',
+        clientName: a.clientName,
+      );
+      final entered = Completer<void>();
+      final release = Completer<int?>();
+      final handling = push.handleApnsMessage(
+        {..._push(r'$pending'), 'client_name': a.clientName},
+        retract: (_) {
+          entered.complete();
+          return release.future;
+        },
+        deliver: probe.deliver,
+        report: probe.report,
+      );
+      await entered.future;
+      push.markLocalSubmitted(r'$pending', reservation: reservation);
+      release.complete(1);
+      await handling;
+      expect(probe.reports, isEmpty);
+    },
+    skip: !Platform.isMacOS,
+  );
+
+  // AC:RL-macos-push-collision-observability/8
+  test(
+    'сбой нового collision-репорта не меняет suppress/retract',
+    () async {
+      final now = DateTime(2026, 11, 16, 12);
+      final reservation = push.markLocallyShown(
+        r'$failed-report',
+        clientName: a.clientName,
+      );
+      push.markLocalSubmitted(
+        r'$failed-report',
+        reservation: reservation,
+        now: now,
+      );
+      final out = await push.handleApnsMessage(
+        {..._push(r'$failed-report'), 'client_name': a.clientName},
+        now: now,
+        retract: probe.retract,
+        deliver: probe.deliver,
+        report: (_, _) => throw StateError('diagnostics unavailable'),
+      );
+      expect(out.decision, ApnsBannerDecision.suppressLocal);
+      expect(out.retract, 'found:320ms');
+      expect(probe.retracted, [r'$failed-report']);
+      expect(probe.delivered, isEmpty);
+    },
+    skip: !Platform.isMacOS,
+  );
+
+  // AC:RL-macos-push-late-apns-retract/2
+  // AC:RL-macos-push-collision-observability/12
+  test('связанный журнал переживает исключение retract и сбой отчёта; '
+      'типы local и APNs не подменяются друг другом', () async {
+    final now = DateTime.utc(2026, 11, 16, 15);
+    for (final failing in ['retract', 'report']) {
+      final id = '\$$failing-persistent';
+      final reservation = push.markLocallyShown(
+        id,
+        clientName: a.clientName,
+        originServerTs: now.subtract(const Duration(minutes: 3)),
+        msgtype: 'm.audio',
+        isVoice: true,
+        relationKind: PushRelationKind.replace,
+        relationTargetId: r'$original-private',
+      );
+      push.markLocalSubmitted(
+        id,
+        reservation: reservation,
+        now: now.subtract(const Duration(seconds: 1)),
+      );
+      final journal = PushJournal.forTest();
+      final handling = push.handleApnsMessage(
+        {
+          ..._push(id),
+          'client_name': a.clientName,
+          'type': 'm.room.message',
+          'content': {'msgtype': 'm.audio', 'body': 'PRIVATE-FILENAME.ogg'},
+        },
+        now: now,
+        journal: journal,
+        retract: (_) async {
+          expect(journal.entries.where((e) => e.stage == PushStage.collision),
+              hasLength(1), reason: 'collision до первого await retract');
+          if (failing == 'retract') throw StateError('retract unavailable');
+          return 4;
+        },
+        deliver: probe.deliver,
+        report: (_, _) => throw StateError('report unavailable or throttled'),
+      );
+      if (failing == 'retract') {
+        await expectLater(handling, throwsStateError);
+      } else {
+        expect((await handling).decision, ApnsBannerDecision.suppressLocal);
+      }
+      final apns = journal.entries.firstWhere((e) => e.stage == PushStage.apns);
+      final collision = journal.entries.singleWhere((e) => e.stage == PushStage.collision);
+      expect(apns.eventHash128, PushJournal.hash128(id));
+      expect(apns.accountHash128, PushJournal.hash128(a.clientName));
+      expect(collision.accountHash128, apns.accountHash128);
+      expect(collision.eventHash128, apns.eventHash128);
+      expect(apns.mediaKind, PushMediaKind.audio);
+      expect(apns.relationKind, PushRelationKind.unknown);
+      expect(apns.source, PushObservationSource.apnsPreview);
+      expect(collision.mediaKind, PushMediaKind.voice);
+      expect(collision.relationKind, PushRelationKind.replace);
+      expect(collision.relationTargetHash128, PushJournal.hash128(r'$original-private'));
+      expect(collision.value, 1000);
+      expect(collision.timeMs, now.millisecondsSinceEpoch);
+      final serialized = journal.entries.map((e) => e.toJson()).toString();
+      for (final secret in [id, a.clientName, 'PRIVATE-FILENAME', r'$original-private']) {
+        expect(serialized, isNot(contains(secret)));
+      }
+    }
   }, skip: !Platform.isMacOS);
 
   // AC:RL-macos-push-late-apns-retract/2

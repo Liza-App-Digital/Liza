@@ -36,11 +36,8 @@ struct VisibilityObserver {
 };
 std::map<HWND, VisibilityObserver> g_visibility;
 
-// Геометрия окна mini App в dp (заявка 13.11: «должен открываться большим»,
-// минимум — «как у тебя сейчас … хороший размер», ~800×600). Синхронно с
+// Минимум контента окна mini App в dp — ~800×600. Синхронно с
 // MiniAppWindowPlugin в macos/Runner/MainFlutterWindow.swift.
-constexpr int kDefaultWidth = 1100;
-constexpr int kDefaultHeight = 820;
 constexpr int kMinWidth = 800;
 constexpr int kMinHeight = 600;
 
@@ -271,8 +268,9 @@ RECT DefaultFrame(HWND window) {
       MiniAppMainWindow() ? MiniAppMainWindow() : window,
       MONITOR_DEFAULTTONEAREST);
   const RECT area = WorkArea(monitor);
-  const SIZE size = FitWindowSize(kDefaultWidth, kDefaultHeight,
-                                  FlutterDesktopGetDpiForMonitor(monitor), area);
+  // 90% именно внешней рамки, а не client: рамки DWM уже внутри размера.
+  const SIZE size{(area.right - area.left) * 9 / 10,
+                  (area.bottom - area.top) * 9 / 10};
   const LONG left = area.left + (area.right - area.left - size.cx) / 2;
   const LONG top = area.top + (area.bottom - area.top - size.cy) / 2;
   return RECT{left, top, left + size.cx, top + size.cy};
@@ -369,12 +367,14 @@ void RegisterMiniAppWindowChannel(flutter::FlutterViewController* controller) {
           ::ShowWindow(window, ::IsZoomed(window) ? SW_RESTORE : SW_MAXIMIZE);
           result->Success(EncodableValue(::IsZoomed(window) != FALSE));
         } else if (method == "geometry") {
-          // Контент, минимум и рабочая область в dp — для нативного стража.
+          // width/height остаются client; frame* отдельно измеряет рамку. Всё в dp.
           UINT dpi = ::GetDpiForWindow(window);
           if (!dpi) dpi = 96;
           const double scale = dpi / 96.0;
           RECT client{};
           ::GetClientRect(window, &client);
+          RECT frame{};
+          ::GetWindowRect(window, &frame);
           const SIZE min = MinimumWindowSize(window);
           const LONG inset = FrameInset(dpi);
           const RECT area = WorkArea(
@@ -383,6 +383,8 @@ void RegisterMiniAppWindowChannel(flutter::FlutterViewController* controller) {
           result->Success(EncodableValue(EncodableMap{
               {EncodableValue("width"), dp(client.right - client.left)},
               {EncodableValue("height"), dp(client.bottom - client.top)},
+              {EncodableValue("frameWidth"), dp(frame.right - frame.left)},
+              {EncodableValue("frameHeight"), dp(frame.bottom - frame.top)},
               {EncodableValue("minWidth"), dp(min.cx - 2 * inset)},
               {EncodableValue("minHeight"), dp(min.cy - inset)},
               {EncodableValue("areaWidth"), dp(area.right - area.left)},
