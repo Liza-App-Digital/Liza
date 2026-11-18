@@ -2,8 +2,8 @@
 // ledger:RL-stories-bar-frequent-contacts
 //
 // РЕАЛЬНЫЙ виджет StoriesBar над тестовым Client: после «Мой сторис» идут
-// недавние DM (локальная БД), без главного чата Лизы; остальные боты
-// сохраняются, тап открывает личный чат.
+// недавние DM людей (локальная БД), без ботов и BotFather;
+// настоящие публикации ботов сохраняются, тап открывает личный чат.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -38,6 +38,23 @@ class _MatrixWithClient extends MatrixState {
 }
 
 Finder _tile(String userId) => find.byKey(ValueKey('frequentContact:$userId'));
+
+// Проверяем всех детей реального ListView, включая ещё не построенные за viewport.
+List<String> _contactIds(WidgetTester tester) {
+  final list = tester.widget<ListView>(
+    find.descendant(
+      of: find.byType(StoriesBar),
+      matching: find.byType(ListView),
+    ),
+  );
+  return (list.childrenDelegate as SliverChildListDelegate).children
+      .map((w) => w.key)
+      .whereType<ValueKey<String>>()
+      .map((k) => k.value)
+      .where((k) => k.startsWith('frequentContact:'))
+      .map((k) => k.substring('frequentContact:'.length))
+      .toList();
+}
 
 void main() {
   late Client client;
@@ -90,7 +107,9 @@ void main() {
 
   Future<GoRouter> pumpBar(
     WidgetTester tester, {
-    bool withLizaStory = false,
+    String? storyAuthor,
+    bool withLiveBot = false,
+    bool fillLimit = false,
   }) async {
     late SharedPreferences prefs;
     await tester.runAsync(() async {
@@ -106,8 +125,37 @@ void main() {
       await addDm('@shop_bot:bots.liza.ru', 20, ageMin: 60);
       await addDm(MatrixState.lizaMxid, 30, ageMin: 90);
       await addDm('@helper:example.invalid', 9);
-      // Кэш заведомо содержит Лизу: фильтр должен работать и без пересчёта.
+      for (final bot in [
+        '@botfather:bots.liza.ru',
+        '@botfather:example.invalid',
+        '@bot_father:example.invalid',
+        '@botfather:liza.local',
+        '@bot_father:liza.local',
+        '@liza:company.invalid',
+        '@company_bot:company.invalid',
+      ]) {
+        await addDm(bot, 1, ageMin: 70);
+        // ignore: deprecated_member_use
+        client.presences[bot] = CachedPresence(
+          PresenceType.online,
+          0,
+          null,
+          true,
+          bot,
+        );
+      }
+      await addDm('@botfather_helper:example.invalid', 1, ageMin: 45);
+      if (fillLimit) {
+        for (var i = 0; i < 30; i++) {
+          await addDm('@person$i:example.invalid', 1, ageMin: -1);
+        }
+        for (var i = 0; i < 31; i++) {
+          await addDm('@bot$i:bots.liza.ru', 1, ageMin: -1);
+        }
+      }
+      // Кэш содержит ботов: фильтр должен работать и без пересчёта.
       await FrequentContactsCache.instance.refreshIfStale(client);
+      if (withLiveBot) await addDm('@live_bot:bots.liza.ru', 1);
       // Роль ещё не загружена; идентичность не должна зависеть от неё.
       // ignore: deprecated_member_use
       client.presences[MatrixState.lizaMxid] = CachedPresence(
@@ -117,14 +165,14 @@ void main() {
         true,
         MatrixState.lizaMxid,
       );
-      if (withLizaStory) {
+      if (storyAuthor != null) {
         const roomId = '!liza-story:example.invalid';
         final room = Room(id: roomId, client: client);
         client.rooms.add(room);
         room.setState(
           Event(
             eventId: r'$create-story',
-            senderId: MatrixState.lizaMxid,
+            senderId: storyAuthor,
             originServerTs: DateTime.now(),
             type: EventTypes.RoomCreate,
             stateKey: '',
@@ -142,7 +190,7 @@ void main() {
                     events: [
                       MatrixEvent(
                         eventId: r'$liza-story',
-                        senderId: MatrixState.lizaMxid,
+                        senderId: storyAuthor,
                         originServerTs: DateTime.now(),
                         type: EventTypes.Message,
                         content: {
@@ -164,6 +212,7 @@ void main() {
       }
     });
     matrix = _MatrixWithClient(client, prefs);
+    matrix.aiIds.add('@company_bot:company.invalid');
     final router = GoRouter(
       routes: [
         GoRoute(
@@ -208,10 +257,20 @@ void main() {
   }
 
   testWidgets('порядок: «Мой сторис» → остальные по времени последнего '
-      'сообщения (боты остаются, главный чат Лизы скрыт); без кольца', (
-    tester,
-  ) async {
+      'сообщения; боты и BotFather скрыты', (tester) async {
     await pumpBar(tester);
+    // AC:RL-stories-bar-frequent-contacts/13
+    final contacts = _contactIds(tester);
+    expect(contacts, contains('@botfather_helper:example.invalid'));
+    expect(
+      contacts,
+      unorderedEquals([
+        '@helper:example.invalid',
+        '@bob:example.invalid',
+        '@carol:example.invalid',
+        '@botfather_helper:example.invalid',
+      ]),
+    );
     final add = tester.getCenter(find.byIcon(Icons.add_outlined)).dx;
     final helper = tester.getCenter(_tile('@helper:example.invalid')).dx;
     final bob = tester.getCenter(_tile('@bob:example.invalid')).dx;
@@ -223,12 +282,10 @@ void main() {
       isTrue,
       reason: 'свежий диалог левее: helper, bob, carol',
     );
-    // Категория 3: остальные боты остаются, главный чат Лизы исключён.
-    final shop = tester.getCenter(_tile('@shop_bot:bots.liza.ru')).dx;
     // AC:RL-stories-bar-frequent-contacts/10
     expect(_tile(MatrixState.lizaMxid), findsNothing);
     // AC:RL-stories-bar-frequent-contacts/11
-    expect(carol < shop, isTrue, reason: 'боты правее по давности');
+    expect(_tile('@shop_bot:bots.liza.ru'), findsNothing);
     // AC:RL-stories-bar-frequent-contacts/7
     for (final id in [
       '@helper:example.invalid',
@@ -271,20 +328,60 @@ void main() {
     }
     expect(FrequentContactsCache.instance.cached(client.userID), same(cached));
     expect(_tile(MatrixState.lizaMxid), findsNothing);
-    expect(_tile('@shop_bot:bots.liza.ru'), findsOneWidget);
+    // AC:RL-stories-bar-frequent-contacts/15
+    expect(cached.any((d) => d.userId == '@shop_bot:bots.liza.ru'), isTrue);
+    expect(_contactIds(tester), isNot(contains('@shop_bot:bots.liza.ru')));
     await teardown(tester);
   });
 
-  testWidgets('активная публикация Лизы сохраняется без DM-дубля', (
+  for (final author in [
+    MatrixState.lizaMxid,
+    '@shop_bot:bots.liza.ru',
+    '@bot_father:example.invalid',
+  ]) {
+    testWidgets('активная публикация $author сохраняется без DM-дубля', (
+      tester,
+    ) async {
+      await pumpBar(tester, storyAuthor: author);
+      // AC:RL-stories-bar-frequent-contacts/12
+      final authorAvatar = find.byWidgetPredicate(
+        (w) => w is Avatar && w.name == author.localpart && w.storyRing != null,
+      );
+      expect(authorAvatar, findsOneWidget);
+      expect(_tile(author), findsNothing);
+      matrix.aiIds.add(author);
+      matrix.userRoleService.rolesVersion.value++;
+      await tester.pump();
+      // AC:RL-stories-bar-frequent-contacts/9
+      expect(tester.widget<Avatar>(authorAvatar).isHexagonal, isTrue);
+      await teardown(tester);
+    });
+  }
+
+  testWidgets('новый живой DM бота отсутствует вне прогретого кэша', (
     tester,
   ) async {
-    await pumpBar(tester, withLizaStory: true);
-    // AC:RL-stories-bar-frequent-contacts/12
-    final authorAvatar = find.byWidgetPredicate(
-      (w) => w is Avatar && w.name == 'liza' && w.storyRing != null,
+    await pumpBar(tester, withLiveBot: true);
+    final cached = FrequentContactsCache.instance.cached(client.userID);
+    expect(cached.any((d) => d.userId == '@live_bot:bots.liza.ru'), isFalse);
+    expect(
+      client.rooms.any((r) => r.directChatMatrixID == '@live_bot:bots.liza.ru'),
+      isTrue,
     );
-    expect(authorAvatar, findsOneWidget);
-    expect(_tile(MatrixState.lizaMxid), findsNothing);
+    // AC:RL-stories-bar-frequent-contacts/15
+    expect(_contactIds(tester), isNot(contains('@live_bot:bots.liza.ru')));
+    await teardown(tester);
+  });
+
+  testWidgets('31 свежий бот не вытесняет 30 людей из лимита', (tester) async {
+    await pumpBar(tester, fillLimit: true);
+    // AC:RL-stories-bar-frequent-contacts/16
+    expect(
+      _contactIds(tester),
+      unorderedEquals([
+        for (var i = 0; i < 30; i++) '@person$i:example.invalid',
+      ]),
+    );
     await teardown(tester);
   });
 
@@ -303,31 +400,19 @@ void main() {
     await teardown(tester);
   });
 
-  testWidgets('бот среди частых — сотой, человек — кругом; роль, '
-      'догруженная после показа ленты, перерисовывает тайл', (tester) async {
+  testWidgets('поздняя ai-роль убирает DM без пересчёта кэша', (tester) async {
     // ledger:RL-stories-bar-frequent-contacts
     await pumpBar(tester);
-    Avatar avatarOf(String id) => tester.widget<Avatar>(
-      find.descendant(of: _tile(id), matching: find.byType(Avatar)),
-    );
-    // Роль ещё не пришла: форма по кэшу — круг.
-    expect(avatarOf('@shop_bot:bots.liza.ru').isHexagonal, isFalse);
-
-    matrix.aiIds.add('@shop_bot:bots.liza.ru');
+    final cached = FrequentContactsCache.instance.cached(client.userID);
+    expect(_tile('@helper:example.invalid'), findsOneWidget);
+    matrix.aiIds.add('@helper:example.invalid');
     matrix.userRoleService.rolesVersion.value++;
     await tester.pump();
-    // AC:RL-stories-bar-frequent-contacts/9
-    expect(
-      avatarOf('@shop_bot:bots.liza.ru').isHexagonal,
-      isTrue,
-      reason: 'бот с ролью ai в ленте сторис — сотой, как везде',
-    );
-    for (final id in [
-      '@helper:example.invalid',
-      '@bob:example.invalid',
-      '@carol:example.invalid',
-    ]) {
-      expect(avatarOf(id).isHexagonal, isFalse, reason: '$id — человек');
+    // AC:RL-stories-bar-frequent-contacts/14
+    expect(_contactIds(tester), isNot(contains('@helper:example.invalid')));
+    expect(FrequentContactsCache.instance.cached(client.userID), same(cached));
+    for (final id in ['@bob:example.invalid', '@carol:example.invalid']) {
+      expect(_contactIds(tester), contains(id), reason: '$id — человек');
     }
     await teardown(tester);
   });

@@ -3,7 +3,9 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+import 'package:liza/utils/emoji_history_store.dart';
+import 'package:liza/widgets/liza_emoji_picker.dart';
+import 'package:liza/widgets/emoji_quick_reactions.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/utils/news_poll.dart';
@@ -881,28 +883,15 @@ class _ReactionRow extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final emoji in AppConfig.defaultReactions)
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  icon: Opacity(
-                    opacity: sentReactions.contains(emoji) ? 0.4 : 1,
-                    child: Text(emoji, style: const TextStyle(fontSize: 24)),
-                  ),
-                  onPressed: () {
-                    Navigator.of(context).pop();
-                    controller.toggleReaction(event, emoji);
-                  },
-                ),
-              IconButton(
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.add_reaction_outlined),
-                tooltip: L10n.of(context).customReaction,
-                onPressed: () => _pickCustomReaction(context),
-              ),
-            ],
+          child: EmojiQuickReactions(
+            history: controller.emojiHistoryFor(EmojiUsage.reaction),
+            defaults: AppConfig.defaultReactions.toList(),
+            sentReactions: sentReactions,
+            onSelected: (emoji) {
+              Navigator.of(context).pop();
+              controller.toggleReaction(event, emoji);
+            },
+            onMore: () => _pickCustomReaction(context),
           ),
         ),
       ),
@@ -910,7 +899,9 @@ class _ReactionRow extends StatelessWidget {
   }
 
   Future<void> _pickCustomReaction(BuildContext context) async {
-    final theme = Theme.of(context);
+    final client = event.room.client;
+    if (!identical(controller.room.client, client)) return;
+    final history = controller.emojiHistoryFor(EmojiUsage.reaction);
     Navigator.of(context).pop();
     final emoji = await showAdaptiveBottomSheet<String>(
       context: controller.context,
@@ -923,39 +914,19 @@ class _ReactionRow extends StatelessWidget {
         ),
         body: SizedBox(
           height: double.infinity,
-          child: EmojiPicker(
+          child: LizaEmojiPicker(
+            history: history,
             onEmojiSelected: (_, emoji) =>
                 Navigator.of(context).pop(emoji.emoji),
-            config: Config(
-              locale: Localizations.localeOf(context),
-              emojiViewConfig: const EmojiViewConfig(
-                backgroundColor: Colors.transparent,
-              ),
-              bottomActionBarConfig: const BottomActionBarConfig(
-                enabled: false,
-              ),
-              categoryViewConfig: CategoryViewConfig(
-                initCategory: Category.SMILEYS,
-                backspaceColor: theme.colorScheme.primary,
-                iconColor: theme.colorScheme.primary.withAlpha(128),
-                iconColorSelected: theme.colorScheme.primary,
-                indicatorColor: theme.colorScheme.primary,
-                backgroundColor: theme.colorScheme.surface,
-              ),
-              skinToneConfig: SkinToneConfig(
-                dialogBackgroundColor: Color.lerp(
-                  theme.colorScheme.surface,
-                  theme.colorScheme.primaryContainer,
-                  0.75,
-                )!,
-                indicatorColor: theme.colorScheme.onSurface,
-              ),
-            ),
           ),
         ),
       ),
     );
-    if (emoji == null) return;
+    if (emoji == null ||
+        !controller.mounted ||
+        !identical(controller.room.client, client)) {
+      return;
+    }
     controller.toggleReaction(event, emoji);
   }
 }

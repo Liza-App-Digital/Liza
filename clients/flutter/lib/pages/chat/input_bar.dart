@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -11,6 +13,7 @@ import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/bot_commands_registry.dart';
 import 'package:liza/utils/markdown_context_builder.dart';
 import 'package:liza/utils/miniapp_room.dart';
+import 'package:liza/utils/emoji_history_store.dart';
 import 'package:liza/widgets/mxc_image.dart';
 import '../../widgets/avatar.dart';
 import '../../widgets/matrix.dart';
@@ -608,6 +611,19 @@ class _InputBarState extends State<InputBar> {
       textEditingController: controller,
       optionsBuilder: (text) => _getSuggestionsWithAiPinning(text, context),
       onSelected: (suggestion) {
+        // displayStringForOption вызывается и без выбора. Историю обновляем
+        // только здесь, когда Autocomplete уже вставил выбранный эмодзи.
+        final emoji = suggestion['emoji'];
+        final userId = room.client.userID;
+        if (suggestion['type'] == 'emoji' && emoji != null && userId != null) {
+          unawaited(
+            EmojiHistoryStore(
+              Matrix.of(context).store,
+              userId,
+              EmojiUsage.text,
+            ).record(emoji),
+          );
+        }
         // /menu (BotFather) — исполняем сразу по выбору из подсказок, без
         // ручного Enter (LABA-2201): команда без аргументов, поведение как в
         // Liza. К этому моменту Autocomplete уже подставил в поле «/menu ».

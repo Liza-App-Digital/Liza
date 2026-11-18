@@ -1,7 +1,9 @@
 """Исполнимый host-страж production-функций геометрии C++ и Swift.
 
 WinAPI/screenArea заменены моделями; это НЕ native ОС/Flutter runtime.
+Legacy HTML geometry: mini App с17.11 имеет отдельную policy.
 ledger:RL-miniapp-detached-window
+ledger:RL-liza-liquid-page
 """
 from pathlib import Path
 import re
@@ -40,18 +42,19 @@ class DefaultGeometryTest(unittest.TestCase):
             run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
-    def test_windows_frame_90_percent_centered_on_main_monitor_each_present(self):
+    def test_windows_html_frame_90_percent_centered_on_main_monitor_each_present(self):
         source = WINDOWS.read_text()
-        constants = '\n'.join(re.findall(r'constexpr int k(?:Default|Min)\w+ = \d+;', source))
+        constants = '\n'.join(re.findall(r'constexpr int kMin(?:Width|Height) = \d+;', source))
         functions = '\n'.join(function(source, signature) for signature in [
             'LONG FrameInset(', 'RECT WorkArea(', 'SIZE FitWindowSize(',
-            'SIZE MinimumWindowSize(', 'RECT DefaultFrame(', 'void PlaceDefault(',
+            'RECT DefaultFrame(', 'RECT PresentationFrame(', 'void PlaceDefault(',
         ])
         prefix = r'''
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <vector>
+#include <map>
 using LONG=int; using UINT=unsigned; using HWND=int; using HMONITOR=int;
 struct RECT { LONG left,top,right,bottom; };
 struct SIZE { LONG cx,cy; };
@@ -61,6 +64,11 @@ constexpr UINT MONITOR_DEFAULTTONEAREST=2, SWP_NOZORDER=1, SWP_NOACTIVATE=2, SWP
 RECT main_area{}, child_area{}, frame{};
 UINT main_dpi=96, child_dpi=144;
 HWND main_window=1;
+struct GeometryBinding { bool mini_app=false; };
+struct GeometryState { GeometryBinding binding{}; };
+struct Observer { GeometryState geometry{}; };
+std::map<HWND,Observer> g_visibility{{1,{}},{2,{}}};
+RECT MiniAppDefaultFrame(HWND,const GeometryBinding&) { assert(false); return {}; }
 std::vector<UINT> placements;
 HWND MiniAppMainWindow() { return main_window; }
 HMONITOR MonitorFromWindow(HWND window,UINT) { return window==1 ? 1 : 2; }
@@ -84,7 +92,7 @@ bool SetWindowPos(HWND,std::nullptr_t,LONG x,LONG y,LONG w,LONG h,UINT flags) {
         suffix = r'''
 void Check(const RECT& actual,const RECT& area) {
   const double w=area.right-area.left, h=area.bottom-area.top;
-  // AC:RL-miniapp-detached-window/51 — обе стороны допуска: 90% frame, не client.
+  // Legacy HTML: обе стороны допуска90% frame, не client.
   assert(std::abs((actual.right-actual.left)-w*0.9)<=1);
   assert(std::abs((actual.bottom-actual.top)-h*0.9)<=1);
   assert(std::abs((actual.left+actual.right)-(area.left+area.right))<=1);
@@ -101,8 +109,8 @@ int main() {
       assert(placements.size()==2 && (placements[0]&SWP_NOSIZE) && !(placements[1]&SWP_NOSIZE));
       frame={0,0,450,400}; // Предыдущее ручное уменьшение не влияет на новое окно.
       PlaceDefault(2); Check(frame,main_area);
-      // AC:RL-miniapp-detached-window/27 — прежний минимум client dp + рамка, clamp.
-      const SIZE min=MinimumWindowSize(1);
+      // Legacy HTML: прежний минимум client dp + рамка, clamp.
+      const SIZE min=FitWindowSize(kMinWidth,kMinHeight,dpi,main_area);
       const LONG inset=FrameInset(dpi);
       assert(min.cx==std::min(MulDiv(800,dpi,96)+2*inset,(area.right-area.left)*9/10));
       assert(min.cy==std::min(MulDiv(600,dpi,96)+inset,(area.bottom-area.top)*9/10));
@@ -115,7 +123,7 @@ int main() {
                              prefix + constants + functions + suffix, 'cpp',
                              ['-std=c++17', '-Wall', '-Wextra', '-Werror'])
 
-    def test_macos_frame_90_percent_centered_each_present_and_minimum_clamp(self):
+    def test_macos_html_frame_90_percent_centered_each_present_and_minimum_clamp(self):
         source = MACOS.read_text()
         constants = '\n'.join(re.findall(r'  private static let (?:defaultSize|minimumSize) = NSSize[^\n]+', source))
         functions = '\n'.join(function(source, signature) for signature in [
@@ -129,12 +137,12 @@ class MiniAppWindowPlugin {
 ''' + constants + '\n' + functions + '''
   static func check() {
     let f = defaultFrame()
-    // AC:RL-miniapp-detached-window/51 — внешний frame ровно 90% каждой оси.
+    // Legacy HTML: внешний frame ровно90% каждой оси.
     precondition(abs(f.width - area.width * 0.9) < 0.001, "frame width must be 90%")
     precondition(abs(f.height - area.height * 0.9) < 0.001, "frame height must be 90%")
     precondition(abs(f.midX - area.midX) < 0.001)
     precondition(abs(f.midY - area.midY) < 0.001)
-    // AC:RL-miniapp-detached-window/24 — прежний minimum800×600 с fit.
+    // Legacy HTML: прежний minimum800×600 с fit.
     let minimum = fit(minimumSize)
     precondition(minimum.width == min(800, area.width * 0.9))
     precondition(minimum.height == min(600, area.height * 0.9))

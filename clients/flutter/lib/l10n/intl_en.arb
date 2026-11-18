@@ -5639,5 +5639,12 @@
   "widgetGeneratingHint4": "Almost there…",
   "@widgetGeneratingHint4": {
     "description": "Вращающаяся шутливая строка на карточке-загрузке виджета"
-  }
+  },
+  "emojiSearchHint": "Search emoji",
+  "@emojiSearchHint": {},
+  "emojiSearchNoResults": "No emoji found",
+  "@emojiSearchNoResults": {},
+  "emojiRecentAndFrequent": "Recent and frequent",
+  "@emojiRecentAndFrequent": {},
+  "botCommandsEmpty": "This bot has no commands yet."
 }

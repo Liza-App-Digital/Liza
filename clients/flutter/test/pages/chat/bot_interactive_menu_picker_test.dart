@@ -54,6 +54,130 @@ void main() {
     return (client, room);
   }
 
+  testWidgets('меню выровнено с соседними кнопками по центру и цвету', (
+    tester,
+  ) async {
+    // AC:RL-bot-api-interactive-client/19
+    final (_, room) = await setup(tester);
+    BotInteractiveApi.transportFactory = () => MockClient(
+      (_) async => response({
+        'bots': [
+          {'registered': true, 'mxid': '@shop:hs'},
+        ],
+      }),
+    );
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    for (final height in [48.0, 56.0, 64.0]) {
+      await tester.pumpWidget(
+        app(
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              InteractiveBotMenu(
+                height: height,
+                room: room,
+                controller: controller,
+                onChanged: (_) {},
+                onOpenApp: (_) async {},
+              ),
+              SizedBox(
+                height: height,
+                width: height,
+                child: const IconButton(
+                  onPressed: null,
+                  icon: Icon(Icons.emoji_emotions_outlined),
+                ),
+              ),
+              SizedBox(
+                height: height,
+                width: height,
+                child: const IconButton(
+                  onPressed: null,
+                  icon: Icon(Icons.add_circle_outline),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+      await settle(tester);
+      final menu = find.byIcon(Icons.menu);
+      expect(
+        tester.getCenter(menu).dy,
+        tester.getCenter(find.byIcon(Icons.emoji_emotions_outlined)).dy,
+      );
+      expect(
+        tester.getCenter(menu).dy,
+        tester.getCenter(find.byIcon(Icons.add_circle_outline)).dy,
+      );
+      final button = tester.widget<IconButton>(
+        find.ancestor(of: menu, matching: find.byType(IconButton)),
+      );
+      expect(
+        button.color,
+        Theme.of(tester.element(menu)).colorScheme.onPrimaryContainer,
+      );
+    }
+    await tester.pumpWidget(app(const SizedBox()));
+  });
+
+  testWidgets(
+    'пустые и некорректные команды показывают сообщение и закрываются',
+    (tester) async {
+      // AC:RL-bot-api-interactive-client/20
+      final (_, room) = await setup(tester);
+      var commands = <Object>[];
+      BotInteractiveApi.transportFactory = () => MockClient(
+        (r) async => response(
+          r.url.path.endsWith('/room')
+              ? {
+                  'bots': [
+                    {'registered': true, 'mxid': '@shop:hs'},
+                  ],
+                }
+              : {
+                  'menu_button': {'type': 'commands'},
+                  'commands': commands,
+                },
+        ),
+      );
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        app(
+          InteractiveBotMenu(
+            room: room,
+            controller: controller,
+            onChanged: (_) {},
+            onOpenApp: (_) async {},
+          ),
+        ),
+      );
+      await settle(tester);
+      for (final value in [
+        <Object>[],
+        <Object>[
+          {'command': 'INVALID!'},
+        ],
+      ]) {
+        commands = value;
+        await tester.tap(find.byIcon(Icons.menu));
+        await settle(tester);
+        expect(find.text('У этого бота пока нет команд.'), findsOneWidget);
+        expect(find.byType(SimpleDialog), findsNothing);
+        final dialog = tester.getRect(find.byType(AlertDialog));
+        expect(dialog.center.dx, closeTo(400, 1));
+        expect(dialog.center.dy, closeTo(300, 1));
+        await tester.tap(find.text('Закрыть'));
+        await settle(tester);
+        expect(find.byType(AlertDialog), findsNothing);
+        expect(controller.text, isEmpty);
+      }
+      await tester.pumpWidget(app(const SizedBox()));
+    },
+  );
+
   testWidgets(
     'групповое меню: выбор бота, scoped команды, адресованная вставка без отправки',
     (tester) async {

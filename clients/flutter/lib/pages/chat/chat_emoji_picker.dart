@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
-import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/sticker_picker_dialog.dart';
+import 'package:liza/utils/emoji_history_store.dart';
+import 'package:liza/widgets/liza_emoji_picker.dart';
 import 'chat.dart';
 
 class ChatEmojiPicker extends StatelessWidget {
@@ -14,103 +15,62 @@ class ChatEmojiPicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return AnimatedContainer(
+    // Размер анимируется снаружи: содержимое сразу получает конечную высоту.
+    // Иначе первые кадры открытия сжимают TabBar + поиск до нескольких пикселей.
+    return AnimatedSize(
       duration: LizaThemes.animationDuration,
       curve: LizaThemes.animationCurve,
       clipBehavior: Clip.hardEdge,
-      decoration: const BoxDecoration(),
-      height: controller.showEmojiPicker
-          ? MediaQuery.sizeOf(context).height / 2
-          : 0,
-      child: controller.showEmojiPicker
-          ? DefaultTabController(
-              length: 2,
-              child: Column(
-                children: [
-                  TabBar(
-                    tabs: [
-                      Tab(text: L10n.of(context).emojis),
-                      Tab(text: L10n.of(context).stickers),
-                    ],
-                  ),
-                  Expanded(
-                    child: TabBarView(
-                      children: [
-                        EmojiPicker(
-                          onEmojiSelected: controller.onEmojiSelected,
-                          onBackspacePressed: controller.emojiPickerBackspace,
-                          config: Config(
-                            locale: Localizations.localeOf(context),
-                            emojiViewConfig: EmojiViewConfig(
-                              noRecents: const NoRecent(),
-                              backgroundColor:
-                                  theme.colorScheme.onInverseSurface,
-                            ),
-                            bottomActionBarConfig: const BottomActionBarConfig(
-                              enabled: false,
-                            ),
-                            categoryViewConfig: CategoryViewConfig(
-                              // По дефолту открывать смайлики, а не "недавние".
-                              initCategory: Category.SMILEYS,
-                              backspaceColor: theme.colorScheme.primary,
-                              iconColor: theme.colorScheme.primary.withAlpha(
-                                128,
-                              ),
-                              iconColorSelected: theme.colorScheme.primary,
-                              indicatorColor: theme.colorScheme.primary,
-                              backgroundColor: theme.colorScheme.surface,
-                            ),
-                            skinToneConfig: SkinToneConfig(
-                              dialogBackgroundColor: Color.lerp(
-                                theme.colorScheme.surface,
-                                theme.colorScheme.primaryContainer,
-                                0.75,
-                              )!,
-                              indicatorColor: theme.colorScheme.onSurface,
-                            ),
-                          ),
-                        ),
-                        StickerPickerDialog(
-                          room: controller.room,
-                          onSelected: (sticker) {
-                            controller.room.sendEvent(
-                              {
-                                'body': sticker.body,
-                                'info': sticker.info ?? {},
-                                'url': sticker.url.toString(),
-                              },
-                              type: EventTypes.Sticker,
-                              threadRootEventId: controller.activeThreadId,
-                              threadLastEventId: controller.threadLastEventId,
-                            );
-                            controller.hideEmojiPicker();
-                          },
-                        ),
+      alignment: Alignment.topCenter,
+      child: SizedBox(
+        height: controller.showEmojiPicker
+            ? MediaQuery.sizeOf(context).height / 2
+            : 0,
+        child: controller.showEmojiPicker
+            ? DefaultTabController(
+                length: 2,
+                child: Column(
+                  children: [
+                    TabBar(
+                      tabs: [
+                        Tab(text: L10n.of(context).emojis),
+                        Tab(text: L10n.of(context).stickers),
                       ],
                     ),
-                  ),
-                ],
-              ),
-            )
-          : null,
-    );
-  }
-}
-
-class NoRecent extends StatelessWidget {
-  const NoRecent({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Text(
-          L10n.of(context).emoteKeyboardNoRecents,
-          style: Theme.of(context).textTheme.bodyLarge,
-          textAlign: TextAlign.center,
-        ),
+                    Expanded(
+                      child: TabBarView(
+                        children: [
+                          LizaEmojiPicker(
+                            key: ValueKey(controller.room.client.userID),
+                            history: controller.emojiHistoryFor(
+                              EmojiUsage.text,
+                            ),
+                            onEmojiSelected: controller.onEmojiSelected,
+                            onBackspacePressed: controller.emojiPickerBackspace,
+                          ),
+                          StickerPickerDialog(
+                            room: controller.room,
+                            onSelected: (sticker) {
+                              controller.room.sendEvent(
+                                {
+                                  'body': sticker.body,
+                                  'info': sticker.info ?? {},
+                                  'url': sticker.url.toString(),
+                                },
+                                type: EventTypes.Sticker,
+                                threadRootEventId: controller.activeThreadId,
+                                threadLastEventId: controller.threadLastEventId,
+                              );
+                              controller.hideEmojiPicker();
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            : null,
       ),
     );
   }

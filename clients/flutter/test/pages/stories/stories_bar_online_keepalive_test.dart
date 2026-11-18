@@ -191,8 +191,9 @@ void main() {
     expect(x('@bob:example.invalid') < x('@silent:example.invalid'), isTrue);
     expect(x('@silent:example.invalid') < x('@carol:example.invalid'), isTrue);
     expect(x('@carol:example.invalid') < x('@helper:example.invalid'), isTrue);
-    // боты в категории «онлайн» не показываются, а в кат.3 — считаются (правее)
-    expect(x('@helper:example.invalid') < x('@shop_bot:bots.liza.ru'), isTrue);
+    // Бот не появляется ни в онлайн, ни в недавних диалогах.
+    // AC:RL-stories-bar-order-online-keepalive/5
+    expect(_tile('@shop_bot:bots.liza.ru'), findsNothing);
     await teardown(tester);
   });
 

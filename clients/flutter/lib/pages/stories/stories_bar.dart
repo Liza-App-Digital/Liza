@@ -6,6 +6,7 @@ import 'package:matrix/matrix.dart';
 
 import '../../l10n/l10n.dart';
 import '../../utils/channel_stories.dart';
+import '../../utils/miniapp_room.dart';
 import '../../utils/stories/active_stories_provider.dart';
 import '../../utils/stories/deleted_stories_store.dart';
 import '../../utils/stories/frequent_contacts.dart';
@@ -245,7 +246,8 @@ class _StoriesBarState extends State<StoriesBar>
   }
 
   bool _isBot(MatrixState matrix, String userId) =>
-      matrix.isBotOrAiUser(userId);
+      matrix.isBotOrAiUser(userId) ||
+      botFatherLocalparts.contains(userId.localpart);
 
   Future<void> _addStory() async {
     final composer = await pickStoryMediaComposer(context);
@@ -304,8 +306,8 @@ class _StoriesBarState extends State<StoriesBar>
       tiebreak: (r) => r.id,
     );
 
-    // Категория 2 — онлайн (без ботов), 3 — остальные по последнему
-    // сообщению в личке (боты считаются). Без дублей с вышестоящими.
+    // Категория 2 — онлайн, 3 — остальные люди по последнему сообщению
+    // в личке. Без ботов и дублей с вышестоящими.
     final matrix = Matrix.of(context);
     final shown = <String>{
       ?client.userID,
@@ -327,7 +329,7 @@ class _StoriesBarState extends State<StoriesBar>
         ..._dmActivity.map((d) => _fresh(client, d)),
         // Новый диалог/сообщение, которых ещё нет в 10-минутном кэше.
         ..._dmCandidates.where((d) => d.lastMessageTs >= recentCutoff),
-      ],
+      ].where((d) => !_isBot(matrix, d.userId)),
       excludedUserIds: {...shown, for (final c in online) c.userId},
     );
     final onlineIds = {for (final c in online) c.userId};

@@ -15,6 +15,146 @@ void main() {
   const desktop = MethodChannel('mixin.one/desktop_multi_window');
   const native = MethodChannel('liza/miniapp_window');
   final manager = MiniAppManager.instance;
+  testWidgets(
+    'AC62 left resize indicator centered without pointer interception',
+    (tester) async {
+      // AC:RL-miniapp-detached-window/62
+      final harness = _GeometryWindowHarness(tester);
+      addTearDown(harness.dispose);
+      await harness.mount(_geometryConfig());
+      final grip = find.byKey(
+        const ValueKey('miniapp-window-resize-indicator'),
+      );
+      expect(grip, findsOneWidget);
+      final rect = tester.getRect(grip);
+      expect(rect.size, const Size(4, 40));
+      expect(rect.left, 0);
+      expect(
+        rect.center.dy,
+        tester.view.physicalSize.height / tester.view.devicePixelRatio / 2,
+      );
+      final ignored = find.ancestor(
+        of: grip,
+        matching: find.byType(IgnorePointer),
+      );
+      expect(tester.widget<IgnorePointer>(ignored.first).ignoring, isTrue);
+    },
+  );
+  for (final account in ['@alice:example.invalid', '', null]) {
+    for (final kind in [MiniAppKind.miniApp, MiniAppKind.html]) {
+      testWidgets('geometry present: $account/${kind.name}', (tester) async {
+        final harness = _GeometryWindowHarness(tester);
+        addTearDown(harness.dispose);
+        await harness.mount(_geometryConfig(account: account, kind: kind));
+        final present = harness.calls.singleWhere((c) => c.method == 'present');
+        // AC:RL-miniapp-detached-window/56 — native получает реальный account
+        // и kind, включая отсутствие аккаунта и HTML без mini App preference.
+        expect(present.arguments, containsPair('accountUserId', account));
+        expect(present.arguments, containsPair('kind', kind.name));
+        expect(
+          (present.arguments as Map)['geometryGeneration'],
+          isA<int>().having(
+            (value) => value,
+            'generation',
+            greaterThanOrEqualTo(0),
+          ),
+        );
+        expect(present.arguments, containsPair('title', 'Первое'));
+      });
+    }
+  }
+
+  testWidgets('geometry navigate atomically replaces context', (tester) async {
+    final harness = _GeometryWindowHarness(tester);
+    addTearDown(harness.dispose);
+    await harness.mount(_geometryConfig());
+    final generation =
+        (harness.calls.singleWhere((c) => c.method == 'present').arguments
+                as Map)['geometryGeneration']
+            as int;
+    final replacements = [
+      _geometryConfig(account: '@bob:example.invalid', content: '2'),
+      _geometryConfig(
+        account: '@bob:example.invalid',
+        kind: MiniAppKind.html,
+        content: '3',
+      ),
+      _geometryConfig(account: null, kind: MiniAppKind.html, content: '4'),
+    ];
+    for (final (index, config) in replacements.indexed) {
+      harness.calls.clear();
+      await harness.navigate(config);
+      // AC:RL-miniapp-detached-window/56 — даже при том же appId меняются
+      // account/kind; новый контекст установлен до следующего focus/event.
+      expect(harness.calls.map((c) => c.method), ['setTitle', 'focus']);
+      expect(harness.calls.first.arguments, {
+        'title': config.appName,
+        'accountUserId': config.accountUserId,
+        'kind': config.kind.name,
+        'geometryGeneration': generation + index + 1,
+      });
+    }
+  });
+
+  testWidgets('geometry same-account deep-link never presents twice', (
+    tester,
+  ) async {
+    final harness = _GeometryWindowHarness(tester);
+    addTearDown(harness.dispose);
+    await harness.mount(_geometryConfig());
+    final generation =
+        (harness.calls.singleWhere((c) => c.method == 'present').arguments
+                as Map)['geometryGeneration']
+            as int;
+    await harness.navigate(_geometryConfig(content: 'next'));
+    // AC:RL-miniapp-detached-window/57 — deep-link меняет поколение контекста,
+    // но не вызывает повторный present с восстановлением/подгонкой размера.
+    expect(harness.calls.where((c) => c.method == 'present'), hasLength(1));
+    expect(harness.calls.singleWhere((c) => c.method == 'setTitle').arguments, {
+      'title': 'Следующее next',
+      'accountUserId': '@alice:example.invalid',
+      'kind': 'miniApp',
+      'geometryGeneration': generation + 1,
+    });
+  });
+
+  testWidgets('geometry pending navigate presents current identity', (
+    tester,
+  ) async {
+    final harness = _GeometryWindowHarness(tester, holdReady: true);
+    addTearDown(harness.dispose);
+    await harness.mount(_geometryConfig());
+    await harness.navigate(
+      _geometryConfig(
+        account: '@bob:example.invalid',
+        kind: MiniAppKind.html,
+        content: 'new-owner',
+      ),
+    );
+    // AC:RL-miniapp-detached-window/57 — до ready нет видимого окна/focus.
+    expect(harness.calls.map((c) => c.method), ['setTitle']);
+    final pendingContext = Map<Object?, Object?>.from(
+      harness.calls.single.arguments as Map,
+    );
+    harness.ready.complete(true);
+    await tester.pump();
+    await tester.pump();
+    final present = harness.calls.singleWhere((c) => c.method == 'present');
+    // AC:RL-miniapp-detached-window/56 — initial widget.config уже устарел:
+    // первое present обязано взять account/kind/generation последнего navigate.
+    expect(
+      present.arguments,
+      containsPair('accountUserId', '@bob:example.invalid'),
+    );
+    expect(present.arguments, containsPair('kind', 'html'));
+    expect(present.arguments, containsPair('title', 'Следующее new-owner'));
+    expect(
+      present.arguments,
+      containsPair('geometryGeneration', pendingContext['geometryGeneration']),
+    );
+    expect(harness.calls.where((c) => c.method == 'present'), hasLength(1));
+  });
+
   for (final scenario in [
     'close',
     'attach',
@@ -203,5 +343,105 @@ void main() {
       manager.windowsSupported = false;
       await tester.runAsync(client.dispose);
     });
+  }
+}
+
+MiniAppWindowConfig _geometryConfig({
+  String? account = '@alice:example.invalid',
+  MiniAppKind kind = MiniAppKind.miniApp,
+  String content = '1',
+}) => MiniAppWindowConfig(
+  appId: 'shared-app-id',
+  appUrl: 'https://fixture.invalid/',
+  appName: content == '1' ? 'Первое' : 'Следующее $content',
+  appType: 'first_party',
+  appStartPath: '/',
+  accountUserId: account,
+  roomId: '!fixture:invalid',
+  contentKey: 'shared-app-id#$content',
+  dark: false,
+  seedColor: Colors.indigo.toARGB32(),
+  kind: kind,
+);
+
+/// Реальный child и его зарегистрированный IPC-handler. Содержимое оставлено
+/// в штатном error-state: для стража контекста native WebView не требуется.
+class _GeometryWindowHarness {
+  static const _channels = MethodChannel(
+    'mixin.one/desktop_multi_window/channels',
+  );
+  static const _native = MethodChannel('liza/miniapp_window');
+  static const _id = 'geometry-child';
+  final WidgetTester tester;
+  final calls = <MethodCall>[];
+  final ready = Completer<bool>();
+
+  _GeometryWindowHarness(this.tester, {bool holdReady = false}) {
+    if (!holdReady) ready.complete(true);
+    final messenger = tester.binding.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(_channels, (call) async {
+      if (call.method != 'invokeMethod') return null;
+      final args = call.arguments as Map;
+      if (args['method'] == 'windowReady') return ready.future;
+      if (args['method'] == 'fetchInitData' ||
+          args['method'] == 'fetchPageDocument') {
+        throw PlatformException(code: 'DOCUMENT_NOT_NEEDED');
+      }
+      return null;
+    });
+    messenger.setMockMethodCallHandler(_native, (call) async {
+      if (call.method == 'visibility') return <String, Object?>{};
+      calls.add(call);
+      return null;
+    });
+  }
+
+  Future<void> mount(MiniAppWindowConfig config) async {
+    await tester.pumpWidget(
+      MiniAppWindowApp(
+        controller: WindowController.fromWindowId(_id),
+        config: config,
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1));
+    expect(find.byType(MiniAppWindowHeader), findsOneWidget);
+  }
+
+  Future<void> navigate(MiniAppWindowConfig config) async {
+    final response = Completer<Object?>();
+    tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      _channels.name,
+      const StandardMethodCodec().encodeMethodCall(
+        MethodCall('methodCall', {
+          'channel': 'mixin.one/window_controller/$_id',
+          'method': 'navigate',
+          'arguments': config.toJson(),
+        }),
+      ),
+      (data) {
+        try {
+          response.complete(const StandardMethodCodec().decodeEnvelope(data!));
+        } catch (e, st) {
+          response.completeError(e, st);
+        }
+      },
+    );
+    await tester.pump();
+    await response.future;
+    await tester.pump();
+  }
+
+  Future<void> dispose() async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      _channels,
+      null,
+    );
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      _native,
+      null,
+    );
   }
 }

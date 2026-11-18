@@ -14,11 +14,13 @@ import 'package:liza/utils/miniapp_room.dart';
 /// effective commands сервер вычисляет по room/user scope.
 class InteractiveBotMenu extends StatefulWidget {
   final Room room;
+  final double height;
   final TextEditingController controller;
   final ValueChanged<String> onChanged;
   final Future<void> Function(MiniAppLaunch) onOpenApp;
   const InteractiveBotMenu({
     required this.room,
+    this.height = 48,
     required this.controller,
     required this.onChanged,
     required this.onOpenApp,
@@ -166,27 +168,47 @@ class _InteractiveBotMenuState extends State<InteractiveBotMenu>
       }
       final commands = response['commands'];
       if (commands is! List) return;
+      final validCommands = commands.whereType<Map>().where((command) {
+        final name = command['command'];
+        return name is String && RegExp(r'^[a-z0-9_]{1,32}$').hasMatch(name);
+      }).toList();
+      if (validCommands.isEmpty) {
+        await showInteractiveConsent<void>(
+          context: context,
+          isCurrent: current,
+          builder: (context) => AlertDialog(
+            alignment: Alignment.center,
+            title: Text(L10n.of(context).botCommandsMenu),
+            content: Text(L10n.of(context).botCommandsEmpty),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text(L10n.of(context).close),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
       final command = await showInteractiveConsent<String>(
         context: context,
         isCurrent: current,
         builder: (context) => SimpleDialog(
           title: Text(L10n.of(context).botCommandsMenu),
+          alignment: Alignment.center,
           children: [
-            for (final c in commands)
-              if (c is Map &&
-                  c['command'] is String &&
-                  RegExp(r'^[a-z0-9_]{1,32}$').hasMatch(c['command'] as String))
-                SimpleDialogOption(
-                  onPressed: () => Navigator.of(context).pop(c['command']),
-                  child: ListTile(
-                    title: Text('/${c['command']}'),
-                    subtitle: Text(
-                      c['description'] is String
-                          ? c['description'] as String
-                          : '',
-                    ),
+            for (final c in validCommands)
+              SimpleDialogOption(
+                onPressed: () => Navigator.of(context).pop(c['command']),
+                child: ListTile(
+                  title: Text('/${c['command']}'),
+                  subtitle: Text(
+                    c['description'] is String
+                        ? c['description'] as String
+                        : '',
                   ),
                 ),
+              ),
           ],
         ),
       );
@@ -230,9 +252,14 @@ class _InteractiveBotMenuState extends State<InteractiveBotMenu>
   @override
   Widget build(BuildContext context) => _bots.isEmpty
       ? const SizedBox.shrink()
-      : IconButton(
-          tooltip: L10n.of(context).botCommandsMenu,
-          onPressed: _busy ? null : _open,
-          icon: const Icon(Icons.menu),
+      : SizedBox(
+          height: widget.height,
+          width: widget.height,
+          child: IconButton(
+            color: Theme.of(context).colorScheme.onPrimaryContainer,
+            tooltip: L10n.of(context).botCommandsMenu,
+            onPressed: _busy ? null : _open,
+            icon: const Icon(Icons.menu),
+          ),
         );
 }

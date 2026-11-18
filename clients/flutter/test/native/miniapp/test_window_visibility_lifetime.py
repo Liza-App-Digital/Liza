@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 import unittest
 
+from test_window_default_geometry import function
+
 ROOT = Path(__file__).resolve().parents[5]
 SOURCE = ROOT / 'clients/flutter/windows/runner/mini_app_window_channel.cpp'
 
@@ -17,8 +19,7 @@ class WindowLifetimeTest(unittest.TestCase):
     def test_destroy_and_reentrant_destroy_detach_before_engine(self):
         # AC:RL-miniapp-contact/6
         source = SOURCE.read_text()
-        proc = source[source.index('LRESULT CALLBACK MiniAppVisibilityProc('):
-                      source.index('// Позиция и размер последнего закрытого окна')]
+        proc = function(source, 'LRESULT CALLBACK MiniAppVisibilityProc(')
         prefix = r'''
 #include <algorithm>
 #include <cassert>
@@ -31,6 +32,26 @@ const HWND kWindow=reinterpret_cast<HWND>(1);
 const HWND kMain=reinterpret_cast<HWND>(2);
 HWND MiniAppMainWindow() { return kMain; }
 using UINT=unsigned;
+using LONG=int;
+struct RECT { LONG left=0,top=0,right=0,bottom=0; };
+struct SIZE { LONG cx=480,cy=520; };
+struct POINT { LONG x=0,y=0; };
+struct MINMAXINFO { POINT ptReserved,ptMaxSize,ptMaxPosition,ptMinTrackSize; };
+struct NCCALCSIZE_PARAMS { RECT rgrc[3]; };
+struct WINDOWPOS { UINT flags=0; };
+struct GeometryState {};
+void BeginManualResize(GeometryState&,const RECT&,bool) {}
+void CaptureManualResize(GeometryState&,const RECT&,UINT,bool) {}
+void CancelManualResize(GeometryState&) {}
+void DpiChangedManualResize(GeometryState&) {}
+void CompleteManualResize(GeometryState&,const RECT&,bool) {}
+bool IsWindowVisible(HWND) { return true; }
+bool IsIconic(HWND) { return false; }
+bool IsZoomed(HWND) { return false; }
+UINT GetDpiForWindow(HWND) { return 96; }
+int GetWindowRect(HWND,RECT* frame) { *frame={0,0,800,600}; return 1; }
+SIZE MinimumWindowSize(HWND) { return {}; }
+void GrowToMinimum(HWND) {}
 using WPARAM=uintptr_t;
 using LPARAM=intptr_t;
 using LRESULT=intptr_t;
@@ -39,7 +60,12 @@ using WNDPROC=LRESULT (*)(HWND,UINT,WPARAM,LPARAM);
 #define CALLBACK
 #define LOWORD(x) ((x)&0xffff)
 constexpr UINT WM_SIZE=1, WM_SHOWWINDOW=2, WM_CLOSE=3, WM_DESTROY=4,
-  WM_NCDESTROY=5, WM_ACTIVATE=6, WM_ACTIVATEAPP=7, WM_WINDOWPOSCHANGED=8;
+  WM_NCDESTROY=5, WM_ACTIVATE=6, WM_ACTIVATEAPP=7, WM_WINDOWPOSCHANGED=8,
+  WM_NCCALCSIZE=9, WM_NCACTIVATE=10, WM_GETMINMAXINFO=11,
+  WM_ENTERSIZEMOVE=12, WM_EXITSIZEMOVE=13, WM_SIZING=14, WM_DPICHANGED=15, WM_CANCELMODE=16,
+  WM_MOVING=17;
+constexpr int TRUE=1, FALSE=0, SIZE_MAXIMIZED=2;
+constexpr UINT SWP_NOMOVE=1;
 constexpr int SIZE_MINIMIZED=1, WA_INACTIVE=0, GWLP_WNDPROC=0;
 using EncodableValue=int;
 bool alive=true, detached=false, restored=false, unhooked=false, reenter=false;
@@ -57,6 +83,8 @@ struct VisibilityObserver {
   flutter::MethodChannel<EncodableValue>* channel;
   int64_t visibility_epoch=0, snapshot_sequence=0, focus_epoch=0;
   int64_t direct_main_focus_epoch=-1;
+  bool frameless=false, in_size_move=false;
+  GeometryState geometry{};
 };
 std::map<HWND,VisibilityObserver> g_visibility;
 void* g_foreground_hook=reinterpret_cast<void*>(1);

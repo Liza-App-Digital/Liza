@@ -66,6 +66,7 @@ import 'package:liza/utils/chat_scroll_geometry.dart';
 import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/utils/read_marker_sender.dart';
 import 'package:liza/utils/reply_draft_store.dart';
+import 'package:liza/utils/emoji_history_store.dart';
 import 'package:liza/utils/stories/story_media_picker.dart';
 import 'package:liza/utils/typed_mention_resolver.dart';
 import 'package:liza/utils/video_prefetch_manager.dart';
@@ -2501,6 +2502,12 @@ class ChatController extends State<ChatPageWithRoom>
     onInputBarChanged(sendController.text);
   }
 
+  EmojiHistoryStore emojiHistoryFor(EmojiUsage usage) => EmojiHistoryStore(
+    Matrix.of(context).store,
+    room.client.userID ?? '',
+    usage,
+  );
+
   void typeEmoji(Emoji? emoji) {
     if (emoji == null) return;
     sendController.value = insertEmojiIntoText(
@@ -2508,6 +2515,7 @@ class ChatController extends State<ChatPageWithRoom>
       sendController.selection,
       emoji.emoji,
     );
+    unawaited(emojiHistoryFor(EmojiUsage.text).record(emoji.emoji));
   }
 
   /// Вставка эмодзи в текст композера с нормализацией каретки.
@@ -2909,6 +2917,7 @@ class ChatController extends State<ChatPageWithRoom>
 
   void toggleReaction(Event event, String emoji) {
     if (_blockedByUpdate()) return;
+    if (!identical(event.room.client, room.client)) return;
     final timeline = this.timeline;
     if (timeline == null) return;
     HumanInputTracker.mark(roomId);
@@ -2930,7 +2939,24 @@ class ChatController extends State<ChatPageWithRoom>
       if (!event.room.canRedactOwnReaction) return;
       existing.redactEvent();
     } else {
-      event.room.sendReaction(event.eventId, emoji);
+      if (!event.room.canSendReaction) return;
+      // Захватываем аккаунт до отправки: во время await пользователь может
+      // переключиться на другой. Снятие реакции сюда не попадает.
+      final history = EmojiHistoryStore(
+        Matrix.of(context).store,
+        event.room.client.userID ?? '',
+        EmojiUsage.reaction,
+      );
+      unawaited(
+        event.room
+            .sendReaction(event.eventId, emoji)
+            .then((eventId) async {
+              if (eventId != null) await history.record(emoji);
+            })
+            .catchError((Object error, StackTrace stack) {
+              Logs().w('Не удалось добавить реакцию', error, stack);
+            }),
+      );
     }
   }
 

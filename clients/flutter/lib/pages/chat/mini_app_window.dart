@@ -567,8 +567,7 @@ class RemoteMiniAppHostApi
 
   Future<void> close() => _call<void>('close');
 
-  Future<bool> windowReady() async =>
-      await _call<bool>('windowReady') == true;
+  Future<bool> windowReady() async => await _call<bool>('windowReady') == true;
 
   Future<void> reportVisibility(Map<Object?, Object?> snapshot) =>
       _call<void>('windowVisibility', {'snapshot': snapshot});
@@ -822,6 +821,14 @@ class MiniAppWindowApp extends StatefulWidget {
 
 class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
   late MiniAppWindowConfig _config = widget.config;
+  int _geometryGeneration = 0;
+
+  Map<String, Object?> get _nativeWindowContext => {
+    'title': _config.appName,
+    'accountUserId': _config.accountUserId,
+    'kind': _config.kind.name,
+    'geometryGeneration': _geometryGeneration,
+  };
   late RemoteMiniAppHostApi _host = RemoteMiniAppHostApi.fromConfig(_config);
   // Новый ключ на каждый `navigate`: контент пересоздаётся на новом пути.
   var _contentKey = GlobalKey<MiniAppWebViewContentState>();
@@ -904,8 +911,9 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
           .setWindowMethodHandler(_handleWindowCall)
           .timeout(_rpcTimeout);
       if (!mounted || _closing) return;
-      final allowed = await RemoteMiniAppHostApi.fromConfig(widget.config)
-          .windowReady();
+      final allowed = await RemoteMiniAppHostApi.fromConfig(
+        widget.config,
+      ).windowReady();
       if (!mounted || _closing) return;
       if (!allowed) {
         _closing = true;
@@ -913,7 +921,7 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
         return;
       }
       await _nativeWindow.invokeMethod<void>('present', {
-        'title': _config.appName,
+        ..._nativeWindowContext,
         'frameless': miniAppWindowFrameless,
       });
       if (!mounted || _closing) return;
@@ -939,13 +947,15 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
           Map<String, Object?>.from(call.arguments as Map),
         );
         setState(() {
+          _geometryGeneration++;
           _config = config;
           _host = RemoteMiniAppHostApi.fromConfig(config);
           _contentKey = GlobalKey<MiniAppWebViewContentState>();
         });
-        await _nativeWindow.invokeMethod<void>('setTitle', {
-          'title': config.appName,
-        });
+        await _nativeWindow.invokeMethod<void>(
+          'setTitle',
+          _nativeWindowContext,
+        );
         if (_presented && !_closing && mounted) {
           await _nativeWindow.invokeMethod<void>('focus');
         }
@@ -1107,6 +1117,29 @@ class _MiniAppWindowAppState extends State<MiniAppWindowApp> {
                     ),
                   ],
                 ),
+                // Индикатор системного края изменения ширины, без перехвата мыши.
+                if (_config.kind == MiniAppKind.miniApp && !_maximized)
+                  Positioned(
+                    left: 0,
+                    top: 0,
+                    bottom: 0,
+                    width: 4,
+                    child: IgnorePointer(
+                      child: Center(
+                        child: Container(
+                          key: const ValueKey(
+                            'miniapp-window-resize-indicator',
+                          ),
+                          width: 4,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: colorScheme.outlineVariant,
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 if (_toast != null)
                   Positioned(
                     left: 24,

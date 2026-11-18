@@ -255,6 +255,7 @@ class ChatInputRow extends StatelessWidget {
                           !isBotFatherRoom(controller.room) &&
                           !isSupportHubRoom(controller.room))
                         InteractiveBotMenu(
+                          height: height,
                           room: controller.room,
                           controller: controller.sendController,
                           onChanged: controller.onInputBarChanged,

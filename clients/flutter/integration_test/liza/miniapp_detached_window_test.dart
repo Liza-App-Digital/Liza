@@ -194,36 +194,42 @@ void main([List<String> args = const []]) {
       return value;
     }
 
-    // AC:RL-miniapp-detached-window/26, AC:RL-miniapp-detached-window/51 —
-    // внешняя рамка ровно 90% рабочей области, независимо от DPI и client inset.
-    // AC:RL-miniapp-detached-window/27 (Windows), AC:RL-miniapp-detached-window/24
-    // (macOS) — минимум окна 800×600 (так же).
-    Future<void> expectOpenedLarge(String what) async {
+    // AC:RL-miniapp-detached-window/53, AC:RL-miniapp-detached-window/58 — внешняя рамка, не client.
+    // Восстановленный пользовательский размер может быть меньше cap Лизы.
+    Future<void> expectOpenedWithinLiza(String what) async {
       final g = await windowCall('geometry');
-      final areaW = (g['areaWidth'] as num).toDouble();
-      final areaH = (g['areaHeight'] as num).toDouble();
-      double fit(double v, double area) => v < area * 0.9 ? v : area * 0.9;
+      double smaller(double a, double b) => a < b ? a : b;
+      final capW = smaller(
+        (g['mainFrameWidth'] as num).toDouble(),
+        (g['areaWidth'] as num).toDouble(),
+      );
+      final capH = smaller(
+        (g['mainFrameHeight'] as num).toDouble(),
+        (g['areaHeight'] as num).toDouble(),
+      );
+      final minW = smaller(393, capW);
+      final minH = smaller(520, capH);
       _step('detached-window: $what — геометрия $g');
       expect(g['maximized'], isFalse, reason: what);
       expect(
         (g['frameWidth'] as num).toDouble(),
-        closeTo(areaW * 0.9, 1),
-        reason: '$what: внешняя ширина по умолчанию',
+        inInclusiveRange(minW - 1, capW + 1),
+        reason: '$what: внешняя ширина в пределах Лизы и минимума',
       );
       expect(
         (g['frameHeight'] as num).toDouble(),
-        closeTo(areaH * 0.9, 1),
-        reason: '$what: внешняя высота по умолчанию',
+        inInclusiveRange(minH - 1, capH + 1),
+        reason: '$what: внешняя высота в пределах Лизы и минимума',
       );
       expect(
-        (g['minWidth'] as num).toDouble(),
-        closeTo(fit(800, areaW), 20),
-        reason: '$what: минимальная ширина',
+        (g['minFrameWidth'] as num).toDouble(),
+        closeTo(minW, 1),
+        reason: '$what: минимум внешней ширины',
       );
       expect(
-        (g['minHeight'] as num).toDouble(),
-        closeTo(fit(600, areaH), 20),
-        reason: '$what: минимальная высота',
+        (g['minFrameHeight'] as num).toDouble(),
+        closeTo(minH, 1),
+        reason: '$what: минимум внешней высоты',
       );
     }
 
@@ -278,7 +284,7 @@ void main([List<String> args = const []]) {
     expect(manager.hasApps, isFalse, reason: 'в окне Лизы панели нет');
 
     _step('detached-window: шаг 1б — размер и «развернуть»');
-    await expectOpenedLarge('первое открытие');
+    await expectOpenedWithinLiza('первое открытие');
     // AC:RL-miniapp-detached-window/29 — «увеличить можно весь экран».
     final before = await windowCall('geometry');
     expect((await windowCall('toggleMaximize'))['value'], isTrue);
@@ -319,8 +325,8 @@ void main([List<String> args = const []]) {
     await tester.pumpAndSettle();
     await waitForWindowLoaded('окно снова загрузило магазин');
     expect(manager.hasApps, isFalse);
-    // Размер прошлого окна не переносится — снова большое (AC-26).
-    await expectOpenedLarge('повторное открытие');
+    // Повторное открытие также ограничено Лизой, включая сохранённый размер.
+    await expectOpenedWithinLiza('повторное открытие');
 
     // AC:RL-miniapp-detached-window/12 — окно закрыли крестиком ОС (мимо
     // менеджера): app закрывается и в менеджере, плашки в окне Лизы нет.

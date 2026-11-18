@@ -48,18 +48,161 @@ class MainFlutterWindow: NSWindow {
   }
 }
 
+// BEGIN MINIAPP WINDOW PREFERENCES — без вызовов UI, исполняется host-стражем.
+struct MiniAppGeometryContext: Equatable {
+  let accountUserId: String
+  let kind: String
+  let generation: Int
+
+  var preferenceAccount: String? {
+    kind == "miniApp" && !accountUserId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? accountUserId : nil
+  }
+}
+
+enum MiniAppWindowGeometry {
+  static func valid(_ size: NSSize) -> Bool {
+    size.width.isFinite && size.height.isFinite && size.width > 0 && size.height > 0
+  }
+
+  static func available(main: NSRect?, area: NSRect) -> NSSize {
+    if let main, valid(main.size) {
+      let visible = main.intersection(area)
+      if !visible.isNull && valid(visible.size) { return visible.size }
+    }
+    let mainSize = main.flatMap { valid($0.size) ? $0.size : nil } ?? area.size
+    return NSSize(width: min(mainSize.width, area.width),
+                  height: min(mainSize.height, area.height))
+  }
+
+  static func minimum(main: NSRect?, area: NSRect) -> NSSize {
+    let cap = available(main: main, area: area)
+    return NSSize(width: min(393, cap.width), height: min(520, cap.height))
+  }
+
+  static func validPosition(_ point: NSPoint) -> Bool {
+    point.x.isFinite && point.y.isFinite && (0...1).contains(point.x) && (0...1).contains(point.y)
+  }
+
+  static func position(frame: NSRect, main: NSRect) -> NSPoint? {
+    guard valid(frame.size), valid(main.size), frame.minX.isFinite, frame.minY.isFinite,
+          main.minX.isFinite, main.minY.isFinite else { return nil }
+    let dx = max(0, main.width - frame.width)
+    let dy = max(0, main.height - frame.height)
+    return NSPoint(x: dx > 0 ? min(1, max(0, (frame.minX - main.minX) / dx)) : 0.5,
+                   y: dy > 0 ? min(1, max(0, (frame.minY - main.minY) / dy)) : 0.5)
+  }
+
+  static func frame(preferred: NSSize?, position: NSPoint? = nil,
+                    main: NSRect?, area: NSRect) -> NSRect {
+    let cap = available(main: main, area: area)
+    let minimum = minimum(main: main, area: area)
+    let requested = preferred.flatMap { valid($0) ? $0 : nil }
+      ?? main.flatMap { valid($0.size) ? $0.size : nil }
+      ?? NSSize(width: 960, height: 700)
+    let size = NSSize(width: min(cap.width, max(minimum.width, requested.width)),
+                      height: min(cap.height, max(minimum.height, requested.height)))
+    let center = main ?? area
+    let visible = center.intersection(area)
+    let bounds = !visible.isNull && valid(visible.size) ? visible : area
+    let anchor = position.flatMap { validPosition($0) ? $0 : nil } ?? NSPoint(x: 0.5, y: 0.5)
+    let x = center.minX + max(0, center.width - size.width) * anchor.x
+    let y = center.minY + max(0, center.height - size.height) * anchor.y
+    return NSRect(
+      x: max(bounds.minX, min(x, bounds.maxX - size.width)),
+      y: max(bounds.minY, min(y, bounds.maxY - size.height)),
+      width: size.width, height: size.height)
+  }
+}
+
+final class MiniAppWindowPreferences {
+  private let defaults: UserDefaults
+
+  init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+  private func key(_ account: String) -> String {
+    "liza.miniapp.window.size.v1." + Data(account.utf8).base64EncodedString()
+  }
+
+  func read(_ context: MiniAppGeometryContext) -> NSSize? {
+    guard let account = context.preferenceAccount,
+          let value = defaults.array(forKey: key(account)) as? [Double], value.count == 2 else {
+      return nil
+    }
+    let size = NSSize(width: value[0], height: value[1])
+    return MiniAppWindowGeometry.valid(size) ? size : nil
+  }
+
+  private func positionKey(_ account: String) -> String {
+    "liza.miniapp.window.position.v1." + Data(account.utf8).base64EncodedString()
+  }
+
+  func readPosition(_ context: MiniAppGeometryContext) -> NSPoint? {
+    guard let account = context.preferenceAccount,
+          let value = defaults.array(forKey: positionKey(account)) as? [Double], value.count == 2 else {
+      return nil
+    }
+    let point = NSPoint(x: value[0], y: value[1])
+    return MiniAppWindowGeometry.validPosition(point) ? point : nil
+  }
+
+  func writePosition(account: String, position: NSPoint) {
+    guard !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          MiniAppWindowGeometry.validPosition(position) else { return }
+    defaults.set([Double(position.x), Double(position.y)], forKey: positionKey(account))
+  }
+
+  func write(account: String, size: NSSize) {
+    guard !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          MiniAppWindowGeometry.valid(size) else { return }
+    defaults.set([Double(size.width), Double(size.height)], forKey: key(account))
+  }
+}
+
+/// Capture хранит исходный account; ни close, ни смена контекста его не коммитят.
+final class MiniAppManualResize {
+  private struct Capture {
+    let context: MiniAppGeometryContext
+    let size: NSSize
+  }
+  private var capture: Capture?
+
+  func cancel() { capture = nil }
+
+  func begin(context: MiniAppGeometryContext, size: NSSize,
+             normalShown: Bool, mouseResize: Bool, applying: Bool) {
+    cancel()
+    guard normalShown, mouseResize, !applying, context.preferenceAccount != nil else { return }
+    capture = Capture(context: context, size: size)
+  }
+
+  func finish(context: MiniAppGeometryContext, size: NSSize,
+              normalShown: Bool, applying: Bool) -> (account: String, size: NSSize)? {
+    defer { cancel() }
+    guard let capture = capture, capture.context == context, normalShown, !applying,
+          capture.size != size, MiniAppWindowGeometry.valid(size),
+          let account = capture.context.preferenceAccount else { return nil }
+    return (account, size)
+  }
+}
+// END MINIAPP WINDOW PREFERENCES
+
 /// Окно ОС mini App со стороны его движка: заголовок, размер, фокус, закрытие
 /// (канал `liza/miniapp_window`, см. mini_app_window.dart). Свой канал, а не
 /// window_manager: тот ставит себя делегатом окна и умеет terminate.
 class MiniAppWindowPlugin: NSObject, FlutterPlugin {
-  /// Геометрия окна в pt; минимум ~800×600.
-  /// Синхронно с windows/runner/mini_app_window_channel.cpp.
-  /// Размер не запоминается: autosave тащил в каждое окно размер прошлого.
+  /// Legacy HTML: 90% монитора и прежний минимум; prefs mini App не участвуют.
   private static let minimumSize = NSSize(width: 800, height: 600)
 
   private weak var registrar: FlutterPluginRegistrar?
   private var channel: FlutterMethodChannel?
   private var observers: [NSObjectProtocol] = []
+  private var geometryObservers: [NSObjectProtocol] = []
+  private let preferences: MiniAppWindowPreferences
+  private let manualResize = MiniAppManualResize()
+  private var geometryContext = MiniAppGeometryContext(accountUserId: "", kind: "", generation: 0)
+  private var applyingGeometry = false
+  private var moveGeneration = 0
   private var closed = false
   private var visibilityEpoch = 0
   private var snapshotSequence = 0
@@ -70,6 +213,91 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
 
   deinit {
     for observer in observers { NotificationCenter.default.removeObserver(observer) }
+    for observer in geometryObservers { NotificationCenter.default.removeObserver(observer) }
+  }
+
+  @discardableResult
+  private func updateGeometryContext(_ args: [String: Any]?) -> Bool {
+    let context = MiniAppGeometryContext(
+      accountUserId: args?["accountUserId"] as? String ?? "",
+      kind: args?["kind"] as? String ?? "",
+      generation: args?["geometryGeneration"] as? Int ?? 0)
+    let policyChanged = context.kind != geometryContext.kind
+    if context != geometryContext { manualResize.cancel(); moveGeneration += 1 }
+    geometryContext = context
+    return policyChanged
+  }
+
+  private func normalShown(_ window: NSWindow) -> Bool {
+    // AppKit isZoomed — эвристика размера: обычный full-workarea frame тоже
+    // true. Ручной resize такого окна допустим; zoom отсечён live/mouse gate.
+    !closed && window.isVisible && !window.isMiniaturized &&
+      !window.styleMask.contains(.fullScreen) && NSApp.isActive
+  }
+
+  private func applyMinimum(_ window: NSWindow, area: NSRect? = nil) {
+    let wasApplying = applyingGeometry
+    applyingGeometry = true
+    defer { applyingGeometry = wasApplying }
+    let main = NSApp.windows.first { $0 is MainFlutterWindow }
+    let area = area ?? window.screen?.visibleFrame ?? MiniAppWindowPlugin.screenArea()
+    window.minSize = geometryContext.kind == "miniApp"
+      ? MiniAppWindowGeometry.minimum(main: main?.frame, area: area)
+      : MiniAppWindowPlugin.fit(MiniAppWindowPlugin.minimumSize, area: area)
+  }
+
+  /// Уведомления добавлены отдельно: существующие visibility/focus epochs не меняем.
+  private func observeGeometry() {
+    guard geometryObservers.isEmpty else { return }
+    let names: [Notification.Name] = [
+      NSWindow.willStartLiveResizeNotification, NSWindow.didEndLiveResizeNotification,
+      NSWindow.didChangeScreenNotification, NSWindow.didChangeBackingPropertiesNotification,
+      NSWindow.didMiniaturizeNotification, NSWindow.willCloseNotification,
+      NSWindow.willEnterFullScreenNotification, NSWindow.willExitFullScreenNotification,
+      NSWindow.didChangeOcclusionStateNotification,
+      NSApplication.didHideNotification, NSApplication.didResignActiveNotification,
+    ]
+    for name in names {
+      geometryObservers.append(NotificationCenter.default.addObserver(
+        forName: name, object: nil, queue: .main
+      ) { [weak self] note in
+        guard let self = self, let window = self.registrar?.view?.window else { return }
+        if note.object as? NSApplication != nil {
+          self.moveGeneration += 1
+          self.manualResize.cancel()
+          return
+        }
+        guard (note.object as? NSWindow) === window else { return }
+        switch note.name {
+        case NSWindow.willStartLiveResizeNotification:
+          let event = NSApp.currentEvent
+          let mouseResize = event?.window === window &&
+            (event?.type == .leftMouseDown || event?.type == .leftMouseDragged)
+          self.manualResize.begin(context: self.geometryContext, size: window.frame.size,
+                                  normalShown: self.normalShown(window),
+                                  mouseResize: mouseResize, applying: self.applyingGeometry)
+        case NSWindow.didEndLiveResizeNotification:
+          if let completed = self.manualResize.finish(
+            context: self.geometryContext, size: window.frame.size,
+            normalShown: self.normalShown(window), applying: self.applyingGeometry) {
+            self.preferences.write(account: completed.account, size: completed.size)
+            self.savePosition(window, context: self.geometryContext)
+          }
+        case NSWindow.didChangeOcclusionStateNotification:
+          if !self.normalShown(window) {
+            self.moveGeneration += 1
+            self.manualResize.cancel()
+          }
+        case NSWindow.didChangeScreenNotification, NSWindow.didChangeBackingPropertiesNotification:
+          self.manualResize.cancel()
+          self.applyMinimum(window)
+        default:
+          // Скрытие/смена режима отменяют также ожидающий отпускания move.
+          self.moveGeneration += 1
+          self.manualResize.cancel()
+        }
+      })
+    }
   }
 
   private func visibility() -> [String: Any] {
@@ -145,8 +373,10 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
     }
   }
 
-  init(_ registrar: FlutterPluginRegistrar) {
+  init(_ registrar: FlutterPluginRegistrar,
+       preferences: MiniAppWindowPreferences = MiniAppWindowPreferences()) {
     self.registrar = registrar
+    self.preferences = preferences
   }
 
   static func register(with registrar: FlutterPluginRegistrar) {
@@ -155,6 +385,7 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
     let plugin = MiniAppWindowPlugin(registrar)
     plugin.channel = channel
     plugin.observeVisibility()
+    plugin.observeGeometry()
     registrar.addMethodCallDelegate(plugin, channel: channel)
   }
 
@@ -168,8 +399,12 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
     case "visibility":
       result(visibility())
     case "present":
+      moveGeneration += 1
+      updateGeometryContext(args)
+      manualResize.cancel()
+      applyingGeometry = true
+      defer { applyingGeometry = false }
       window.title = args?["title"] as? String ?? ""
-      window.minSize = MiniAppWindowPlugin.fit(MiniAppWindowPlugin.minimumSize)
       if args?["frameless"] as? Bool == true {
         // .titled/.resizable остаются (borderless не становится key-окном):
         // контент заезжает под прозрачный titlebar, светофор прячем.
@@ -180,10 +415,29 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
           window.standardWindowButton(button)?.isHidden = true
         }
       }
-      window.setFrame(MiniAppWindowPlugin.defaultFrame(), display: false)
+      var miniAppFrame: NSRect?
+      if geometryContext.kind == "miniApp" {
+        let main = NSApp.windows.first { $0 is MainFlutterWindow }
+        let area = MiniAppWindowPlugin.screenArea()
+        applyMinimum(window, area: area)
+        let frame = MiniAppWindowGeometry.frame(
+          preferred: preferences.read(geometryContext), position: preferences.readPosition(geometryContext),
+          main: main?.frame, area: area)
+        miniAppFrame = frame
+        window.setFrame(frame, display: false)
+      } else {
+        applyMinimum(window, area: MiniAppWindowPlugin.screenArea())
+        window.setFrame(MiniAppWindowPlugin.defaultFrame(), display: false)
+      }
       MiniAppWindowPlugin.focus(window)
+      if let frame = miniAppFrame {
+        // AppKit может сдвинуть впервые показываемое окно на другой монитор.
+        // После показа возвращаем рассчитанное положение внутри рамки Лизы.
+        window.setFrameOrigin(frame.origin)
+      }
       result(nil)
     case "setTitle":
+      if updateGeometryContext(args) { applyMinimum(window) }
       window.title = args?["title"] as? String ?? ""
       result(nil)
     case "focus":
@@ -192,25 +446,68 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
     case "geometry":
       // macOS width/height исторически измеряют frame, все размеры в pt.
       let area = window.screen?.visibleFrame ?? MiniAppWindowPlugin.screenArea()
+      let main = NSApp.windows.first { $0 is MainFlutterWindow }
+      let mainFrame = main?.frame ?? NSRect(origin: area.origin, size: area.size)
       result([
         "width": window.frame.width, "height": window.frame.height,
         "frameWidth": window.frame.width, "frameHeight": window.frame.height,
         "minWidth": window.minSize.width, "minHeight": window.minSize.height,
+        "minFrameWidth": window.minSize.width, "minFrameHeight": window.minSize.height,
+        "mainFrameWidth": mainFrame.width, "mainFrameHeight": mainFrame.height,
+        "frameX": window.frame.minX, "frameY": window.frame.minY,
+        "mainFrameX": mainFrame.minX, "mainFrameY": mainFrame.minY,
         "areaWidth": area.width, "areaHeight": area.height,
         "maximized": window.isZoomed,
       ])
     case "toggleMaximize":
+      moveGeneration += 1
+      manualResize.cancel()
+      applyingGeometry = true
+      defer { applyingGeometry = false }
       window.zoom(nil)
       result(window.isZoomed)
     case "startDrag":
-      if let event = NSApp.currentEvent { window.performDrag(with: event) }
+      if let event = NSApp.currentEvent, event.window === window,
+         event.type == .leftMouseDown || event.type == .leftMouseDragged,
+         normalShown(window), !applyingGeometry {
+        moveGeneration += 1
+        let generation = moveGeneration
+        let context = geometryContext
+        let origin = window.frame.origin
+        window.performDrag(with: event)
+        finishManualMove(window, context: context, origin: origin, generation: generation)
+      }
       result(nil)
     case "close":
+      moveGeneration += 1
+      manualResize.cancel()
       window.close()
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  private func savePosition(_ window: NSWindow, context: MiniAppGeometryContext) {
+    guard context == geometryContext, !applyingGeometry, normalShown(window),
+          let account = context.preferenceAccount,
+          let main = NSApp.windows.first(where: { $0 is MainFlutterWindow }),
+          let position = MiniAppWindowGeometry.position(frame: window.frame, main: main.frame) else { return }
+    preferences.writePosition(account: account, position: position)
+  }
+
+  private func finishManualMove(_ window: NSWindow, context: MiniAppGeometryContext,
+                                origin: NSPoint, generation: Int) {
+    guard generation == moveGeneration, context == geometryContext, normalShown(window) else { return }
+    // performDrag может вернуть управление до отпускания кнопки мыши.
+    if NSEvent.pressedMouseButtons & 1 != 0 {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak window] in
+        guard let self, let window else { return }
+        self.finishManualMove(window, context: context, origin: origin, generation: generation)
+      }
+      return
+    }
+    if window.frame.origin != origin { savePosition(window, context: context) }
   }
 
   private static func focus(_ window: NSWindow) {
@@ -229,8 +526,8 @@ class MiniAppWindowPlugin: NSObject, FlutterPlugin {
   }
 
   /// Не больше 90% экрана: на маленьком экране минимум иначе не влезает.
-  private static func fit(_ size: NSSize) -> NSSize {
-    let area = screenArea()
+  private static func fit(_ size: NSSize, area: NSRect? = nil) -> NSSize {
+    let area = area ?? screenArea()
     return NSSize(width: min(size.width, area.width * 0.9),
                   height: min(size.height, area.height * 0.9))
   }
