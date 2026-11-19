@@ -260,6 +260,7 @@ abstract final class NativePushDiagnostics {
             'presentation',
             'deliveredObserved',
             'removalRequested',
+            'removalObservedAbsent',
             'nseReceived',
             'nseCompleted',
             'nseExpired',

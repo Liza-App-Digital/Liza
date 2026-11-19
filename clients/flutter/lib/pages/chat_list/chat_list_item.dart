@@ -1,3 +1,4 @@
+import 'package:liza/utils/confirmed_read_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -78,7 +79,12 @@ class ChatListItem extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: ConfirmedReadState.forClient(room.client).revision,
+    builder: (context, _) => _build(context),
+  );
+
+  Widget _build(BuildContext context) {
     final theme = Theme.of(context);
 
     // ВРЕМЕННО (отключено): диагностика бага «свежий чат без индикатора

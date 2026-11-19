@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA1070701070701070700002 /* PrimaryBadgeSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1070701070701070700001 /* PrimaryBadgeSnapshot.swift */; };
+		AA1080801080801080800002 /* DeliveredBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1080801080801080800001 /* DeliveredBanner.swift */; };
 		AA1030301030301030300002 /* NativePushJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1030301030301030300001 /* NativePushJournal.swift */; };
 		AA1050501050501050500002 /* ReadBannerSweep.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1050501050501050500001 /* ReadBannerSweep.swift */; };
 		AA1060601060601060600002 /* PushPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1060601060601060600001 /* PushPresentation.swift */; };
@@ -79,6 +81,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AA1070701070701070700001 /* PrimaryBadgeSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PrimaryBadgeSnapshot.swift; path = "../Notification Service Extension/PrimaryBadgeSnapshot.swift"; sourceTree = "<group>"; };
+		AA1080801080801080800001 /* DeliveredBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DeliveredBanner.swift; path = "../Notification Service Extension/DeliveredBanner.swift"; sourceTree = "<group>"; };
 		AA1030301030301030300001 /* NativePushJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NativePushJournal.swift; path = "../Notification Service Extension/NativePushJournal.swift"; sourceTree = "<group>"; };
 		AA1050501050501050500001 /* ReadBannerSweep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ReadBannerSweep.swift; path = "../Notification Service Extension/ReadBannerSweep.swift"; sourceTree = "<group>"; };
 		AA1060601060601060600001 /* PushPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushPresentation.swift; sourceTree = "<group>"; };
@@ -227,6 +231,8 @@
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
 				AA1234561234567800000001 /* ApnsPushPlugin.swift */,
+				AA1070701070701070700001 /* PrimaryBadgeSnapshot.swift */,
+				AA1080801080801080800001 /* DeliveredBanner.swift */,
 				AA1030301030301030300001 /* NativePushJournal.swift */,
 				AA1050501050501050500001 /* ReadBannerSweep.swift */,
 				AA1060601060601060600001 /* PushPresentation.swift */,
@@ -530,6 +536,8 @@
 			files = (
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				AA1234561234567800000002 /* ApnsPushPlugin.swift in Sources */,
+				AA1070701070701070700002 /* PrimaryBadgeSnapshot.swift in Sources */,
+				AA1080801080801080800002 /* DeliveredBanner.swift in Sources */,
 				AA1030301030301030300002 /* NativePushJournal.swift in Sources */,
 				AA1050501050501050500002 /* ReadBannerSweep.swift in Sources */,
 				AA1060601060601060600002 /* PushPresentation.swift in Sources */,

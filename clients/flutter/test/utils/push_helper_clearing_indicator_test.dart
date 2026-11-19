@@ -67,6 +67,7 @@ void main() {
   late L10n l10n;
 
   setUp(() async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     recorder = _RecordingLocalNotifications();
     FlutterLocalNotificationsPlatform.instance = recorder;
     plugin = FlutterLocalNotificationsPlugin();
@@ -75,6 +76,7 @@ void main() {
   });
 
   tearDown(() async {
+    debugDefaultTargetPlatformOverride = null;
     await client.dispose();
   });
 
@@ -172,12 +174,6 @@ void main() {
               ),
             ),
           );
-
-      // Clearing-ветка гашения работает на iOS/macOS; фасад cancel(id) на
-      // android уходит в платформенную реализацию (для recorder — no-op), а на
-      // iOS — в FlutterLocalNotificationsPlatform.instance.cancel (наш recorder).
-      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-      addTearDown(() => debugDefaultTargetPlatformOverride = null);
 
       await joinUnread('!hidden:example.invalid', {
         'com.liza.chat.type': 'stories',

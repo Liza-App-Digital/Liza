@@ -11,6 +11,7 @@ import 'package:matrix/matrix.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:universal_html/html.dart' as html;
 
+import 'package:liza/utils/push_contract.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
@@ -32,6 +33,7 @@ abstract class ClientManager {
 
   static Future<List<Client>> getClients({
     bool initialize = true,
+    bool observePushContractStartup = false,
     required SharedPreferences store,
   }) async {
     // Reset previous initialization errors early so both the creation and
@@ -59,6 +61,9 @@ abstract class ClientManager {
     for (final name in clientNames) {
       try {
         final client = await createClient(name, store);
+        if (observePushContractStartup && clients.length < 16) {
+          PushContractScheduler.beforeForegroundInit(client);
+        }
         clients.add(client);
       } catch (e, s) {
         Logs().e(

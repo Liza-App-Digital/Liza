@@ -42,6 +42,7 @@ void main() {
     client = await prepareTestClient(loggedIn: true);
     // Логин запускает фоновый sync-loop (FakeMatrixApi отвечает бесконечно) —
     // комнаты наполняем вручную через handleSync, фоновый sync не нужен.
+    AppBadge.bindPrimary(client, () => client);
     client.backgroundSync = false;
     await client.abortSync();
   });
@@ -49,6 +50,7 @@ void main() {
   tearDown(() async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_apnsChannel, null);
+    AppBadge.unbindPrimary(client);
     await client.dispose(closeDatabase: true);
   });
 

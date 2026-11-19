@@ -25,13 +25,14 @@ enum ReadBannerSweep {
         guard let defaults = defaults else { return nil }
         let names = defaults.stringArray(forKey: "client_names") ?? []
         if let cn = clientName, !cn.isEmpty {
+            guard names.contains(cn) else { return nil }
             if let hs = defaults.string(forKey: "homeserverUrl.\(cn)"),
                let token = defaults.string(forKey: "accessToken.\(cn)"),
                !hs.isEmpty, !token.isEmpty {
                 return Credentials(homeserver: hs, accessToken: token)
             }
-            guard names.count <= 1 else { return nil }
-        } else if names.count > 1 {
+            guard names == [cn] else { return nil }
+        } else if names.count != 1 {
             return nil
         }
         guard let hs = defaults.string(forKey: "homeserverUrl"),
@@ -89,13 +90,10 @@ enum ReadBannerSweep {
     ) -> [String] {
         let me = clientName ?? ""
         return delivered.compactMap { d in
-            guard let eventId = d.userInfo["event_id"] as? String,
-                  readEventIds.contains(eventId) else { return nil }
-            let owner = d.userInfo["client_name"] as? String ?? ""
-            if owner.isEmpty || me.isEmpty {
-                return clientCount <= 1 ? d.identifier : nil
-            }
-            return owner == me ? d.identifier : nil
+            guard !me.isEmpty, let address = DeliveredBanner.metadata(d.userInfo),
+                  readEventIds.contains(address.event) else { return nil }
+            if address.owner.isEmpty { return clientCount == 1 ? d.identifier : nil }
+            return address.owner == me ? d.identifier : nil
         }
     }
 
@@ -113,16 +111,20 @@ enum ReadBannerSweep {
     static func run(
         clientName: String?,
         defaults: UserDefaults?,
-        center: UNUserNotificationCenter = .current(),
+        listRequests: @escaping DeliveredBanner.ListRequests = DeliveredBanner.listRequests,
+        removeRequests: @escaping ([String]) -> Void = {
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: $0)
+        },
         session: URLSession = .shared,
         completion: @escaping (Int) -> Void
     ) {
-        guard let creds = credentials(clientName: clientName, defaults: defaults),
+        let names = defaults?.stringArray(forKey: "client_names") ?? []
+        let owner = clientName?.isEmpty == false ? clientName : (names.count == 1 ? names.first : nil)
+        guard let owner = owner, let creds = credentials(clientName: owner, defaults: defaults),
               let request = notificationsRequest(creds) else {
             completion(0)
             return
         }
-        let clientCount = defaults?.stringArray(forKey: "client_names")?.count ?? 0
         let once = Once(completion)
         let task = session.dataTask(with: request) { data, response, error in
             guard error == nil,
@@ -132,16 +134,29 @@ enum ReadBannerSweep {
                 once.call(0)
                 return
             }
-            center.getDeliveredNotifications { notes in
+            listRequests { notes in
+                let currentNames = defaults?.stringArray(forKey: "client_names")
+                guard currentNames == names else { return once.call(0) }
                 let ids = identifiersToRemove(
-                    delivered: notes.map { Delivered(identifier: $0.request.identifier,
-                                                     userInfo: $0.request.content.userInfo) },
+                    delivered: notes.map { Delivered(identifier: $0.identifier,
+                                                     userInfo: $0.content.userInfo) },
                     readEventIds: read,
-                    clientName: clientName,
-                    clientCount: clientCount
+                    clientName: owner,
+                    clientCount: names.count
                 )
-                if !ids.isEmpty { center.removeDeliveredNotifications(withIdentifiers: ids) }
-                once.call(ids.count)
+                let readIds = Set(ids)
+                let reads = notes.compactMap { note -> [String: String]? in
+                    guard readIds.contains(note.identifier),
+                          var descriptor = DeliveredBanner.descriptor(note) else { return nil }
+                    descriptor["readBy"] = owner
+                    return descriptor
+                }
+                guard !reads.isEmpty else { return once.call(0) }
+                DeliveredBanner.remove(reads, singleAccount: names.count == 1,
+                    scopeIsCurrent: { once.pending && defaults?.stringArray(forKey: "client_names") == names &&
+                        credentials(clientName: owner, defaults: defaults) == creds },
+                    listRequests: listRequests, removeRequests: removeRequests
+                ) { absent in once.call(absent.count) }
             }
         }
         task.resume()
@@ -155,6 +170,11 @@ enum ReadBannerSweep {
         private let lock = NSLock()
         private var fn: ((Int) -> Void)?
         init(_ fn: @escaping (Int) -> Void) { self.fn = fn }
+        var pending: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return fn != nil
+        }
         func call(_ value: Int) {
             lock.lock()
             let f = fn

@@ -152,19 +152,10 @@ class NotificationService: UNNotificationServiceExtension {
                 bestAttemptContent.interruptionLevel = .timeSensitive
             }
 
-            // Бейдж — из КЛИЕНТ-авторитетного числа в App Group (его пишет Dart
-            // на каждый sync), а НЕ из сырого серверного counts.unread: последнее
-            // считает topology-скрытые (stories) и server-stuck (федеративные)
-            // комнаты, которые клиент исключает → накопительная инфляция бейджа.
-            // Ставим РОВНО сохранённое число (без инкремента: несколько пушей при
-            // закрытом приложении читают один снимок → инкремент дал бы двойной
-            // счёт). Пусто (холодный первый пуш до sync) или 0 при alert-пуше → 1
-            // (нижняя граница «есть непрочитанное»; NSE всегда alert-путь).
-            // См. RL-app-badge-native-visible-count.
             let badgeDefaults = UserDefaults(suiteName: appGroup())
-            let savedBadge = badgeDefaults?.object(forKey: "badge_count") as? Int
-            bestAttemptContent.badge = NSNumber(
-                value: (savedBadge ?? 0) > 0 ? savedBadge! : 1
+            let clientName = bestAttemptContent.userInfo["client_name"] as? String
+            bestAttemptContent.badge = PrimaryBadgeSnapshot.forAlert(
+                owner: clientName, defaults: badgeDefaults
             )
 
             // Р2 L1: параллельно с аватаром снимаем баннеры событий, прочитанных
@@ -173,7 +164,6 @@ class NotificationService: UNNotificationServiceExtension {
             // ошибка → ничего не снимаем.
             let pending = DispatchGroup()
             pending.enter()
-            let clientName = bestAttemptContent.userInfo["client_name"] as? String
             readBannerSweep(clientName, badgeDefaults) { removed in
                 if removed > 0 { journal?.enqueue(.nseSwept, value: removed, context: receivedContext) }
                 pending.leave()

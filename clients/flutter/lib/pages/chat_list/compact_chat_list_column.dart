@@ -131,7 +131,7 @@ class _CompactRoomTile extends StatelessWidget {
                     Positioned(
                       top: 4,
                       right: 2,
-                      child: UnreadBubble(room: room),
+                      child: UnreadBubble(room: room, surface: 'compact'),
                     ),
                   ],
                 ),

@@ -159,6 +159,22 @@ bool isSupportHubRoom(Room room) {
   return false;
 }
 
+/// Личный чат с доверенным ботом поддержки конкретного аккаунта.
+/// Полный MXID исключает чужих ботов с тем же localpart.
+bool isSupportBotDm(Room room) {
+  final supportId = AppConfig.supportBotMxidForHomeserver(
+    room.client.homeserver?.host,
+  );
+  if (room.directChatMatrixID != supportId) return false;
+  // m.direct в SDK сохраняется и после приглашения третьего участника.
+  // Только известный активный участник вне пары доказывает, что это группа:
+  // неполный lazy state сам по себе не должен скрывать меню настоящего DM.
+  final myId = room.client.userID;
+  return !room
+      .getParticipants(const [Membership.join, Membership.invite])
+      .any((member) => member.id != myId && member.id != supportId);
+}
+
 /// Чат с ассистентом Лизой, который закрепляем первым в списке.
 ///
 /// Сверяем ПОЛНЫЙ mxid, а не localpart: у пользователей остались мёртвые DM со

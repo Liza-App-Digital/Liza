@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/utils/news_audience.dart';
+import 'package:liza/utils/confirmed_read_state.dart';
 
 /// Порядковое решение «есть ли в комнате чужие сообщения НОВЕЕ моей квитанции».
 ///
@@ -35,13 +36,20 @@ extension UnseenMessages on Room {
     return fully.isEmpty ? null : fully;
   }
 
-  bool get hasUnseenMessages {
+  bool get hasUnseenMessages =>
+      unseenWithOverlay(ConfirmedReadState.forClient(client));
+
+  bool unseenWithOverlay(ConfirmedReadState? localRead) {
+    if (localRead?.covers(this) == true) return false;
     final last = lastEvent;
+    if (last?.isHiddenByNewsAudience == true) return false;
+    if (localRead?.hasUnknownCoverage(this) == true && notificationCount > 0) {
+      return true;
+    }
     if (last == null || !client.roomPreviewLastEvents.contains(last.type)) {
       return false;
     }
     if (last.senderId == client.userID) return false;
-    if (last.isHiddenByNewsAudience) return false;
     final own = _ownReadEventId;
     // Никогда ничего не читал — всё новое (как readAt=0 в SDK).
     if (own == null) return true;
@@ -145,8 +153,9 @@ abstract final class UnseenOrderCache {
   /// `hasUnseenMessages` не доходит). Зовётся перед подсчётом бейджа после
   /// sync — одна выборка из локальной БД на комнату при смене пары.
   static Future<void> reconcile(Client client) async {
-    for (final room in client.rooms) {
-      if (room.notificationCount == 0) continue;
+    // Во время чтения локальной БД SDK может принять join/leave другой комнаты.
+    final rooms = client.rooms.where((r) => r.notificationCount > 0).toList();
+    for (final room in rooms) {
       await reconcileRoom(room);
     }
   }

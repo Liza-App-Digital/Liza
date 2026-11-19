@@ -15,10 +15,14 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/utils/background_push.dart';
+import 'package:liza/utils/apns_push_service.dart';
 import 'package:liza/utils/push_helper.dart';
 
 import 'per_user_fake_api.dart';
@@ -48,6 +52,19 @@ Future<void> _room(Client c, String roomId, {required int unread}) =>
         rooms: RoomsUpdate(
           join: {
             roomId: JoinedRoomUpdate(
+              ephemeral: [
+                if (unread == 0)
+                  BasicEvent(
+                    type: 'm.receipt',
+                    content: {
+                      '\$m-$roomId': {
+                        'm.read.private': {
+                          c.userID!: {'ts': 1},
+                        },
+                      },
+                    },
+                  ),
+              ],
               unreadNotifications: UnreadNotificationCounts(
                 notificationCount: unread,
                 highlightCount: 0,
@@ -80,11 +97,27 @@ Future<void> _room(Client c, String roomId, {required int unread}) =>
     );
 
 Map<String, dynamic> _clearing(String clientName, {int unread = 1}) => {
-      'aps': {'content-available': 1},
-      'counts': {'unread': unread},
-      'liza_clear': 1,
-      pushClientNameKey: clientName,
-    };
+  'aps': {'content-available': 1},
+  'counts': {'unread': unread},
+  'liza_clear': 1,
+  pushClientNameKey: clientName,
+};
+
+DeliveredPush _banner(
+  String room, {
+  String account = 'Liza ios',
+  String? eventId,
+}) => (
+  requestId: '$account|$room',
+  roomId: room,
+  eventId: eventId ?? '\$m-$room',
+  clientName: account,
+);
+
+RemoveReadPushes _record(List<String> rooms) => (reads, _) async {
+  rooms.addAll(reads.map((r) => r.banner.roomId));
+  return reads.map((r) => r.banner.requestId).toList();
+};
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -147,8 +180,13 @@ void main() {
     final dropped = await push.handleClearingPush(
       _clearing('Liza ios'),
       sync: (c) async => synced.add(c.clientName),
-      delivered: () async => [_read, _unread, '!unknown:x', _read],
-      cancel: (roomId) async => cancelled.add(roomId),
+      delivered: () async => [
+        _banner(_read),
+        _banner(_unread),
+        _banner('!unknown:x'),
+        _banner(_read),
+      ],
+      cancel: _record(cancelled),
       done: (_) async => done++,
     );
     expect(synced, ['Liza ios']);
@@ -173,8 +211,8 @@ void main() {
         _clearing('Liza ios'),
         sync: entry.value,
         syncTimeout: const Duration(milliseconds: 50),
-        delivered: () async => [_read, _unread],
-        cancel: (roomId) async => cancelled.add(roomId),
+        delivered: () async => [_banner(_read), _banner(_unread)],
+        cancel: _record(cancelled),
         done: (_) async => done++,
       );
       expect(done, 1, reason: entry.key);
@@ -216,13 +254,292 @@ void main() {
     await push.handleClearingPush(
       _clearing('Liza ios'),
       sync: (c) async => synced.add(c.clientName),
-      delivered: () async => [_read, _roomB],
-      cancel: (roomId) async => cancelled.add(roomId),
+      delivered: () async => [
+        _banner(_read),
+        _banner(_roomB, account: b.clientName),
+      ],
+      cancel: _record(cancelled),
       done: (_) async {},
     );
     expect(synced, ['Liza ios']);
     expect(cancelled, [_read]);
   });
+
+  // ledger:RL-push-causal-contract
+  test(
+    'поздний clearing A общей комнаты оставляет B, неизвестного владельца и новое событие',
+    () async {
+      await _room(b, _read, unread: 0);
+      final push = BackgroundPush.forTest([b, a]);
+      final observed = <ReadPush>[];
+      await push.handleClearingPush(
+        _clearing(a.clientName),
+        sync: (_) async {},
+        delivered: () async => [
+          _banner(_read, account: b.clientName),
+          _banner(_read, account: ''),
+          _banner(_read, eventId: r'$afterRead'),
+          _banner(_read),
+        ],
+        cancel: (reads, single) async {
+          expect(single, isFalse);
+          observed.addAll(reads);
+          return reads.map((r) => r.banner.requestId).toList();
+        },
+        done: (_) async {},
+      );
+      expect(observed, [(banner: _banner(_read), readBy: a.clientName)]);
+    },
+  );
+
+  test(
+    'квитанция указывает на конкретное событие в ещё непрочитанной комнате',
+    () async {
+      final event = '\$m-$_unread';
+      final room = a.getRoomById(_unread)!;
+      room.roomAccountData[LatestReceiptState.eventType] = BasicEvent(
+        type: LatestReceiptState.eventType,
+        content: {
+          'global': {
+            'latest': {'e': event, 'ts': 1},
+          },
+        },
+      );
+      final observed = <ReadPush>[];
+      await BackgroundPush.forTest([a]).cancelDeliveredOfReadRooms(
+        delivered: () async => [
+          _banner(_unread),
+          _banner(_unread, eventId: r'$e3'),
+        ],
+        cancel: (reads, _) async {
+          observed.addAll(reads);
+          return reads.map((r) => r.banner.requestId).toList();
+        },
+      );
+      expect(observed, [(banner: _banner(_unread), readBy: a.clientName)]);
+    },
+  );
+
+  group('покрытие собственной квитанции для центра', () {
+    const e1 = r'$older', e2 = r'$receipt', e3 = r'$newer';
+    const t1 = r'$thread1', t2 = r'$thread2', root = r'$thread';
+    Future<void> timeline(
+      List<String> ids,
+      int count, {
+      bool limited = false,
+    }) => a.handleSync(
+      SyncUpdate(
+        nextBatch: 'b-$count-${ids.last}',
+        rooms: RoomsUpdate(
+          join: {
+            _unread: JoinedRoomUpdate(
+              unreadNotifications: UnreadNotificationCounts(
+                notificationCount: count,
+              ),
+              timeline: TimelineUpdate(
+                limited: limited,
+                events: [
+                  for (final id in ids)
+                    MatrixEvent(
+                      type: EventTypes.Message,
+                      eventId: id,
+                      senderId: '@peer:fake.local',
+                      originServerTs: DateTime.fromMillisecondsSinceEpoch(1000),
+                      content: {
+                        'msgtype': 'm.text',
+                        'body': 'fixture',
+                        if (id == t1 || id == t2)
+                          'm.relates_to': {
+                            'rel_type': 'm.thread',
+                            'event_id': root,
+                          },
+                      },
+                    ),
+                ],
+              ),
+            ),
+          },
+        ),
+      ),
+    );
+    void receipt({bool thread = false}) {
+      Map<String, dynamic> state(String id) => {
+        'latest': {'e': id, 'ts': 2000},
+      };
+      a
+          .getRoomById(_unread)!
+          .roomAccountData[LatestReceiptState.eventType] = BasicEvent(
+        type: LatestReceiptState.eventType,
+        content: {
+          'global': state(e2),
+          if (thread) 'thread': {root: state(t2)},
+        },
+      );
+    }
+
+    Future<List<String>> removed(List<String> ids) async {
+      final out = <String>[];
+      await ApnsPushService.clearReadBanners(
+        clients: () => [a],
+        delivered: () async => [
+          for (final id in ids)
+            (
+              requestId: id,
+              clientName: a.clientName,
+              eventId: id,
+              roomId: _unread,
+            ),
+        ],
+        cancel: (reads, _) async {
+          out.addAll(reads.map((r) => r.banner.eventId));
+          return out;
+        },
+      );
+      return out;
+    }
+
+    for (final count in [0, 1]) {
+      test(
+        'квитанция e2 снимает e1/e2, сохраняет e3 при count=$count',
+        () async {
+          // AC:RL-push-causal-contract/10
+          await timeline([e1, e2, e3], count);
+          expect(
+            await removed([e1, e2, e3]),
+            isEmpty,
+            reason: 'без квитанции счётчик ничего не доказывает',
+          );
+          receipt();
+          expect(await removed([e1, e2, e3]), [e1, e2]);
+        },
+      );
+    }
+    test(
+      'основная квитанция не покрывает чужой тред, его собственная покрывает t1/t2',
+      () async {
+        await timeline([t1, e1, t2, e2, e3], 1);
+        receipt();
+        expect(await removed([t1, e1, t2, e2, e3]), [e1, e2]);
+        receipt(thread: true);
+        expect(await removed([t1, e1, t2, e2, e3]), [t1, e1, t2, e2]);
+      },
+    );
+    test(
+      'limited разрывает доказательство порядка, хотя объект e1 остался в БД',
+      () async {
+        await timeline([e1], 1);
+        await timeline([e2, e3], 0, limited: true);
+        final room = a.getRoomById(_unread)!;
+        expect(await a.database.getEventById(e1, room), isNotNull);
+        expect(await a.database.getEventIdList(room), isNot(contains(e1)));
+        receipt();
+        expect(await removed([e1, e2, e3]), [e2]);
+      },
+    );
+    test(
+      'живая частичная квитанция вызывает проход, пока unread не стал нулём',
+      () async {
+        final push = BackgroundPush.forTest([a]);
+        await push.clearNotificationsOfRoomsReadSinceLastSync(
+          a,
+          cancel: (_, _) async {},
+        );
+        final update = SyncUpdate(
+          nextBatch: 'live',
+          rooms: RoomsUpdate(
+            join: {
+              _unread: JoinedRoomUpdate(
+                ephemeral: [
+                  BasicEvent(
+                    type: 'm.receipt',
+                    content: {
+                      e2: {
+                        'm.read.private': {
+                          a.userID!: {'ts': 1},
+                        },
+                      },
+                    },
+                  ),
+                ],
+              ),
+            },
+          ),
+        );
+        push.rememberAppleReadReceipts(a, update);
+        push.rememberAppleReadReceipts(a, update);
+        final cancelled = <String>[];
+        await push.clearNotificationsOfRoomsReadSinceLastSync(
+          a,
+          cancel: (_, room) async => cancelled.add(room),
+        );
+        expect(cancelled, [_unread]);
+        await push.clearNotificationsOfRoomsReadSinceLastSync(
+          a,
+          cancel: (_, room) async => cancelled.add(room),
+        );
+        expect(cancelled, [_unread]);
+      },
+    );
+  });
+
+  test(
+    'старый Apple counts-only с нулём не обходит владельца запроса и readback',
+    () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      const channel = MethodChannel('com.prodamus.laba.liza/apns');
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      final calls = <String>[];
+      addTearDown(() {
+        debugDefaultTargetPlatformOverride = null;
+        messenger.setMockMethodCallHandler(channel, null);
+      });
+      await _room(b, _read, unread: 1);
+      messenger.setMockMethodCallHandler(channel, (method) async {
+        calls.add(method.method);
+        if (method.method == 'listDeliveredBanners') {
+          return [
+            for (final name in [b.clientName, a.clientName, ''])
+              {
+                'clientName': name,
+                'eventId': '\$m-$_read',
+                'roomId': _read,
+                'requestId': 'request-$name',
+              },
+            {
+              'clientName': a.clientName,
+              'eventId': r'$e3',
+              'roomId': _read,
+              'requestId': 'fresh',
+            },
+          ];
+        }
+        expect(method.method, 'removeReadBanners');
+        final args = method.arguments as Map;
+        expect(args['singleAccount'], isFalse);
+        expect(args['reads'], [
+          {
+            'clientName': a.clientName,
+            'eventId': '\$m-$_read',
+            'roomId': _read,
+            'requestId': 'request-${a.clientName}',
+            'readBy': a.clientName,
+          },
+        ]);
+        return ['request-${a.clientName}'];
+      });
+      await pushHelper(
+        PushNotification(
+          devices: const [],
+          counts: const PushNotificationCounts(unread: 0),
+        ),
+        clients: [b, a],
+        clientName: a.clientName,
+        flutterLocalNotificationsPlugin: FlutterLocalNotificationsPlugin(),
+      );
+      expect(calls, ['listDeliveredBanners', 'removeReadBanners']);
+    },
+  );
 
   // AC:RL-push-clear-read-elsewhere/4
   test('clearing-пуш идёт мимо pushHelper, гейта баннера и дедупа', () async {

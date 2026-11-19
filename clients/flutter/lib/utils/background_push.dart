@@ -22,7 +22,6 @@ import 'package:liza/main.dart';
 import 'package:liza/utils/android_room_notification.dart';
 import 'package:liza/utils/apns_push_service.dart';
 import 'package:liza/utils/app_badge.dart';
-import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/news_audience.dart';
 import 'package:liza/utils/notification_background_handler.dart';
@@ -317,8 +316,6 @@ class BackgroundPush {
   FlutterLocalNotificationsPlugin get localNotificationsPlugin =>
       _flutterLocalNotificationsPlugin;
 
-  int? _lastBadgeCount;
-
   /// Тап по уведомлению чужого (неактивного) аккаунта: переключаем активный
   /// клиент ДО навигации — экраны чата/StoryViewer читают
   /// `Matrix.of(context).client` (образец `local_notifications_extension.dart`).
@@ -335,35 +332,21 @@ class BackgroundPush {
     if (!Platform.isIOS && !Platform.isMacOS && !Platform.isAndroid) return;
     // После выхода последнего аккаунта список пуст, а resume всё равно зовёт
     // пересчёт — `client` (= clients.first) бросал StateError (#508).
-    if (clients.isEmpty) return;
-    // См. AppBadge.refreshFrom: порядок квитанции досчитывается до подсчёта.
-    await UnseenOrderCache.reconcile(client);
-    final unreadCount =
-        client.rooms.where((room) => room.countsTowardAppBadge).length;
-    await AppBadge.trySet(unreadCount);
-
-    // Read-back рендера бейджа: сверяем клиент-авторитетное число с тем, что
-    // платформа РЕАЛЬНО держит на иконке. Ловит класс «Dart посчитал N — на
-    // иконке M» (залипшая метка, не снявшийся badge), невидимый серверному
-    // reportBadgeDrift. Best-effort, оконно агрегируется в Monitoring.
-    if (Platform.isIOS || Platform.isMacOS) {
-      unawaited(_reportBadgeRenderMismatch(unreadCount));
-    }
-
-    // При переходе к нулю видимых непрочитанных снимаем и остаточные
-    // доставленные уведомления: на macOS/iOS оставшаяся запись в Центре
-    // уведомлений может заново нативно посадить бейдж в обход Dart. Делаем
-    // только на смене счётчика, чтобы не дёргать cancelAll на каждый sync.
-    if (unreadCount != _lastBadgeCount) {
-      _lastBadgeCount = unreadCount;
-      // При мультиаккаунте ноль у бейдж-клиента ≠ ноль у всех: cancelAll снёс бы
-      // уведомления соседнего аккаунта.
-      final zeroEverywhere = clients.every(
-        (c) => c.rooms.where((room) => room.countsTowardAppBadge).isEmpty,
-      );
-      if (zeroEverywhere && (Platform.isIOS || Platform.isMacOS)) {
-        await _flutterLocalNotificationsPlugin.cancelAll();
-      }
+    final primary = clients.firstOrNull;
+    if (primary == null || primary.prevBatch == null) return;
+    await UnseenOrderCache.reconcile(primary);
+    final unreadCount = AppBadge.visibleUnreadCount(primary);
+    if (unreadCount == null || !identical(clients.firstOrNull, primary)) return;
+    final before = AppBadge.writeSeq;
+    await AppBadge.trySetPrimary(
+      unreadCount,
+      owner: primary,
+      primary: () => clients.firstOrNull,
+    );
+    if ((Platform.isIOS || Platform.isMacOS) &&
+        identical(primary, clients.firstOrNull) &&
+        AppBadge.writeSeq == before + 1) {
+      unawaited(_reportBadgeRenderMismatch(primary, unreadCount));
     }
   }
 
@@ -373,13 +356,13 @@ class BackgroundPush {
   /// macOS: dockTile выставляется через DispatchQueue.main.async — read-back в
   /// том же кадре гоняется с ним, поэтому откладываем на кадр. iOS —
   /// applicationIconBadgeNumber синхронен. Best-effort: ошибки канала не критичны.
-  Future<void> _reportBadgeRenderMismatch(int expected) async {
+  Future<void> _reportBadgeRenderMismatch(Client owner, int expected) async {
     // isWriteSuppressed, а не isDenied: до permission-латча на iOS `trySet`
     // выходит молча, оставляя `_denied == false` — сравнивать было бы не с чем.
     if (AppBadge.isWriteSuppressed) return;
     // Снимок счётчика записей ДО ожидания: если за время read-back бейдж переписал
     // другой писатель ЭТОГО изолята (onSync-подписка на каждый клиент, resume,
-    // cancelNotification — последний намеренно пишет N−1), измеренное расхождение
+    // cancelNotification), измеренное расхождение
     // — наша собственная гонка, а не залипший бейдж. Прод-факт 2026-09-08: 87%
     // событий имели delta==1, а у одного юзера расхождение ходило в ОБЕ стороны
     // (0→1, 1→2, 2→1) — залипание так себя не ведёт.
@@ -392,7 +375,11 @@ class BackgroundPush {
         await Future.delayed(Duration.zero);
       }
       final shown = await FlutterNewBadger.getBadge();
-      if (AppBadge.writeSeq != seqBefore) return;
+      if (AppBadge.writeSeq != seqBefore ||
+          !identical(clients.firstOrNull, owner) ||
+          AppBadge.visibleUnreadCount(owner) != expected) {
+        return;
+      }
       Monitoring.reportBadgeRenderMismatch(expected: expected, shown: shown);
     } on PlatformException {
       // best-effort: канал бейджа недоступен
@@ -598,7 +585,14 @@ class BackgroundPush {
   ) async {
     final roomId = userInfo['room_id'] as String?;
     final eventId = userInfo['event_id'] as String?;
-    if (eventId != null && eventId.isNotEmpty && isLocallyShown(eventId)) {
+    final localOwner = _locallyShownEventIds[eventId]?.clientName;
+    final targetName =
+        pushClientNameFromRaw(userInfo) ?? clients.singleOrNull?.clientName;
+    if (eventId != null &&
+        eventId.isNotEmpty &&
+        isLocallyShown(eventId) &&
+        ((clients.length == 1 && localOwner == null) ||
+            (localOwner != null && localOwner == targetName))) {
       Logs().v('[Push] Suppress native banner: already shown locally', eventId);
       final local = _locallyShownEventIds[eventId]!;
       return ApnsBannerVerdict(
@@ -795,10 +789,17 @@ class BackgroundPush {
       } catch (_) {}
     }
     var retractResult = 'n/a';
-    if (verdict.suppress) {
+    final retractOwner = accountName ?? clients.singleOrNull?.clientName;
+    if (verdict.suppress &&
+        retractOwner != null &&
+        clients.any((c) => c.clientName == retractOwner)) {
       final ms = retract != null
           ? await retract(eventId)
-          : await apns?.retractDelivered(eventId);
+          : await apns?.retractDelivered(
+              eventId,
+              clientName: retractOwner,
+              singleAccount: clients.length == 1,
+            );
       retractResult = ms == null ? 'not-found' : 'found:${ms}ms';
       try {
         jr.record(
@@ -902,8 +903,8 @@ class BackgroundPush {
   /// и через минуту даёт свежий стор, а не пришёл — снимать нечего.
   Future<List<String>> cancelDeliveredAfterFirstSync({
     Duration? wait,
-    Future<List<String>> Function()? delivered,
-    Future<void> Function(String roomId)? cancel,
+    Future<List<DeliveredPush>> Function()? delivered,
+    RemoveReadPushes? cancel,
   }) async {
     if (!Platform.isIOS && !Platform.isMacOS && delivered == null) {
       return const [];
@@ -919,34 +920,18 @@ class BackgroundPush {
     return cancelDeliveredOfReadRooms(delivered: delivered, cancel: cancel);
   }
 
-  /// Ядро чистки: снять нативные баннеры комнат, которые клиент уже не
-  /// считает непрочитанными. Общее для resume и clearing-пуша — одно
-  /// определение «прочитано» (`isUnreadOrInvited`), без новых копий предиката.
-  /// Возвращает снятые комнаты.
   Future<List<String>> cancelDeliveredOfReadRooms({
-    Future<List<String>> Function()? delivered,
-    Future<void> Function(String roomId)? cancel,
-  }) async {
-    final rooms = await (delivered ?? _deliveredRoomIds)();
-    final dropped = <String>[];
-    for (final roomId in rooms.toSet()) {
-      final room = clients
-          .map((c) => c.getRoomById(roomId))
-          .whereType<Room>()
-          .firstOrNull;
-      if (room == null || room.isUnreadOrInvited) continue;
-      Logs().v('[Push] Dropping banner of already read room', roomId);
-      await (cancel ?? _cancelDelivered)(roomId);
-      dropped.add(roomId);
-    }
-    return dropped;
-  }
-
-  Future<List<String>> _deliveredRoomIds() async =>
-      await apns?.deliveredRoomIds() ?? const <String>[];
-
-  Future<void> _cancelDelivered(String roomId) async =>
-      apns?.cancelDeliveredForRoom(roomId);
+    Client? owner,
+    Set<String>? roomIds,
+    Future<List<DeliveredPush>> Function()? delivered,
+    RemoveReadPushes? cancel,
+  }) => ApnsPushService.clearReadBanners(
+    clients: () => clients,
+    owner: owner,
+    roomIds: roomIds,
+    delivered: delivered,
+    cancel: cancel,
+  );
 
   static const clearingSyncTimeout = Duration(seconds: 8);
 
@@ -957,26 +942,27 @@ class BackgroundPush {
   Future<List<String>> handleClearingPush(
     Map<String, dynamic> raw, {
     Future<void> Function(Client client)? sync,
-    Future<List<String>> Function()? delivered,
-    Future<void> Function(String roomId)? cancel,
+    Future<List<DeliveredPush>> Function()? delivered,
+    RemoveReadPushes? cancel,
     Future<void> Function(String? clearingId)? done,
     Duration syncTimeout = clearingSyncTimeout,
   }) async {
     var dropped = const <String>[];
     try {
       final clientName = pushClientNameFromRaw(raw);
-      final own = clients.where((c) => c.clientName == clientName).toList();
-      await Future.wait(
-        (own.isEmpty ? clients : own).map(
-          (c) => (sync ?? _clearingSync)(c)
-              .timeout(syncTimeout)
-              .then<void>((_) {}, onError: (_) {}),
-        ),
-      );
-      dropped = await cancelDeliveredOfReadRooms(
-        delivered: delivered,
-        cancel: cancel,
-      );
+      final owner = clientName == null
+          ? clients.singleOrNull
+          : clients.where((c) => c.clientName == clientName).singleOrNull;
+      if (owner != null) {
+        await (sync ?? _clearingSync)(
+          owner,
+        ).timeout(syncTimeout).then<void>((_) {}, onError: (_) {});
+        dropped = await cancelDeliveredOfReadRooms(
+          owner: owner,
+          delivered: delivered,
+          cancel: cancel,
+        );
+      }
       Logs().v('[Push] Clearing push: dropped ${dropped.length} room(s)');
     } catch (e, s) {
       Logs().w('[Push] Clearing push failed', e, s);
@@ -992,6 +978,30 @@ class BackgroundPush {
   }
 
   Future<void> _clearingDone(String? id) async => apns?.clearingDone(id);
+
+  final _appleReceiptRooms = Expando<Set<String>>();
+
+  /// Сохраняем собственные public/private receipts до фонового пересчёта:
+  /// при частичном чтении комната может остаться непрочитанной.
+  void rememberAppleReadReceipts(Client client, SyncUpdate update) {
+    final user = client.userID;
+    final joined = update.rooms?.join;
+    if (update.nextBatch.isEmpty || user == null || joined == null) return;
+    for (final entry in joined.entries) {
+      final hasOwn =
+          entry.value.ephemeral?.any((event) {
+            if (event.type != 'm.receipt') return false;
+            return event.content.values.whereType<Map>().any((types) {
+              final public = types['m.read'];
+              final private = types['m.read.private'];
+              return (public is Map && public.containsKey(user)) ||
+                  (private is Map && private.containsKey(user));
+            });
+          }) ??
+          false;
+      if (hasOwn) (_appleReceiptRooms[client] ??= {}).add(entry.key);
+    }
+  }
 
   /// Комнаты, непрочитанные на прошлом sync, — по аккаунтам.
   final _unreadOnLastSync = <String, Set<String>>{};
@@ -1011,8 +1021,16 @@ class BackgroundPush {
     };
     final previous = _unreadOnLastSync[client.clientName];
     _unreadOnLastSync[client.clientName] = unread;
-    if (previous == null) return const [];
-    final read = previous.difference(unread).toList();
+    final read = {
+      ...?previous?.difference(unread),
+      ...?_appleReceiptRooms[client],
+    }.toList();
+    _appleReceiptRooms[client] = null;
+    if (read.isEmpty) return const [];
+    if (cancel == null && (Platform.isIOS || Platform.isMacOS)) {
+      await cancelDeliveredOfReadRooms(owner: client, roomIds: read.toSet());
+      return read;
+    }
     for (final roomId in read) {
       try {
         await (cancel ?? _cancelRoomNotifications)(client, roomId);
@@ -1025,18 +1043,26 @@ class BackgroundPush {
 
   /// Аккаунт вышел: снимок его непрочитанного живёт по жизни клиента, иначе
   /// повторный вход под тем же clientName сравнивался бы со старой сессией.
-  void forgetReadSnapshot(String clientName) =>
-      _unreadOnLastSync.remove(clientName);
+  void forgetReadSnapshot(String clientName) {
+    _unreadOnLastSync.remove(clientName);
+    for (final client in clients.where((c) => c.clientName == clientName)) {
+      _appleReceiptRooms[client] = null;
+    }
+  }
 
   Future<void> _cancelRoomNotifications(Client client, String roomId) async {
     Logs().v('[Push] Room read elsewhere, dropping its notifications', roomId);
-    await _flutterLocalNotificationsPlugin.cancel(
-      pushNotificationId(client.clientName, roomId),
-    );
-    await _flutterLocalNotificationsPlugin.cancel(roomId.hashCode);
-    if (Platform.isAndroid) await _cancelAndroidRoom(client, roomId);
     if (Platform.isIOS || Platform.isMacOS) {
-      await apns?.cancelDeliveredForRoom(roomId);
+      await cancelDeliveredOfReadRooms(owner: client, roomIds: {roomId});
+    } else if (Platform.isAndroid) {
+      await _cancelAndroidRoom(client, roomId);
+    } else {
+      await _flutterLocalNotificationsPlugin.cancel(
+        pushNotificationId(client.clientName, roomId),
+      );
+      if (clients.length == 1) {
+        await _flutterLocalNotificationsPlugin.cancel(roomId.hashCode);
+      }
     }
   }
 
@@ -1099,32 +1125,10 @@ class BackgroundPush {
     );
   }
 
-  Future<void> cancelNotification(String roomId) async {
-    Logs().v('Cancel notification for room', roomId);
-    // id уведомления — со скоупом аккаунта-владельца комнаты; legacy-id без
-    // скоупа гасим тоже (уведомления прежней сборки после обновления).
-    final owner = clients.firstWhereOrNull((c) => c.getRoomById(roomId) != null);
-    if (owner != null) {
-      await _flutterLocalNotificationsPlugin.cancel(
-        pushNotificationId(owner.clientName, roomId),
-      );
-      if (Platform.isAndroid) await _cancelAndroidRoom(owner, roomId);
-    }
-    await _flutterLocalNotificationsPlugin.cancel(roomId.hashCode);
-    // Баннеры, нарисованные НАТИВНО (NSE на iOS, AppDelegate на macOS), плагину
-    // не принадлежат: их идентификатор — UUID от APNs, и `cancel(id)` их не
-    // видит. Снимаем отдельно, по threadIdentifier == roomId.
-    if (Platform.isIOS || Platform.isMacOS) {
-      await apns?.cancelDeliveredForRoom(roomId);
-    }
-
-    // Workaround for app icon badge not updating
-    if (Platform.isIOS || Platform.isMacOS || Platform.isAndroid) {
-      final unreadCount = client.rooms
-          .where((room) => room.countsTowardAppBadge && room.id != roomId)
-          .length;
-      await AppBadge.trySet(unreadCount);
-    }
+  Future<void> cancelNotification(Client owner, String roomId) async {
+    if (!clients.contains(owner)) return;
+    await _cancelRoomNotifications(owner, roomId);
+    await updateBadgeCount();
   }
 
   /// Паузы между попытками `postPusher`. Суммарно ~45 с — дольше рестарта
@@ -1490,6 +1494,9 @@ class BackgroundPush {
         matrix == null) {
       return;
     }
+    if (Platform.isIOS || Platform.isMacOS) {
+      await apns?.saveClientNames(clients.map((c) => c.clientName).toList());
+    }
     // Защита от частых повторных вызовов из lifecycle-хука: если меньше 5 сек
     // назад уже стартовали setupPush, пропускаем. Не мешает первому вызову
     // (поле начинается с null).
@@ -1563,9 +1570,6 @@ class BackgroundPush {
 
     // Share credentials with the NSE so it can download avatars (iOS only).
     if (Platform.isIOS) {
-      // Натив снимает баннеры по clearing-пушу без Dart (приложение выгружено):
-      // баннер без client_name он считает своим, только если аккаунт один.
-      apns?.saveClientNames(clients.map((c) => c.clientName).toList());
       for (final cred in nseCredentials(clients, client)) {
         apns?.saveCredentials(
           homeserverUrl: cred.homeserverUrl,
@@ -1579,6 +1583,10 @@ class BackgroundPush {
 
   /// Аккаунт вышел: его токен не должен оставаться в App Group для NSE.
   Future<void> forgetNseCredentials(String clientName) async {
+    if (Platform.isMacOS) {
+      await apns?.saveClientNames(nseRemainingClientNames(clients, clientName));
+      return;
+    }
     if (!Platform.isIOS) return;
     await apns?.removeCredentials(
       clientName,

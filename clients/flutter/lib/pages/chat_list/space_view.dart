@@ -845,7 +845,7 @@ class _SpaceViewState extends State<SpaceView> {
                                       ),
                                     ),
                                     if (joinedRoom != null)
-                                      UnreadBubble(room: joinedRoom)
+                                      UnreadBubble(room: joinedRoom, surface: 'space')
                                     else
                                       const Icon(Icons.chevron_right_outlined),
                                   ],

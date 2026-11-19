@@ -90,6 +90,7 @@ class SpacesNavigationRail extends StatelessWidget {
                                   child: Icon(Icons.forum),
                                 ),
                                 toolTip: L10n.of(context).chats,
+                                badgeScope: 'all',
                                 unreadBadgeFilter: (room) => true,
                               );
                             }
@@ -132,6 +133,8 @@ class SpacesNavigationRail extends StatelessWidget {
                               toolTip: displayname,
                               isSelected: activeSpaceId == space.id,
                               onTap: () => onGoToSpaceId(allSpaces[i].id),
+                              badgeScope: 'space',
+                              badgeScopeRoomId: space.id,
                               unreadBadgeFilter: (room) =>
                                   spaceChildrenIds.contains(room.id),
                               icon: Avatar(

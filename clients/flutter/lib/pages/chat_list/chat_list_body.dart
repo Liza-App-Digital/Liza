@@ -1,3 +1,4 @@
+import 'package:liza/utils/confirmed_read_state.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -46,7 +47,14 @@ class ChatListViewBody extends StatelessWidget {
   const ChatListViewBody(this.controller, {super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: ConfirmedReadState.forClient(
+      Matrix.of(context).client,
+    ).revision,
+    builder: (context, _) => _build(context),
+  );
+
+  Widget _build(BuildContext context) {
     final theme = Theme.of(context);
 
     final client = Matrix.of(context).client;
@@ -179,8 +187,9 @@ class ChatListViewBody extends StatelessWidget {
                 const SliverToBoxAdapter(child: UpdateBanner()),
                 SliverToBoxAdapter(
                   child: WebUpdateBanner(
-                    updateAvailable:
-                        Matrix.of(context).webUpdateChecker.updateAvailable,
+                    updateAvailable: Matrix.of(
+                      context,
+                    ).webUpdateChecker.updateAvailable,
                   ),
                 ),
                 SliverToBoxAdapter(

@@ -14,6 +14,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:matrix/matrix.dart';
+import 'package:http/http.dart' as http;
+import 'package:liza/utils/push_contract_session.dart';
+import 'package:liza/utils/confirmed_read_state.dart';
+import 'package:liza/utils/app_badge.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 
 import 'package:liza/utils/call_link.dart';
@@ -702,6 +706,7 @@ class ChatController extends State<ChatPageWithRoom>
     // `room` — иначе LateInitializationError валит initState и чат рендерится
     // как серый экран.
     sendingClient = Matrix.of(context).client;
+    initializeReadMarkerTracking();
 
     inputFocus = FocusNode(onKeyEvent: _customEnterKeyHandling);
 
@@ -992,7 +997,7 @@ class ChatController extends State<ChatPageWithRoom>
       // событие — принудительно отправляем маркер на него, минуя проверку
       // _scrolledUp (но не lifecycle и не scrollUpBanner).
       if (plan.markLastEvent) {
-        setReadMarker(eventId: lastEventId, force: true);
+        setReadMarker(force: true);
       } else {
         setReadMarker();
       }
@@ -1255,42 +1260,79 @@ class ChatController extends State<ChatPageWithRoom>
     );
   }
 
-  /// originServerTs (millis) события, до которого отправляется read marker:
-  /// конкретное [eventId], либо новейшее ОТОБРАЖАЕМОЕ. Для null берём
-  /// filterByVisibleInGui (не сырое events.first) — иначе новейшая реакция/
-  /// redaction/edit задрала бы оптимистичную границу выше последнего реального
-  /// сообщения. null — таймлайн пуст или событие не найдено.
-  int? _readMarkerTargetTs(Timeline timeline, String? eventId) {
-    final target = eventId == null
-        ? timeline.events.filterByVisibleInGui().firstOrNull
-        : timeline.events.firstWhereOrNull((e) => e.eventId == eventId);
-    return target?.originServerTs.millisecondsSinceEpoch;
+  ConfirmedReadState get _confirmedReads =>
+      ConfirmedReadState.forClient(sendingClient);
+  ConfirmedReadState? _readRevisionSource;
+
+  /// Подписка на локальное подтверждение и sync-сверку активной комнаты.
+  void initializeReadMarkerTracking() {
+    _readRevisionSource?.revision.removeListener(_onReadRevision);
+    _readRevisionSource = _confirmedReads;
+    _readRevisionSource!.revision.addListener(_onReadRevision);
   }
 
-  /// Фактическая отправка квитанции после прохождения гейтов. Возвращает future
-  /// запроса либо `null`, если гейты заблокировали отправку (координатор по
-  /// `null` понимает, что ничего не «в полёте»).
-  Future<void>? _sendReadMarkerNow({String? eventId, bool force = false}) {
-    if (!mounted) return null;
-    // Первым, до force/readableForeground/recordOwnReadMarkerTs: до конца
-    // позиционирования при открытии «видимое» ещё не определено (LABA-2632).
+  final Map<String, _ReadMarkerAttempt> _readMarkerAttempts = {};
+  String? _lastAcknowledgedReadId;
+
+  void _onReadRevision() {
+    if (!mounted || !_confirmedReads.hasUnknownCoverage(room)) return;
+    // Sync только со счётчиком не вызывает Timeline.onUpdate.
+    Future.microtask(() {
+      if (mounted) setReadMarker();
+    });
+  }
+
+  bool _readContextCurrent(
+    Room capturedRoom,
+    Timeline capturedTimeline,
+    String? scope,
+    String? userId,
+    Client viewClient,
+  ) =>
+      mounted &&
+      identical(sendingClient, capturedRoom.client) &&
+      identical(Matrix.of(context).client, viewClient) &&
+      capturedRoom.client.userID == userId &&
+      identical(room, capturedRoom) &&
+      identical(timeline, capturedTimeline) &&
+      activeThreadId == scope &&
+      capturedRoom.membership == Membership.join;
+
+  bool _retryTargetVisible(Timeline timeline, String targetId, bool isFull) {
+    if (!timeline.allowNewEvent || scrollController.isAutoScrolling) {
+      return false;
+    }
+    if (isFull) {
+      return _newestMessagesVisible &&
+          timeline.events.firstWhereOrNull((e) => e.status.isSynced)?.eventId ==
+              targetId;
+    }
+    final visibleId = _newestVisibleEventId();
+    if (visibleId == null) return false;
+    final visible = timeline.events.indexWhere((e) => e.eventId == visibleId);
+    final target = timeline.events.indexWhere((e) => e.eventId == targetId);
+    return visible >= 0 && target >= visible;
+  }
+
+  Future<void>? _sendReadMarkerNow({
+    String? eventId,
+    bool force = false,
+    _ReadMarkerAttempt? retry,
+  }) {
+    if (!mounted ||
+        room.membership != Membership.join ||
+        ScreenLockState.isLocked) {
+      return null;
+    }
     if (_openPositioningPending) {
       _logSuppressedAfterInput('positioning');
       return null;
     }
-    // `_scrolledUp` залипает в true на переходных layout-фреймах и в маленьком
-    // чате не сбрасывается → сверяемся с живыми scroll-метриками: если новейшее
-    // сообщение реально на экране, квитанцию НЕ глушим (иначе аватарка
-    // «прочитал» у собеседника появлялась только после нашего ответа).
-    //
-    // Выше низа (модель популярных мессенджеров «прочитано = увидено», 2026-09-17): вместо
-    // молчания деградируем в ЧАСТИЧНУЮ квитанцию на новейшее видимое событие.
-    // Так все реактивные вызовы (resume, updateView, дебаунс скролла,
-    // позиционирование на сепараторе) идут через одну точку, а «всё прочитано»
-    // остаётся только у низа. null от геометрии (авто-скролл, тред, контекст
-    // по ссылке) — по-прежнему молчим.
+    if (activeThreadId != null) {
+      _logSuppressedAfterInput('thread');
+      return null;
+    }
     if (!force && _scrolledUp && !_newestMessagesVisible) {
-      // Явный eventId (requestFuture) — уже частичная квитанция, пропускаем.
       eventId ??= _newestVisibleEventId();
       if (eventId == null) {
         _logSuppressedAfterInput('geometry-null');
@@ -1301,11 +1343,6 @@ class ChatController extends State<ChatPageWithRoom>
       _logSuppressedAfterInput('banner');
       return null;
     }
-
-    // Полная квитанция — только из окна в фокусе (`resumed`); из десктопного
-    // окна без фокуса (`inactive`) — лишь частичная по явной прокрутке. Модель
-    // и причины — `readableForeground` (read_marker_logic.dart). paused/hidden
-    // (свёрнуто/полностью перекрыто) и lock screen блокируют всё.
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     final readable = readableForeground(
       lifecycle: lifecycle,
@@ -1316,24 +1353,41 @@ class ChatController extends State<ChatPageWithRoom>
       _logSuppressedAfterInput('lifecycle-none');
       return null;
     }
-
     final timeline = this.timeline;
     if (timeline == null || timeline.events.isEmpty) return null;
-
-    // Оптимистично фиксируем позицию ВСЕГДА, когда смотрю низ чата в фокусе —
-    // ДАЖЕ если сетевую квитанцию ниже не шлём (отмечать нечего). Иначе при
-    // открытии уже-прочитанного чата моя аватарка «прочитал» залипает на моём
-    // последнем сообщении вместо последнего сообщения чата (см.
-    // RoomStatusExtension.recordOwnReadMarkerTs — двигает мою аватарку сразу,
-    // не дожидаясь серверного эха квитанции).
-    final markedTs = _readMarkerTargetTs(timeline, eventId);
-    // Полная квитанция — «до последнего»: только она гасит счётчик, снимает
-    // сепаратор и доставленные уведомления. Частичная (viewport) — нет:
-    // остаток честно непрочитан, число придёт из следующего /sync.
-    final isFull =
-        eventId == null || eventId == timeline.room.lastEvent?.eventId;
-    // Отложенную полную квитанцию не фиксируем и оптимистично: сепаратор и
-    // счётчик должны честно держаться, пока окно не в фокусе.
+    final capturedRoom = room;
+    final capturedClient = capturedRoom.client;
+    final userId = capturedClient.userID;
+    final viewClient = Matrix.of(context).client;
+    final scope = activeThreadId;
+    final raw = timeline.events.firstWhereOrNull((e) => e.status.isSynced);
+    final visible = timeline.events.filterByVisibleInGui(threadId: scope);
+    final target = eventId == null
+        ? visible.firstWhereOrNull((e) => e.status.isSynced)
+        : visible.firstWhereOrNull(
+            (e) => e.eventId == eventId && e.status.isSynced,
+          );
+    if (target == null) return null;
+    final targetId = target.eventId;
+    var previous = _readMarkerAttempts[targetId];
+    if (previous != null &&
+        (!identical(previous.room, capturedRoom) ||
+            previous.userId != userId ||
+            previous.scope != scope ||
+            !identical(previous.viewClient, viewClient))) {
+      previous.timer?.cancel();
+      _readMarkerAttempts.remove(targetId);
+      previous = null;
+      _lastAcknowledgedReadId = null;
+    }
+    // Новый допустимый вызов после перезагрузки timeline сохраняет бюджет,
+    // но использует актуальную геометрию. Старый callback сам контекст не меняет.
+    if (retry == null && previous != null) previous.timeline = timeline;
+    retry ??= previous?.acknowledged == false ? previous : null;
+    // Цель и бюджет повтора неизменны, но её положение в комнате меняется:
+    // после нового B прежняя полная A становится частичной. Проверяем текущую
+    // геометрию A, не требуем снова дочитать до нового хвоста B.
+    final isFull = targetId == raw?.eventId;
     if (readMarkerGate(
           readable: readable,
           isFull: isFull,
@@ -1343,70 +1397,213 @@ class ChatController extends State<ChatPageWithRoom>
       _logSuppressedAfterInput('lifecycle-defer');
       return null;
     }
-    if (!isFull) {
-      // Частичная квитанция назад не ходит (Synapse и так игнорирует старее,
-      // но зачем сеть): позиция не новее уже отмеченной — молчим.
-      final floor = room.optimisticOwnReadTs;
-      if (markedTs == null || (floor != null && markedTs <= floor)) return null;
-    }
-    if (markedTs != null) room.recordOwnReadMarkerTs(markedTs);
-
-    // Сетевую квитанцию не шлём, если отмечать нечего (оптимизация трафика).
-    // `hasUnseenMessages`, а не SDK-`hasNewMessages`: после частичной квитанции
-    // тот врёт false, и полная квитанция у низа не ушла бы никогда.
-    if (eventId == null &&
-        !room.hasUnseenMessages &&
-        room.notificationCount == 0) {
+    if (retry != null &&
+        (!_readContextCurrent(
+              retry.room,
+              retry.timeline,
+              retry.scope,
+              retry.userId,
+              retry.viewClient,
+            ) ||
+            !_retryTargetVisible(timeline, targetId, isFull))) {
       return null;
     }
 
-    // lifecycle в логе — замер для решения об idle-гейте (спека 2026-09-18,
-    // заявка №31 круг 4): сколько квитанций уходит из `resumed` окна, у которого
-    // никого нет (второй Мак).
-    Logs().d(
-      'Set read marker... kind=${isFull ? 'full' : 'partial'} '
-      'lifecycle=${lifecycle?.name} locked=${ScreenLockState.isLocked}',
-      eventId,
-    );
-    final future = timeline
-        .setReadMarker(
-          eventId: eventId,
-          public: AppSettings.sendPublicReadReceipts.value,
-        )
-        // Зависший без ответа запрос держал бы координатор «в полёте» и не давал
-        // догнать актуальную позицию — таймаут гарантированно завершает future.
-        .timeout(const Duration(seconds: 30))
-        .then((_) {
-          if (!isFull) return;
-          // Бейдж непрочитанных в СПИСКЕ чатов берётся из
-          // room.notificationCount, который обновляется ТОЛЬКО ответом
-          // сервера в следующем /sync. Этот round-trip может запаздывать или
-          // не вернуть 0 — бейдж «залипал» с числом, хотя в чате всё
-          // прочитано (баг #1). Раз квитанция на последнее событие принята
-          // сервером — гасим счётчик локально сразу; следующий /sync
-          // подтвердит 0 (а не перетрёт обратно, т.к. receipt доехал).
-          if (room.notificationCount > 0 || room.highlightCount > 0) {
-            room.notificationCount = 0;
-            room.highlightCount = 0;
-          }
-          // Прячем сепаратор «Непрочитанное» немедленно: задержка 300 мс
-          // приводила к тому, что свежие сообщения, прилетавшие за это
-          // время, рендерились ниже устаревшего readMarkerEventId, и
-          // сепаратор визуально оказывался над собственными сообщениями
-          // (см. баг с разделителем «Непрочитанное» над своими сообщениями).
-          // Дрожание scroll offset из-за изменения высоты сейчас гасится
-          // гистерезисом в _updateScrollController (см. там).
-          if (mounted && readMarkerEventId.isNotEmpty) {
-            setState(() => readMarkerEventId = '');
-          }
-        })
-        .catchError((e) {
-          Logs().w('Failed to set read marker', e);
-        });
-    if (isFull) {
-      Matrix.of(context).backgroundPush?.cancelNotification(roomId);
+    // Аватарка оптимистична; сетевое подтверждение НЕ зависит от её timestamp.
+    final visibleTarget = eventId == null
+        ? timeline.events.filterByVisibleInGui().firstOrNull
+        : target;
+    if (visibleTarget != null) {
+      capturedRoom.recordOwnReadMarkerTs(
+        visibleTarget.originServerTs.millisecondsSinceEpoch,
+      );
     }
-    return future;
+    if (eventId == null &&
+        !capturedRoom.hasUnseenMessages &&
+        capturedRoom.notificationCount == 0 &&
+        capturedRoom.highlightCount == 0) {
+      return null;
+    }
+    if (!isFull && _lastAcknowledgedReadId != null) {
+      final ackIndex = timeline.events.indexWhere(
+        (e) => e.eventId == _lastAcknowledgedReadId,
+      );
+      final targetIndex = timeline.events.indexOf(target);
+      if (ackIndex >= 0 && ackIndex <= targetIndex) return null;
+    }
+    final attempt = _readMarkerAttempts.putIfAbsent(
+      targetId,
+      () => _ReadMarkerAttempt(
+        room: capturedRoom,
+        timeline: timeline,
+        scope: scope,
+        userId: userId,
+        viewClient: viewClient,
+        targetId: targetId,
+      ),
+    );
+    if (attempt.permanentFailure ||
+        attempt.sends >= 4 ||
+        attempt.timer != null) {
+      return null;
+    }
+    if (attempt.acknowledged) {
+      if (!isFull ||
+          !_confirmedReads.hasUnknownCoverage(capturedRoom) ||
+          attempt.reconciled) {
+        return null;
+      }
+      attempt.reconciled = true;
+      attempt.acknowledged = false;
+    }
+    attempt.sends++;
+    var snapshot = _confirmedReads.capture(
+      capturedRoom,
+      targetEventId: targetId,
+      rawTailEventId: raw?.eventId,
+      scope: scope,
+      hasGap: !timeline.allowNewEvent,
+    );
+    return () async {
+      try {
+        if (isFull &&
+            !snapshot.known &&
+            !attempt.checkedServerTail &&
+            timeline.allowNewEvent &&
+            _confirmedReads.hasUnknownCoverage(capturedRoom)) {
+          attempt.checkedServerTail = true;
+          try {
+            if (await _confirmedReads.reconcile(capturedRoom, snapshot)) {
+              snapshot = _confirmedReads.capture(
+                capturedRoom,
+                targetEventId: targetId,
+                rawTailEventId: raw?.eventId,
+                scope: scope,
+                hasGap: !timeline.allowNewEvent,
+              );
+            }
+          } catch (e) {
+            Logs().w('Read marker tail reconciliation failed', e);
+          }
+          // GET мог пережить уход со страницы/скролл/блокировку экрана.
+          if (!_readContextCurrent(
+                capturedRoom,
+                timeline,
+                scope,
+                userId,
+                viewClient,
+              ) ||
+              !_retryTargetVisible(timeline, targetId, isFull) ||
+              ScreenLockState.isLocked ||
+              readableForeground(
+                    lifecycle: WidgetsBinding.instance.lifecycleState,
+                    isDesktop: PlatformInfos.isDesktop,
+                    screenLocked: ScreenLockState.isLocked,
+                  ) !=
+                  ReadableForeground.full) {
+            return;
+          }
+        }
+        if (!_readContextCurrent(
+          capturedRoom,
+          timeline,
+          scope,
+          userId,
+          viewClient,
+        )) {
+          return;
+        }
+        Logs().d(
+          'Set read marker... kind=${isFull ? 'full' : 'partial'} '
+          'lifecycle=${WidgetsBinding.instance.lifecycleState?.name} '
+          'locked=${ScreenLockState.isLocked} attempt=${attempt.sends}',
+          targetId,
+        );
+        final contract = PushContractSession.observing(capturedClient);
+        final beforeRead = snapshot.rawTailEventId == null
+            ? null
+            : contract?.readProof(
+                capturedRoom,
+                rawTail: snapshot.rawTailEventId,
+                scope: scope,
+                hasGap: !timeline.allowNewEvent,
+              );
+        await capturedRoom
+            .setReadMarker(
+              targetId,
+              mRead: targetId,
+              public: AppSettings.sendPublicReadReceipts.value,
+            )
+            // timeout прекращает ожидание, НЕ отменяет HTTP. Поздний ACK не
+            // попадает сюда; новый запрос обслуживается координатором.
+            .timeout(const Duration(seconds: 30));
+        if (!_readContextCurrent(
+          capturedRoom,
+          timeline,
+          scope,
+          userId,
+          viewClient,
+        )) {
+          return;
+        }
+        attempt.acknowledged = true;
+        _lastAcknowledgedReadId = targetId;
+        final currentRaw = timeline.events
+            .firstWhereOrNull((e) => e.status.isSynced)
+            ?.eventId;
+        if (currentRaw != null) {
+          contract?.afterReadAck(
+            capturedRoom,
+            targetId,
+            scope,
+            isFull,
+            beforeRead,
+            rawTail: currentRaw,
+            hasGap: !timeline.allowNewEvent,
+          );
+        }
+        if (!isFull || currentRaw != snapshot.rawTailEventId) return;
+        if (!_confirmedReads.confirm(capturedRoom, snapshot)) return;
+        if (readMarkerEventId.isNotEmpty) {
+          setState(() => readMarkerEventId = '');
+        }
+        // HTTP уже подтверждён. Медленный native badge не должен занять
+        // координатор следующей квитанции или вызвать повторную отправку marker.
+        unawaited(AppBadge.refreshFrom(capturedClient).catchError((Object e) {
+          Logs().w('Не удалось обновить бейдж после подтверждения прочтения', e);
+        }));
+      } catch (e) {
+        Logs().w('Failed to set read marker', e);
+        final status = e is MatrixException ? e.response?.statusCode : null;
+        final transient =
+            e is TimeoutException ||
+            e is IOException ||
+            e is http.ClientException ||
+            // matrix 4.1 сохраняет MatrixException только для 4xx; 5xx
+            // превращает в это исключение без statusCode (Api fallback).
+            (e is Exception &&
+                e.toString() == 'Exception: http error response') ||
+            (e is MatrixException &&
+                (status == 429 ||
+                    (status != null && status >= 500) ||
+                    e.errcode == 'M_LIMIT_EXCEEDED'));
+        if (!transient) attempt.permanentFailure = true;
+        if (!transient || attempt.sends >= 4 || !mounted) return;
+        const delays = [1, 3, 10];
+        final backoffMs = delays[attempt.sends - 1] * 1000;
+        final retryAfterMs = e is MatrixException ? e.retryAfterMs ?? 0 : 0;
+        final delayMs = retryAfterMs > backoffMs ? retryAfterMs : backoffMs;
+        attempt.timer = Timer(Duration(milliseconds: delayMs), () {
+          attempt.timer = null;
+          if (!mounted) return;
+          _readMarkerSender.request(
+            () => _sendReadMarkerNow(eventId: targetId, retry: attempt),
+            // Старый retry не вытесняет более новое пользовательское намерение.
+            replacePending: false,
+          );
+        });
+      }
+    }();
   }
 
   /// Сбросить typing-состояние локально, без сетевого запроса.
@@ -1424,6 +1621,10 @@ class ChatController extends State<ChatPageWithRoom>
     // уже мёртвом State (гонка «набрал текст → сразу вышел из чата»).
     _storeInputTimeoutTimer?.cancel();
     _viewportReadDebounce?.cancel();
+    _readRevisionSource?.revision.removeListener(_onReadRevision);
+    for (final attempt in _readMarkerAttempts.values) {
+      attempt.timer?.cancel();
+    }
     _cancelTyping();
     _audioAutoPlayService?.unregisterResolver(roomId);
     _receiptsSubscription?.cancel();
@@ -1487,17 +1688,20 @@ class ChatController extends State<ChatPageWithRoom>
       room.setTyping(false).catchError((_) {});
       currentlyTyping = false;
     }
-    // then cancel the old timeline
-    // fixes bug with read reciepts and quick switching
+    for (final attempt in _readMarkerAttempts.values) {
+      attempt.timer?.cancel();
+    }
+    _readMarkerAttempts.clear();
+    _lastAcknowledgedReadId = null;
+    setState(() => sendingClient = c);
+    initializeReadMarkerTracking();
+    // Загружаем timeline уже нового клиента.
     loadTimelineFuture = _getTimeline(eventContextId: room.fullyRead).onError(
       ErrorReporter(
         context,
         'Unable to load timeline after changing sending Client',
       ).onErrorCallback,
     );
-
-    // then set the new sending client
-    setState(() => sendingClient = c);
   }
 
   void setActiveClient(Client c) => setState(() {
@@ -3562,4 +3766,29 @@ class _ChannelPeekPageState extends State<ChannelPeekPage>
       ),
     );
   }
+}
+
+/// Бюджет привязан к точной цели и переживает обычные updateView.
+class _ReadMarkerAttempt {
+  final Room room;
+  Timeline timeline;
+  final String? scope;
+  final String? userId;
+  final Client viewClient;
+  final String targetId;
+  int sends = 0;
+  bool acknowledged = false;
+  bool permanentFailure = false;
+  bool reconciled = false;
+  bool checkedServerTail = false;
+  Timer? timer;
+
+  _ReadMarkerAttempt({
+    required this.room,
+    required this.timeline,
+    required this.scope,
+    required this.userId,
+    required this.viewClient,
+    required this.targetId,
+  });
 }

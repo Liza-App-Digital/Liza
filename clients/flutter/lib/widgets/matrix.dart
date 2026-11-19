@@ -19,6 +19,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:universal_html/html.dart' as html;
 import 'package:url_launcher/url_launcher_string.dart';
 
+import 'package:liza/utils/push_contract.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
@@ -241,6 +242,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     final i = widget.clients.indexWhere((c) => c == cl);
     if (i != -1) {
       _activeClient = i;
+      _pushContract?.viewChanged();
       // TODO: Multi-client VoiP support
       createVoipPlugin();
       // Refresh the active user's role so IfDeveloper switches between
@@ -625,6 +627,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
       );
       return;
     }
+    _pushContract?.attach(c);
     onRoomKeyRequestSub[name] ??= c.onRoomKeyRequest.stream.listen((
       RoomKeyRequest request,
     ) async {
@@ -661,8 +664,10 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
         });
     Future<void> handleLoginStateChange(LoginState state) async {
       final loggedInWithMultipleClients = widget.clients.length > 1;
+      if (state == LoginState.softLoggedOut) _pushContract?.detach(c, logout: true);
       if (state == LoginState.loggedIn && c.userID != null) {
         _syncMonitoringIdentity();
+        _pushContract?.attach(c, renewed: true);
         unawaited(_reportDeviceCapability(c));
       }
       if (state == LoginState.loggedOut) {
@@ -670,7 +675,14 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
         // иначе после выхода висит приложение чужой сессии.
         MiniAppManager.instance.closeForClient(c);
         _cancelSubs(c.clientName);
+        _pushContract?.detach(c, logout: true);
         widget.clients.remove(c);
+        _pushContract?.viewChanged();
+        for (final remaining in widget.clients) {
+          _pushContract?.attach(remaining);
+        }
+        final primary = widget.clients.firstOrNull;
+        if (primary != null) unawaited(AppBadge.refreshFrom(primary));
         unawaited(backgroundPush?.forgetNseCredentials(c.clientName));
         _syncMonitoringIdentity();
         ClientManager.removeClientNameFromStore(c.clientName, store);
@@ -870,6 +882,12 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     // Keep badge count in sync after each sync cycle (rate-limited).
     if (PlatformInfos.isMobile || PlatformInfos.isMacOS) {
       onSyncBadgeUpdate[name] ??= c.onSync.stream
+          .map((update) {
+            if (PlatformInfos.isIOS || PlatformInfos.isMacOS) {
+              backgroundPush?.rememberAppleReadReceipts(c, update);
+            }
+            return update;
+          })
           .rateLimit(const Duration(seconds: 2))
           .listen((_) {
             backgroundPush?.updateBadgeCount();
@@ -934,7 +952,10 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     ClientManager.initializationError = null;
     ClientManager.initializationErrorStack = null;
 
-    final newClients = await ClientManager.getClients(store: store);
+    final newClients = await ClientManager.getClients(
+        store: store,
+        observePushContractStartup: true,
+      );
 
     if (ClientManager.initializationError != null) {
       return false;
@@ -956,7 +977,16 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     return true;
   }
 
+  PushContractScheduler? _pushContract;
+
   void initMatrix() {
+    AppBadge.bindPrimary(this, () => mounted ? widget.clients.firstOrNull : null);
+    _pushContract?.dispose();
+    _pushContract = PushContractScheduler(
+      clients: () => widget.clients,
+      active: () => widget.clients.isEmpty ? null : client,
+      lifecycle: () => WidgetsBinding.instance.lifecycleState?.name ?? 'detached',
+    );
     // reinitializeClients() зовёт initMatrix() повторно поверх живого состояния
     // (восстановление после Keychain-сбоя). Без dispose старые сервисы держат
     // StreamSubscription/Timer на onSyncStatus прежнего клиента → две живые
@@ -1105,6 +1135,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
       'views=${WidgetsBinding.instance.platformDispatcher.views.length}',
     );
     _loggedLifecycle = state;
+    _pushContract?.lifecycleChanged();
     final refreshHttpClients = _resumeHttpRefreshGate.onStateChange(state);
     // На iOS/Android `inactive` означает «приложение скоро уйдёт в фон»
     // (входящий звонок, шторка уведомлений) — sync безопасно ставить.
@@ -1405,6 +1436,8 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _pushContract?.dispose();
+    AppBadge.unbindPrimary(this);
     WidgetsBinding.instance.removeObserver(this);
     LizaApp.router.routeInformationProvider.removeListener(
       _syncActiveRoomToNative,

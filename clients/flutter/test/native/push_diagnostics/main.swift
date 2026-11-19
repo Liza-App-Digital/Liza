@@ -233,3 +233,24 @@ invalidOptions["presentation_options"] = -1
 try JSONSerialization.data(withJSONObject: invalidOptions).write(to: optionsJournal.directory.appendingPathComponent((invalidOptions["id"] as! String) + ".json"))
 assert(optionsJournal.read()!.first { $0["id"] as? String == invalidOptions["id"] as? String }?["presentation_options"] == nil)
 print("NativePushJournal: requested presentation mask bounds/projection PASS")
+
+// ledger:RL-push-causal-contract
+let badgeDomain = "badge-fixture-" + UUID().uuidString
+let badgeStore = UserDefaults(suiteName: badgeDomain)!
+defer { badgeStore.removePersistentDomain(forName: badgeDomain) }
+badgeStore.set(8, forKey: "badge_count")
+assert(PrimaryBadgeSnapshot.forAlert(owner: "A", defaults: badgeStore) == nil)
+PrimaryBadgeSnapshot.setClients(["A", "B"], defaults: badgeStore)
+assert(PrimaryBadgeSnapshot.forAlert(owner: "B", defaults: badgeStore) == nil)
+assert(PrimaryBadgeSnapshot.save(["clientName": "A", "count": 0], defaults: badgeStore))
+assert(PrimaryBadgeSnapshot.forAlert(owner: "B", defaults: badgeStore) == 0)
+assert(PrimaryBadgeSnapshot.forAlert(owner: "A", defaults: badgeStore) == 1)
+assert(PrimaryBadgeSnapshot.forAlert(owner: nil, defaults: badgeStore) == nil)
+assert(!PrimaryBadgeSnapshot.save(["clientName": "B", "count": 9], defaults: badgeStore))
+assert(PrimaryBadgeSnapshot.save(["clientName": "A", "count": 4], defaults: badgeStore))
+assert(PrimaryBadgeSnapshot.forAlert(owner: "B", defaults: badgeStore) == 4)
+PrimaryBadgeSnapshot.setClients(["B", "A"], defaults: badgeStore)
+assert(PrimaryBadgeSnapshot.forAlert(owner: "A", defaults: badgeStore) == nil)
+PrimaryBadgeSnapshot.setClients(["A"], defaults: badgeStore)
+assert(PrimaryBadgeSnapshot.forAlert(owner: nil, defaults: badgeStore) == 1)
+print("PrimaryBadgeSnapshot: owner, swap, single-account fallback PASS")

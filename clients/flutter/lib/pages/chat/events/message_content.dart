@@ -55,12 +55,10 @@ import 'story_ref_card.dart';
   required bool isSticker,
 }) {
   final maxSize = isSticker ? 128.0 : 256.0;
-  if (w == null || h == null) {
-    return (
-      width: maxSize,
-      height: maxSize,
-      fit: isSticker ? BoxFit.contain : BoxFit.cover,
-    );
+  // Без достоверной геометрии квадрат — только область размещения.
+  // cover здесь обрезал скриншоты без info.w/h до центрального фрагмента.
+  if (w == null || h == null || w <= 0 || h <= 0) {
+    return (width: maxSize, height: maxSize, fit: BoxFit.contain);
   }
   return w > h
       ? (

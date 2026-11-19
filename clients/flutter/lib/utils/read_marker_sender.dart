@@ -30,10 +30,12 @@ class ReadMarkerSendCoordinator {
   /// future из [send] НЕ должен завершаться ошибкой (на стороне вызывающего
   /// цепочка глушит ошибку через `catchError`); координатор лишь дожидается
   /// завершения через `whenComplete`.
-  void request(Future<void>? Function() send) {
+  /// Таймер повторной доставки передаёт [replacePending] = false, чтобы старый
+  /// retry не вытеснил более новое намерение, уже ожидающее отправки.
+  void request(Future<void>? Function() send, {bool replacePending = true}) {
     if (_inFlight != null) {
       // Важна только САМАЯ СВЕЖАЯ позиция прочтения — перезаписываем pending.
-      _pending = send;
+      if (replacePending || _pending == null) _pending = send;
       return;
     }
     _start(send);

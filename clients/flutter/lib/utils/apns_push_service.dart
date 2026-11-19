@@ -7,8 +7,110 @@ import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:matrix/matrix.dart';
 
 import 'package:liza/utils/push_journal.dart';
+import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/notification_health.dart';
 import 'package:liza/utils/screen_lock_state.dart';
+
+/// Адрес конкретной записи в центре. Пустой clientName обозначает старый
+/// pusher без владельца. ID запроса FLN может перейти к следующему событию.
+typedef DeliveredPush = ({
+  String requestId,
+  String roomId,
+  String eventId,
+  String clientName,
+});
+typedef ReadPush = ({DeliveredPush banner, String readBy});
+typedef RemoveReadPushes =
+    Future<List<String>> Function(List<ReadPush> reads, bool singleAccount);
+
+/// Снимок собственных квитанций для одного прохода центра. Пользуемся порядком
+/// текущего непрерывного фрагмента SDK (новые сначала). При limited sync SDK
+/// заменяет фрагмент, сохраняя отдельные объекты старых событий в БД.
+class _DeliveredRoomRead {
+  final Room room;
+  final bool hiddenAtCapture;
+  final BasicEvent? receiptEvent;
+  final String? batch, user, device, tail;
+  final LatestReceiptState receipts;
+  final Map<String, Event?> _events = {};
+  Map<String, int>? _positions;
+
+  _DeliveredRoomRead(this.room, bool includeHidden)
+    : hiddenAtCapture = includeHidden && room.isHiddenChat,
+      receiptEvent = room.roomAccountData[LatestReceiptState.eventType],
+      receipts = room.receiptState,
+      batch = room.client.prevBatch,
+      user = room.client.userID,
+      device = room.client.deviceID,
+      tail = room.lastEvent?.eventId;
+
+  bool get current =>
+      user != null &&
+      user == room.client.userID &&
+      device == room.client.deviceID &&
+      identical(room.client.getRoomById(room.id), room) &&
+      room.client.prevBatch == batch &&
+      room.lastEvent?.eventId == tail &&
+      identical(
+        room.roomAccountData[LatestReceiptState.eventType],
+        receiptEvent,
+      ) &&
+      (hiddenAtCapture
+          ? room.isHiddenChat
+          : !room.markedUnread && room.membership != Membership.invite);
+
+  Future<Event?> _event(String id) async {
+    if (!_events.containsKey(id)) {
+      _events[id] = room.lastEvent?.eventId == id
+          ? room.lastEvent
+          : await room.client.database.getEventById(id, room);
+    }
+    return _events[id];
+  }
+
+  // Тред имеет собственную квитанцию. У зашифрованного события без доступной
+  // связи нельзя уверенно определить область для сравнения с другим событием.
+  static String? _scope(Event event) {
+    if (event.relationshipType == RelationshipTypes.thread) {
+      return event.relationshipEventId;
+    }
+    if (event.type == EventTypes.Encrypted) return null;
+    return 'main';
+  }
+
+  Future<bool> covers(String id) async {
+    if (id.isEmpty || !current) return false;
+    final event = await _event(id);
+    if (event == null) return false;
+    if (hiddenAtCapture) return true;
+    final scope = _scope(event);
+    final global = receipts.global.latestOwnReceipt?.eventId;
+    if (global == id) return true;
+    if (scope == null) return false;
+    final own = scope == 'main'
+        ? receipts.mainThread?.latestOwnReceipt
+        : receipts.byThread[scope]?.latestOwnReceipt;
+    final targets = {
+      if (own != null) own.eventId,
+      if (scope == 'main' && global != null) global,
+    };
+    if (targets.contains(id)) return true;
+    if (targets.isEmpty) return false;
+    if (_positions == null) {
+      final ids = await room.client.database.getEventIdList(room);
+      _positions = {for (var i = 0; i < ids.length; i++) ids[i]: i};
+    }
+    final position = _positions![id];
+    if (position == null) return false;
+    for (final target in targets) {
+      final boundary = _positions![target];
+      if (boundary == null || position <= boundary) continue;
+      final marker = await _event(target);
+      if (marker != null && _scope(marker) == scope) return true;
+    }
+    return false;
+  }
+}
 
 /// Native APNs push service — drop-in replacement for FcmSharedIsolate on iOS.
 /// Communicates with ApnsPushPlugin.swift via MethodChannel.
@@ -289,19 +391,6 @@ class ApnsPushService {
     }
   }
 
-  /// Снять УЖЕ ПОКАЗАННЫЕ системой уведомления комнаты, включая нарисованные
-  /// NSE/AppDelegate (их идентификатор — UUID от APNs, поэтому
-  /// `flutterLocalNotificationsPlugin.cancel(id)` их не видит). Натив ищет по
-  /// `threadIdentifier == roomId` (его проставляет iOS-NSE) или по
-  /// `userInfo["room_id"]` — на macOS NSE нет, там работает только второе.
-  Future<void> cancelDeliveredForRoom(String roomId) async {
-    try {
-      await _channel.invokeMethod('cancelDeliveredForRoom', {'roomId': roomId});
-    } catch (e) {
-      Logs().w('[APNs] cancelDeliveredForRoom failed', e);
-    }
-  }
-
   /// Clearing-пуш обработан: натив отпускает `completionHandler` фонового
   /// пробуждения (iOS держит окно до этого ответа, не дольше 25 с).
   /// [id] — метка пуша от натива (`liza_clear_id`): отпускается окно именно
@@ -330,10 +419,16 @@ class ApnsPushService {
   /// зовётся). Натив опрашивает доставленные уведомления до ~10 с и матчит по
   /// `userInfo["event_id"]`. Возвращает миллисекунды до снятия; `null` — не
   /// нашли (не показан / уже снят / канал недоступен).
-  Future<int?> retractDelivered(String eventId) async {
+  Future<int?> retractDelivered(
+    String eventId, {
+    required String clientName,
+    required bool singleAccount,
+  }) async {
     try {
       return await _channel.invokeMethod<int>('retractDelivered', {
         'eventId': eventId,
+        'clientName': clientName,
+        'singleAccount': singleAccount,
       });
     } catch (e) {
       Logs().w('[APNs] retractDelivered failed', e);
@@ -385,15 +480,102 @@ class ApnsPushService {
     }
   }
 
-  /// Комнаты уже показанных системой уведомлений (`threadIdentifier`). Нужен,
-  /// чтобы на resume снять баннеры тех комнат, которые пользователь успел
-  /// прочитать на другом устройстве.
-  Future<List<String>> deliveredRoomIds() async {
+  static Future<List<DeliveredPush>> listDeliveredBanners() async {
+    final raw = await _channel.invokeListMethod<Object?>(
+      'listDeliveredBanners',
+    );
+    return [
+      for (final row in raw ?? const [])
+        if (row case {
+          'requestId': final String id,
+          'roomId': final String room,
+          'eventId': final String event,
+          'clientName': final String owner,
+        })
+          (requestId: id, roomId: room, eventId: event, clientName: owner),
+    ];
+  }
+
+  static Future<List<String>> removeReadBanners(
+    List<ReadPush> reads,
+    bool singleAccount,
+  ) async {
+    return await _channel.invokeListMethod<String>('removeReadBanners', {
+          'singleAccount': singleAccount,
+          'reads': [
+            for (final read in reads)
+              {
+                'requestId': read.banner.requestId,
+                'roomId': read.banner.roomId,
+                'eventId': read.banner.eventId,
+                'clientName': read.banner.clientName,
+                'readBy': read.readBy,
+              },
+          ],
+        }) ??
+        const [];
+  }
+
+  /// Модель комнаты может ещё не знать о свежем APNs. Снимаем только записи
+  /// известного события своего аккаунта. Повторный просмотр центра различает
+  /// замену записи, уже запрошенное удаление и наблюдённое отсутствие.
+  static Future<List<String>> clearReadBanners({
+    required List<Client> Function() clients,
+    Client? owner,
+    Set<String>? roomIds,
+    bool includeHidden = false,
+    Future<List<DeliveredPush>> Function()? delivered,
+    RemoveReadPushes? cancel,
+  }) async {
     try {
-      final rooms = await _channel.invokeListMethod<String>('deliveredRoomIds');
-      return rooms ?? const [];
-    } catch (e) {
-      Logs().w('[APNs] deliveredRoomIds failed', e);
+      final banners = await (delivered ?? listDeliveredBanners)();
+      Client? resolve(DeliveredPush banner) {
+        final current = clients();
+        if (banner.clientName.isEmpty) {
+          return current.length == 1 ? current.single : null;
+        }
+        return current
+            .where((c) => c.clientName == banner.clientName)
+            .singleOrNull;
+      }
+
+      final snapshots = <Room, _DeliveredRoomRead>{};
+      final reads = <DeliveredPush, _DeliveredRoomRead>{};
+      for (final banner in banners.toSet()) {
+        if (roomIds != null && !roomIds.contains(banner.roomId)) continue;
+        final client = resolve(banner);
+        if (client == null || (owner != null && !identical(owner, client))) {
+          continue;
+        }
+        final room = client.getRoomById(banner.roomId);
+        if (room == null) continue;
+        final snapshot = snapshots.putIfAbsent(
+          room,
+          () => _DeliveredRoomRead(room, includeHidden),
+        );
+        if (await snapshot.covers(banner.eventId)) reads[banner] = snapshot;
+      }
+      final selected = <ReadPush>[
+        for (final entry in reads.entries)
+          if (identical(resolve(entry.key), entry.value.room.client) &&
+              entry.value.current)
+            (banner: entry.key, readBy: entry.value.room.client.clientName),
+      ];
+      if (selected.isEmpty) return const [];
+      final absent = (await (cancel ?? removeReadBanners)(
+        selected,
+        clients().length == 1,
+      )).toSet();
+      return {
+        for (final r in selected)
+          if (absent.contains(r.banner.requestId)) r.banner.roomId,
+      }.toList();
+    } on MissingPluginException {
+      return const [];
+    } catch (e, stack) {
+      // В частности, выход из аккаунта может закрыть локальную БД во время
+      // получения фрагмента. Такой проход не доказывает ни одного удаления.
+      Logs().w('[APNs] read banner sweep failed', e, stack);
       return const [];
     }
   }

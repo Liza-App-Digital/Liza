@@ -140,7 +140,10 @@ void main([List<String> args = const []]) async {
     debugPrint('[BOOT] Getting clients...');
     List<Client> clients;
     try {
-      clients = await ClientManager.getClients(store: store);
+      clients = await ClientManager.getClients(
+        store: store,
+        observePushContractStartup: true,
+      );
     } catch (e, s) {
       Logs().e(
         'Fatal: getClients failed, starting with empty client list',

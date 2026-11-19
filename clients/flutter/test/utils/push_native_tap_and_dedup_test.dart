@@ -67,9 +67,33 @@ Future<void> _syncRoom(Client c, {required int notificationCount}) =>
         rooms: RoomsUpdate(
           join: {
             _room: JoinedRoomUpdate(
+              ephemeral: [
+                if (notificationCount == 0)
+                  BasicEvent(
+                    type: 'm.receipt',
+                    content: {
+                      r'$observed': {
+                        'm.read.private': {
+                          c.userID!: {'ts': 1},
+                        },
+                      },
+                    },
+                  ),
+              ],
               unreadNotifications: UnreadNotificationCounts(
                 notificationCount: notificationCount,
                 highlightCount: 0,
+              ),
+              timeline: TimelineUpdate(
+                events: [
+                  MatrixEvent(
+                    type: EventTypes.Message,
+                    eventId: r'$observed',
+                    senderId: '@peer:example.org',
+                    originServerTs: DateTime.now(),
+                    content: {'msgtype': 'm.text', 'body': 'fixture'},
+                  ),
+                ],
               ),
               state: [
                 MatrixEvent(
@@ -192,24 +216,40 @@ void main() {
     late Client a;
     late BackgroundPush push;
     final cancelled = <String>[];
-    var delivered = <String>[];
+    var delivered = <DeliveredPush>[];
 
     setUp(() async {
       a = await _client('Liza-1786629781847', _userA);
       push = BackgroundPush.forTest([a]);
       cancelled.clear();
-      delivered = [_room];
+      delivered = [
+        (
+          requestId: 'one',
+          roomId: _room,
+          eventId: r'$observed',
+          clientName: a.clientName,
+        ),
+      ];
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(_channel, (call) async {
-        switch (call.method) {
-          case 'deliveredRoomIds':
-            return delivered;
-          case 'cancelDeliveredForRoom':
-            cancelled.add((call.arguments as Map)['roomId'] as String);
-            return true;
-        }
-        return null;
-      });
+            switch (call.method) {
+              case 'listDeliveredBanners':
+                return [
+                  for (final d in delivered)
+                    {
+                      'requestId': d.requestId,
+                      'roomId': d.roomId,
+                      'eventId': d.eventId,
+                      'clientName': d.clientName,
+                    },
+                ];
+              case 'removeReadBanners':
+                final reads = (call.arguments as Map)['reads'] as List;
+                cancelled.addAll(reads.map((r) => r['roomId'] as String));
+                return [for (final r in reads) r['requestId']];
+            }
+            return null;
+          });
     });
 
     tearDown(() async {
@@ -286,7 +326,10 @@ void main() {
     test('запуск: первый sync показал «прочитано» → баннер снят', () async {
       final done = push.cancelDeliveredAfterFirstSync(
         delivered: () async => delivered,
-        cancel: (r) async => cancelled.add(r),
+        cancel: (reads, _) async {
+          cancelled.addAll(reads.map((r) => r.banner.roomId));
+          return reads.map((r) => r.banner.requestId).toList();
+        },
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(cancelled, isEmpty, reason: 'до sync решения нет');
@@ -303,20 +346,29 @@ void main() {
       final dropped = await push.cancelDeliveredAfterFirstSync(
         wait: const Duration(milliseconds: 100),
         delivered: () async => delivered,
-        cancel: (r) async => cancelled.add(r),
+        cancel: (reads, _) async {
+          cancelled.addAll(reads.map((r) => r.banner.roomId));
+          return reads.map((r) => r.banner.requestId).toList();
+        },
       );
       expect(dropped, isEmpty);
       expect(cancelled, isEmpty);
     });
 
-    test('запуск: первый sync — комната непрочитана → баннер остаётся', () async {
-      final done = push.cancelDeliveredAfterFirstSync(
-        delivered: () async => delivered,
-        cancel: (r) async => cancelled.add(r),
-      );
-      await _syncRoom(a, notificationCount: 2);
-      expect(await done, isEmpty);
-      expect(cancelled, isEmpty);
-    });
+    test(
+      'запуск: первый sync — комната непрочитана → баннер остаётся',
+      () async {
+        final done = push.cancelDeliveredAfterFirstSync(
+          delivered: () async => delivered,
+          cancel: (reads, _) async {
+            cancelled.addAll(reads.map((r) => r.banner.roomId));
+            return reads.map((r) => r.banner.requestId).toList();
+          },
+        );
+        await _syncRoom(a, notificationCount: 2);
+        expect(await done, isEmpty);
+        expect(cancelled, isEmpty);
+      },
+    );
   });
 }

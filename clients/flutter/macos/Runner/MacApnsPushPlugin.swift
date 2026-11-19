@@ -88,31 +88,6 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { answer(.silent) }
     }
 
-    /// Снять УЖЕ ПОКАЗАННЫЕ системой уведомления комнаты. Ищем по
-    /// `threadIdentifier` — его на каждом баннере проставляет NSE
-    /// (`NotificationService.swift`), поэтому здесь видны и те уведомления,
-    /// которых плагин flutter_local_notifications не знает (у них идентификатор
-    /// APNs-UUID, а плагин ищет по своему числовому id).
-    static func cancelDelivered(roomId: String, completion: @escaping () -> Void) {
-        let center = UNUserNotificationCenter.current()
-        center.getDeliveredNotifications { delivered in
-            let ids = delivered
-                .filter { notification in
-                    notification.request.content.threadIdentifier == roomId
-                        || notification.request.content.userInfo["room_id"] as? String == roomId
-                }
-                .map { $0.request.identifier }
-            let matched = delivered.filter { ids.contains($0.request.identifier) }
-            for notification in matched.prefix(NativePushJournal.maxMatchedRequests) { observe(notification, stage: .deliveredObserved) }
-            NativePushJournal.shared?.enqueue(.removalRequested,
-                outcome: ids.isEmpty ? .skipped : .accepted, matchedRequestIds: ids)
-            if !ids.isEmpty {
-                center.removeDeliveredNotifications(withIdentifiers: ids)
-            }
-            completion()
-        }
-    }
-
     /// Снять опоздавший APNs-баннер конкретного события ПОСЛЕ того, как его
     /// показала система. Нужен, когда Liza не активна: `willPresent` там не
     /// вызывается, помешать показу нельзя — можно только убрать показанное.
@@ -124,6 +99,7 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
     /// по `room_id` снимать нельзя. Возвращает миллисекунды до снятия либо nil.
     static func retractDelivered(
         eventId: String,
+        clientName: String, singleAccount: Bool,
         deadline: TimeInterval = 10,
         interval: TimeInterval = 0.25,
         completion: @escaping (Int?) -> Void
@@ -133,7 +109,10 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
         func attempt() {
             center.getDeliveredNotifications { delivered in
                 let matchedRequests = NativePushJournal.matchingRequests(delivered.map { $0.request }, eventId: eventId)
-                let matchedIds = Set(matchedRequests.map { $0.identifier })
+                let matchedIds = Set(matchedRequests.filter { request in
+                    let owner = request.content.userInfo["client_name"] as? String ?? ""
+                    return owner == clientName || (owner.isEmpty && singleAccount)
+                }.map { $0.identifier })
                 let matched = delivered.filter { matchedIds.contains($0.request.identifier) }
                 let ids = matched.map { $0.request.identifier }
                 for notification in matched.prefix(NativePushJournal.maxMatchedRequests) {
@@ -227,22 +206,6 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             requestId: notification.request.identifier, source: remote ? .remote : .local, render: render)
         NativePushJournal.shared?.enqueue(stage, context: context, outcome: outcome, presentationOptions: presentationOptions,
                                          observedDate: stage == .deliveredObserved ? notification.date : nil)
-    }
-
-    static func deliveredRoomIds(completion: @escaping ([String]) -> Void) {
-        UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
-            var rooms: [String] = []
-            NativePushJournal.shared?.enqueue(.deliveredObserved,
-                matchedRequestIds: delivered.map { $0.request.identifier })
-            for notification in delivered.prefix(NativePushJournal.maxMatchedRequests) { observe(notification, stage: .deliveredObserved) }
-            for notification in delivered {
-                let content = notification.request.content
-                let roomId = (content.userInfo["room_id"] as? String)
-                    ?? (content.threadIdentifier.isEmpty ? nil : content.threadIdentifier)
-                if let roomId = roomId, !rooms.contains(roomId) { rooms.append(roomId) }
-            }
-            completion(rooms)
-        }
     }
 
     public static func register(with registrar: FlutterPluginRegistrar) {
@@ -479,10 +442,12 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             // Клиент-авторитетное число видимых непрочитанных → App Group, откуда
             // его читают NSE (закрытое приложение) и AppDelegate.willPresent
             // (foreground-banner) вместо сырого серверного counts.unread.
-            let badgeArgs = call.arguments as? [String: Any]
-            let count = badgeArgs?["count"] as? Int ?? 0
-            let badgeDefaults = UserDefaults(suiteName: lizaAppGroup())
-            badgeDefaults?.set(count, forKey: "badge_count")
+            result(PrimaryBadgeSnapshot.save(call.arguments as? [String: Any],
+                                             defaults: UserDefaults(suiteName: lizaAppGroup())))
+        case "saveClientNames":
+            let args = call.arguments as? [String: Any]
+            PrimaryBadgeSnapshot.setClients(args?["names"] as? [String] ?? [],
+                                            defaults: UserDefaults(suiteName: lizaAppGroup()))
             result(true)
         case "refreshDockBadge":
             // K-A: при активном (frontmost) окне macOS Dock не всегда
@@ -498,15 +463,14 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             // Парная к iOS: там ответ отпускает фоновое окно clearing-пуша. macOS
             // не будит приложение ради тихого пуша — держать нечего.
             result(true)
-        case "cancelDeliveredForRoom":
-            let args = call.arguments as? [String: Any]
-            guard let roomId = args?["roomId"] as? String, !roomId.isEmpty else {
-                return result(false)
-            }
-            MacApnsPushPlugin.cancelDelivered(roomId: roomId) { result(true) }
-        case "deliveredRoomIds":
-            MacApnsPushPlugin.deliveredRoomIds { rooms in
-                DispatchQueue.main.async { result(rooms) }
+        case "listDeliveredBanners":
+            DeliveredBanner.list { rows in DispatchQueue.main.async { result(rows) } }
+        case "removeReadBanners":
+            guard let args = call.arguments as? [String: Any],
+                  let reads = args["reads"] as? [[String: String]],
+                  let single = args["singleAccount"] as? Bool else { return result(nil) }
+            DeliveredBanner.remove(reads, singleAccount: single) { absent in
+                DispatchQueue.main.async { result(absent) }
             }
         case "isEventDelivered":
             let args = call.arguments as? [String: Any]
@@ -536,10 +500,12 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
             }
         case "retractDelivered":
             let args = call.arguments as? [String: Any]
-            guard let eventId = args?["eventId"] as? String, !eventId.isEmpty else {
+            guard let eventId = args?["eventId"] as? String, !eventId.isEmpty,
+                  let clientName = args?["clientName"] as? String, !clientName.isEmpty,
+                  let single = args?["singleAccount"] as? Bool else {
                 return result(nil)
             }
-            MacApnsPushPlugin.retractDelivered(eventId: eventId) { ms in
+            MacApnsPushPlugin.retractDelivered(eventId: eventId, clientName: clientName, singleAccount: single) { ms in
                 DispatchQueue.main.async { result(ms) }
             }
         case "getAppCopies":

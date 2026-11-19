@@ -196,12 +196,11 @@ void main() {
     });
 
     test('таймлайн обсуждения отписывается в dispose', () {
-      final disposeIndex = chatSource.indexOf('void dispose()');
-      expect(disposeIndex, isNot(-1));
-      final disposeBody = chatSource.substring(
-        disposeIndex,
-        disposeIndex + 600,
-      );
+      final dispose = RegExp(
+        r'void dispose\(\)\s*\{([\s\S]*?)super\.dispose\(\);',
+      ).firstMatch(chatSource);
+      expect(dispose, isNotNull);
+      final disposeBody = dispose!.group(1)!;
       expect(
         disposeBody.contains(
           'discussionTimeline?.cancelSubscriptions(); discussionTimeline = null;',

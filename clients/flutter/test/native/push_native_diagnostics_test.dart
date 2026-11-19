@@ -20,10 +20,12 @@ void main() {
     () async {
       final output = await Directory.systemTemp.createTemp('liza-push-native-');
       try {
-        for (final test in ['main', 'nse_handler']) {
+        for (final test in ['main', 'nse_handler', 'delivered_selection']) {
           final binary = '${output.path}/$test';
           final compiled = await Process.run('swiftc', [
             'ios/Notification Service Extension/NativePushJournal.swift',
+            'ios/Notification Service Extension/PrimaryBadgeSnapshot.swift',
+            'ios/Notification Service Extension/DeliveredBanner.swift',
             if (test == 'nse_handler') ...[
               'ios/Notification Service Extension/NotificationService.swift',
               'ios/Notification Service Extension/ReadBannerSweep.swift',

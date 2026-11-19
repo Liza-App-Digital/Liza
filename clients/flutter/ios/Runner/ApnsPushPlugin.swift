@@ -142,11 +142,10 @@ public class ApnsPushPlugin: NSObject, FlutterPlugin {
             // Выход из аккаунта: токен вышедшего не должен оставаться в App Group.
             let args = call.arguments as? [String: Any]
             if let cn = args?["clientName"] as? String {
-                ReadBannerSweep.forgetCredentials(
-                    clientName: cn,
-                    remaining: args?["remaining"] as? [String] ?? [],
-                    defaults: UserDefaults(suiteName: lizaAppGroup())
-                )
+                let defaults = UserDefaults(suiteName: lizaAppGroup())
+                let remaining = (args?["remaining"] as? [String] ?? []).filter { $0 != cn }
+                PrimaryBadgeSnapshot.setClients(remaining, defaults: defaults)
+                ReadBannerSweep.forgetCredentials(clientName: cn, remaining: remaining, defaults: defaults)
             }
             result(true)
         case "setActiveRoom":
@@ -164,7 +163,7 @@ public class ApnsPushPlugin: NSObject, FlutterPlugin {
             // своим, только если аккаунт ровно один.
             let args = call.arguments as? [String: Any]
             let names = args?["names"] as? [String] ?? []
-            UserDefaults(suiteName: lizaAppGroup())?.set(names, forKey: "client_names")
+            PrimaryBadgeSnapshot.setClients(names, defaults: UserDefaults(suiteName: lizaAppGroup()))
             result(true)
         case "clearingDone":
             let args = call.arguments as? [String: Any]
@@ -176,44 +175,16 @@ public class ApnsPushPlugin: NSObject, FlutterPlugin {
         case "saveBadgeCount":
             // Клиент-авторитетное число видимых непрочитанных → App Group, откуда
             // его читает NSE при закрытом приложении (вместо сырого counts.unread).
-            let args = call.arguments as? [String: Any]
-            let count = args?["count"] as? Int ?? 0
-            let defaults = UserDefaults(suiteName: lizaAppGroup())
-            defaults?.set(count, forKey: "badge_count")
-            result(true)
-        case "cancelDeliveredForRoom":
-            // Баннер, нарисованный NSE, плагину flutter_local_notifications не
-            // принадлежит: его идентификатор — UUID от APNs, а плагин ищет по
-            // своему числовому id и такие уведомления просто пропускает
-            // (`userInfo[NOTIFICATION_ID] == nil`). Снимаем по threadIdentifier —
-            // его NSE проставляет равным room_id на каждом баннере.
-            let cancelArgs = call.arguments as? [String: Any]
-            guard let roomId = cancelArgs?["roomId"] as? String, !roomId.isEmpty else {
-                return result(false)
-            }
-            let center = UNUserNotificationCenter.current()
-            center.getDeliveredNotifications { delivered in
-                let ids = delivered
-                    .filter { n in
-                        n.request.content.threadIdentifier == roomId
-                            || n.request.content.userInfo["room_id"] as? String == roomId
-                    }
-                    .map { $0.request.identifier }
-                if !ids.isEmpty {
-                    center.removeDeliveredNotifications(withIdentifiers: ids)
-                }
-                DispatchQueue.main.async { result(true) }
-            }
-        case "deliveredRoomIds":
-            UNUserNotificationCenter.current().getDeliveredNotifications { delivered in
-                var rooms: [String] = []
-                for n in delivered {
-                    let content = n.request.content
-                    let room = (content.userInfo["room_id"] as? String)
-                        ?? (content.threadIdentifier.isEmpty ? nil : content.threadIdentifier)
-                    if let room = room, !rooms.contains(room) { rooms.append(room) }
-                }
-                DispatchQueue.main.async { result(rooms) }
+            result(PrimaryBadgeSnapshot.save(call.arguments as? [String: Any],
+                                             defaults: UserDefaults(suiteName: lizaAppGroup())))
+        case "listDeliveredBanners":
+            DeliveredBanner.list { rows in DispatchQueue.main.async { result(rows) } }
+        case "removeReadBanners":
+            guard let args = call.arguments as? [String: Any],
+                  let reads = args["reads"] as? [[String: String]],
+                  let single = args["singleAccount"] as? Bool else { return result(nil) }
+            DeliveredBanner.remove(reads, singleAccount: single) { absent in
+                DispatchQueue.main.async { result(absent) }
             }
         case "readDiagnosticJournal":
             DispatchQueue.global(qos: .utility).async {
@@ -307,6 +278,7 @@ public class ApnsPushPlugin: NSObject, FlutterPlugin {
         userInfo: [AnyHashable: Any],
         completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
+        let deadline = DispatchTime.now() + clearingTimeout
         var finished = false
         let finish = {
             guard !finished else { return }
@@ -320,38 +292,27 @@ public class ApnsPushPlugin: NSObject, FlutterPlugin {
             var message = userInfo
             message[clearingIdKey] = id
             ch.invokeMethod("onMessage", arguments: message)
-            DispatchQueue.main.asyncAfter(deadline: .now() + clearingTimeout) {
+            DispatchQueue.main.asyncAfter(deadline: deadline) {
                 pendingClearingCompletions.removeValue(forKey: id)
                 finish()
             }
         }
     }
 
-    /// Непрочитанных нет (`counts.unread == 0`) — снять все показанные баннеры
-    /// этого аккаунта без Dart. Чужой аккаунт (другой client_name) не трогаем;
-    /// баннер без client_name — только при одном аккаунте на устройстве.
-    /// `unread > 0` натив не разберёт по комнатам — это делает Dart или resume.
+    /// Нулевой counts в задержавшемся clearing-пуше ничего не говорит о новом
+    /// событии. Без Dart используем проверку конкретных read=true по аккаунту.
     static func clearDeliveredIfAllRead(
         _ userInfo: [AnyHashable: Any],
         then done: @escaping () -> Void
     ) {
         let counts = userInfo["counts"] as? [String: Any]
         guard (counts?["unread"] as? NSNumber)?.intValue == 0 else { return done() }
-        let pushClient = userInfo["client_name"] as? String ?? ""
-        let names = UserDefaults(suiteName: lizaAppGroup())?
-            .stringArray(forKey: "client_names") ?? []
-        let center = UNUserNotificationCenter.current()
-        center.getDeliveredNotifications { delivered in
-            let ids = delivered
-                .filter { n in
-                    let owner = n.request.content.userInfo["client_name"] as? String ?? ""
-                    if owner.isEmpty { return names.count == 1 }
-                    return owner == pushClient
-                }
-                .map { $0.request.identifier }
-            if !ids.isEmpty {
-                center.removeDeliveredNotifications(withIdentifiers: ids)
-            }
+        let defaults = UserDefaults(suiteName: lizaAppGroup())
+        let names = defaults?.stringArray(forKey: "client_names") ?? []
+        let named = userInfo["client_name"] as? String
+        let owner = named?.isEmpty == false ? named : (names.count == 1 ? names.first : nil)
+        guard let owner = owner, names.contains(owner) else { return done() }
+        ReadBannerSweep.run(clientName: owner, defaults: defaults) { _ in
             DispatchQueue.main.async(execute: done)
         }
     }

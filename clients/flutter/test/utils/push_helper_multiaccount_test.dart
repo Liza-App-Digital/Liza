@@ -114,7 +114,7 @@ void main() {
     b = await _client('Liza-1786629781847', _n2);
     c = await _client('Liza-1787253958881', _n3);
     l10n = await lookupL10n(const Locale('en'));
-    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
   });
 
   tearDown(() async {

@@ -30,10 +30,11 @@ String _body(String src, String opener) {
 
 void main() {
   final chat = File('lib/pages/chat/chat.dart').readAsStringSync();
-  final send = _body(
-    chat,
-    'Future<void>? _sendReadMarkerNow({String? eventId, bool force = false}) {',
-  );
+  final sendOpener = RegExp(
+    r'Future<void>\? _sendReadMarkerNow\([\s\S]*?\)\s*\{',
+  ).firstMatch(chat)?.group(0);
+  if (sendOpener == null) throw StateError('нет _sendReadMarkerNow');
+  final send = _body(chat, sendOpener);
   final load = _body(chat, 'void _tryLoadTimeline() async {');
 
   test(
@@ -49,6 +50,7 @@ void main() {
         'force',
         'readableForeground(',
         'recordOwnReadMarkerTs(',
+        '.setReadMarker(',
         'timeline.setReadMarker(',
         'timeline\n        .setReadMarker(',
       ]) {

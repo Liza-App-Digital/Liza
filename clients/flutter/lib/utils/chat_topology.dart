@@ -595,10 +595,7 @@ bool isCompanySpace({required Room space, required Iterable<Room> allRooms}) {
 /// ему кнопку управления каналом → канал осиротеет навсегда (KILLER-возражение
 /// комиссии). Известные сервисы определяются по localpart на любом инстансе;
 /// зарегистрированные Bot API аккаунты — по точному домену ботов.
-const Set<String> serviceAccountLocalparts = {
-  'liza',
-  'support',
-};
+const Set<String> serviceAccountLocalparts = {'liza', 'support'};
 
 /// Является ли [userId] сервисным аккаунтом (бот/поддержка).
 bool isServiceAccountId(String userId) {
@@ -865,7 +862,7 @@ extension LizaChatTopology on Room {
   /// - notificationCount > 0, lastEvent не оцениваем → в бейдж (доверие серверу);
   /// - notificationCount > 0, квитанция НЕ покрыла lastEvent → в бейдж (реальный);
   /// - notificationCount > 0, квитанция ПОКРЫЛА preview-lastEvent → НЕ в бейдж.
-  bool get _isUnreadForBadge {
+  bool _isUnreadForBadge(bool Function()? unseen) {
     if (membership == Membership.invite) return true;
     if (markedUnread) return true;
     // Полностью замьюченная комната в бейдж не идёт НИКОГДА, даже с
@@ -904,7 +901,7 @@ extension LizaChatTopology on Room {
     // false): news_audience.dart, страж RL-liza-news-platform-audience/12.
     // Частичная квитанция (сепаратор в середине) даёт true — комната честно
     // остаётся в бейдже.
-    return hasUnseenMessages;
+    return unseen?.call() ?? hasUnseenMessages;
   }
 
   /// Идёт ли комната в счётчик бейджа приложения на иконке. Учитываем только
@@ -916,5 +913,9 @@ extension LizaChatTopology on Room {
   ///
   /// Receipt-based гейт (_isUnreadForBadge) не даёт застрявшему серверному
   /// notif_count раздувать бейдж, если квитанция уже покрыла lastEvent.
-  bool get countsTowardAppBadge => !isHiddenChat && _isUnreadForBadge;
+  bool get countsTowardAppBadge => countsTowardBadgeWith();
+
+  /// Тот же фильтр для read-only снимка с уже существующим overlay.
+  bool countsTowardBadgeWith([bool Function()? unseen]) =>
+      !isHiddenChat && _isUnreadForBadge(unseen);
 }

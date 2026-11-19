@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_new_badger/flutter_new_badger.dart';
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/utils/push_contract_session.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/push_journal.dart';
 import 'package:liza/utils/unseen_messages.dart';
@@ -19,6 +21,30 @@ abstract final class AppBadge {
   /// лаунчер Android без поддержки). Глушим вызовы до следующего resume:
   /// смена notification-тоггла в Настройках iOS НЕ перезапускает процесс,
   /// поэтому флаг обязан сбрасываться (см. didChangeAppLifecycleState).
+  static Object? _binding;
+  static Client? Function()? _primary;
+  static Future<void>? _writes;
+  static int _bindingEpoch = 0;
+  static const nativeDeadline = Duration(seconds: 2);
+
+  static void bindPrimary(Object owner, Client? Function() primary) {
+    _bindingEpoch++;
+    _writes = null;
+    _binding = owner;
+    _primary = primary;
+  }
+
+  static void unbindPrimary(Object owner) {
+    if (!identical(owner, _binding)) return;
+    _bindingEpoch++;
+    _writes = null;
+    _primary = null;
+    _binding = null;
+  }
+
+  static int? primaryUnreadCount(Client source) =>
+      identical(_primary?.call(), source) ? visibleUnreadCount(source) : null;
+
   static bool _denied = false;
   static bool _deniedLogged = false;
 
@@ -46,8 +72,7 @@ abstract final class AppBadge {
     required bool denied,
     required bool isIOS,
     required bool permissionFlowDone,
-  }) =>
-      denied || (isIOS && !permissionFlowDone);
+  }) => denied || (isIOS && !permissionFlowDone);
 
   /// Запись бейджа ПРОГЛОЧЕНА, а не выполнена: либо платформа отказала
   /// (`_denied`), либо мы ещё до permission-латча на iOS. Второй случай важен
@@ -55,15 +80,13 @@ abstract final class AppBadge {
   /// `false`, поэтому read-back сравнивал бы Dart-счёт с числом, оставленным NSE,
   /// — гарантированный ложняк на холодном старте до `markPermissionRequested()`.
   static bool get isWriteSuppressed => writeSuppressed(
-        denied: _denied,
-        isIOS: !kIsWeb && Platform.isIOS,
-        permissionFlowDone: _permissionFlowDone,
-      );
+    denied: _denied,
+    isIOS: !kIsWeb && Platform.isIOS,
+    permissionFlowDone: _permissionFlowDone,
+  );
 
   /// Монотонный счётчик ФАКТИЧЕСКИ выполненных записей бейджа. Нужен для
-  /// честного read-back: писателей бейджа как минимум четыре (onSync-подписка на
-  /// каждый клиент, resume, push_helper, cancelNotification — последний намеренно
-  /// пишет `N−1`), все fire-and-forget и без общего гарда. Пока измеряющая
+  /// честного read-back при обновлениях из sync, resume и push_helper. Пока измеряющая
   /// сторона ждёт `getBadge()`, любой из них может переписать бейдж, и read-back
   /// увидит ЧУЖОЕ число. Сверять `writeSeq` до и после — значит отличить «бейдж
   /// залип» (seq не менялся, значение всё равно другое) от «нас обогнали»
@@ -87,9 +110,27 @@ abstract final class AppBadge {
   /// (`prevBatch == null`) — тогда `client.rooms` неполон, и считать нельзя
   /// (иначе занизим до нуля). Это ЕДИНАЯ формула для всех поверхностей бейджа
   /// (иконка, `number` Android-нотификации, App Group для NSE).
-  static int? visibleUnreadCount(Client client) => client.prevBatch == null
-      ? null
-      : client.rooms.where((room) => room.countsTowardAppBadge).length;
+  static final _readyRooms = Expando<Future>();
+  static final _loadingRooms = Expando<Future>();
+
+  static int? visibleUnreadCount(Client client) {
+    if (client.prevBatch == null) return null;
+    final loading = client.roomsLoading;
+    if (client.rooms.isEmpty &&
+        loading != null &&
+        !identical(_readyRooms[client], loading)) {
+      if (!identical(_loadingRooms[client], loading)) {
+        _loadingRooms[client] = loading;
+        loading.then<void>((_) {
+          if (identical(client.roomsLoading, loading)) {
+            _readyRooms[client] = loading;
+          }
+        }, onError: (Object _) {});
+      }
+      return null;
+    }
+    return client.rooms.where((room) => room.countsTowardAppBadge).length;
+  }
 
   /// Единый источник истины для числа на бейдже: видимые в списке чатов
   /// непрочитанные/приглашённые комнаты (скрытые stories/topology-hidden не
@@ -97,14 +138,36 @@ abstract final class AppBadge {
   /// `counts.unread` из payload пуша, который про клиентскую топологию не знает.
   /// На несинканном клиенте `client.rooms` пуст — пропускаем, чтобы не затереть
   /// бейдж нулём из фонового изолята без состояния.
-  static Future<void> refreshFrom(Client client) async {
+  static Future<void> refreshFrom(
+    Client client, {
+    Client? Function()? primary,
+  }) async {
     // Порядок «квитанция vs lastEvent» для комнат с частичной квитанцией
     // считается из локальной БД асинхронно — ДО подсчёта, иначе
     // `countsTowardAppBadge` ушёл бы в ts-фолбэк SDK и выкинул комнату.
-    await UnseenOrderCache.reconcile(client);
+    primary = _primary ?? primary;
+    if (primary == null || !identical(primary(), client)) return;
+    final loading = client.roomsLoading;
+    if (client.rooms.isEmpty &&
+        loading != null &&
+        !identical(_readyRooms[client], loading)) {
+      try {
+        await loading.timeout(nativeDeadline);
+      } on TimeoutException {
+        return;
+      }
+      if (!identical(client.roomsLoading, loading)) return;
+      _readyRooms[client] = loading;
+      if (!identical(primary(), client)) return;
+    }
+    try {
+      await UnseenOrderCache.reconcile(client).timeout(nativeDeadline);
+    } on TimeoutException {
+      return;
+    }
     final count = visibleUnreadCount(client);
     if (count == null) return;
-    await trySet(count);
+    await trySetPrimary(count, owner: client, primary: primary);
   }
 
   /// Персистит клиентское число в App Group (iOS/macOS) — там его читает NSE
@@ -113,10 +176,13 @@ abstract final class AppBadge {
   /// Best-effort: провал канала не критичен (в фон-изоляте плагин может быть
   /// не зарегистрирован). Пишется при КАЖДОМ trySet, поэтому в App Group всегда
   /// последнее клиентское число, а не серверное.
-  static Future<void> _persistCount(int count) async {
+  static Future<void> _persistCount(int count, String? ownerName) async {
     if (kIsWeb || !(Platform.isIOS || Platform.isMacOS)) return;
     try {
-      await _apnsChannel.invokeMethod('saveBadgeCount', {'count': count});
+      await _apnsChannel.invokeMethod('saveBadgeCount', {
+        'count': count,
+        if (ownerName != null) 'clientName': ownerName,
+      });
     } on PlatformException {
       // best-effort
     } on MissingPluginException {
@@ -205,12 +271,110 @@ abstract final class AppBadge {
   /// Выставить бейдж в [count] (0 — убрать). Ошибки платформы гасятся:
   /// на iOS removeBadge — тот же setBadgeCount(0) и тоже кидает
   /// PERMISSION_DENIED, поэтому через try/catch идут оба вызова.
-  static Future<void> trySet(int count) async {
+  @visibleForTesting
+  static Future<void> trySet(int count) => _write(count, () => true, null);
+
+  static Future<void> trySetPrimary(
+    int count, {
+    required Client owner,
+    required Client? Function() primary,
+  }) => _setPrimary(count, owner, primary, repairLate: true);
+
+  static Future<void> _setPrimary(
+    int count,
+    Client owner,
+    Client? Function() primary, {
+    required bool repairLate,
+  }) {
+    final epoch = _bindingEpoch;
+    final user = owner.userID, device = owner.deviceID;
+    bool current() =>
+        epoch == _bindingEpoch &&
+        identical((_primary ?? primary)(), owner) &&
+        owner.isLogged() &&
+        user == owner.userID &&
+        device == owner.deviceID &&
+        visibleUnreadCount(owner) == count;
+    void reconcileLateWriter() {
+      if (!repairLate ||
+          current() ||
+          (_primary == null && epoch != _bindingEpoch)) {
+        return;
+      }
+      final resolve = _primary ?? primary;
+      final latest = resolve();
+      if (latest == null || !latest.isLogged()) return;
+      final desired = visibleUnreadCount(latest);
+      if (desired == null) return;
+      // Нативный API мог применить старую команду уже после таймаута. Только
+      // сам writer восстанавливает текущий primary; один восстановительный вызов.
+      unawaited(
+        _setPrimary(
+          desired,
+          latest,
+          resolve,
+          repairLate: false,
+        ).catchError((_) {}),
+      );
+    }
+
+    Future<void> write() async {
+      if (!current()) return;
+      final session = PushContractSession.observing(owner);
+      final revision = session?.revision;
+      final snapshot = session?.aggregate(null);
+      final seq = _writeSeq;
+      await _write(
+        count,
+        current,
+        owner.clientName,
+        lateResult: reconcileLateWriter,
+      );
+      if (snapshot != null &&
+          current() &&
+          _writeSeq > seq &&
+          revision == session?.revision) {
+        session?.recordBadge(count, snapshot);
+      }
+    }
+
+    final previous = _writes;
+    final next = previous == null ? write() : previous.then((_) => write());
+    final lane = next.catchError((_) {});
+    _writes = lane;
+    lane.whenComplete(() {
+      if (identical(_writes, lane)) _writes = null;
+    });
+    return next;
+  }
+
+  static Future<void> _write(
+    int count,
+    bool Function() current,
+    String? ownerName, {
+    void Function()? lateResult,
+  }) async {
+    Future<bool> bounded(Future<void> native) async {
+      // Следующая команда не зависит от прихода callback предыдущей. Поздний
+      // результат не меняет writeSeq/permission latch завершённой операции.
+      try {
+        await native
+            .then((_) {
+              if (!current()) lateResult?.call();
+            })
+            .timeout(nativeDeadline);
+        return current();
+      } on TimeoutException {
+        return false;
+      }
+    }
+
     // Персист в App Group идёт ВСЕГДА (до permission-латча и независимо от
     // него): запись числа в разделяемый контейнер не требует badge-permission,
     // а NSE обязан видеть свежее клиентское число, даже если сам бейдж на
     // иконке пользователь запретил.
-    await _persistCount(count);
+    await bounded(_persistCount(count, ownerName));
+    if (!current()) return;
     // Снятие бейджа (count == 0) пробуем ВСЕГДА, даже под _denied-латчем:
     // иначе один PERMISSION_DENIED от setBadge навсегда заклинивал бы залипшую
     // «1» до resume — removeBadge не давал бы её снять. Установка (>0) под
@@ -218,11 +382,12 @@ abstract final class AppBadge {
     if (_denied && count != 0) return;
     if (Platform.isIOS && !_permissionFlowDone) return;
     try {
-      if (count == 0) {
-        await FlutterNewBadger.removeBadge();
-      } else {
-        await FlutterNewBadger.setBadge(count);
-      }
+      final applied = await bounded(
+        count == 0
+            ? FlutterNewBadger.removeBadge()
+            : FlutterNewBadger.setBadge(count),
+      );
+      if (!applied) return;
       // Успешный вызов — латч самозаживает (не ждём resetDenied на resume).
       _denied = false;
       _writeSeq++;
@@ -235,15 +400,18 @@ abstract final class AppBadge {
       }
       // K-A (macOS): dockTile.badgeLabel выставлен, но Dock может не
       // перерисоваться при frontmost-окне — форсим перерисовку нативно.
-      if (Platform.isMacOS) await _refreshDockBadge();
+      if (Platform.isMacOS) {
+        await _refreshDockBadge().timeout(nativeDeadline, onTimeout: () {});
+      }
     } on PlatformException catch (e) {
+      if (!current()) return;
       _denied = true;
       if (!_deniedLogged) {
         _deniedLogged = true;
         Logs().i('[Badge] disabled until resume: ${e.code}');
       }
     } on MissingPluginException {
-      _denied = true;
+      if (current()) _denied = true;
     }
   }
 }

@@ -29,6 +29,34 @@ class ChatInputRow extends StatelessWidget {
 
   const ChatInputRow(this.controller, {super.key});
 
+  Future<void> _openSupportMenu(BuildContext context) async {
+    // Навигация не отправляет и не очищает текущий draft/reply/edit.
+    final room = controller.room;
+    final client = room.client;
+    final token = client.accessToken;
+    final userId = client.userID;
+    final homeserver = client.homeserver;
+    final deviceId = client.deviceID;
+    try {
+      final eventId = await room.sendTextEvent('/menu', parseCommands: false);
+      if (eventId != null) return;
+    } catch (_) {
+      // SDK либо возвращает null, либо бросает (например, M_FORBIDDEN).
+    }
+    if (!context.mounted ||
+        !identical(controller.room, room) ||
+        !identical(controller.room.client, client) ||
+        client.accessToken != token ||
+        client.userID != userId ||
+        client.homeserver != homeserver ||
+        client.deviceID != deviceId) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(L10n.of(context).oopsSomethingWentWrong)),
+    );
+  }
+
   Future<void> _openMiniApp(BuildContext context, MiniAppLaunch launch) async {
     await MiniAppWebView.open(
       context: context,
@@ -45,6 +73,8 @@ class ChatInputRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final hasSupportMenu =
+        isSupportBotDm(controller.room) || isSupportHubRoom(controller.room);
 
     const height = 48.0;
 
@@ -225,18 +255,14 @@ class ChatInputRow extends StatelessWidget {
                             label: Text(L10n.of(context).chatInputMenu),
                           ),
                         ),
-                      // Меню службы поддержки: в чате «Liza support hub» слева от поля
-                      // ввода — «☰ Меню», по тапу шлём боту «/menu», он отвечает
-                      // карточкой (Необработанные заявки / Мои задачи / Обработанные).
+                      // Меню поддержки в доверенном DM и общем support hub.
+                      // Карточку действий присылает бот в ответ на literal /menu.
                       if (controller.sendController.text.isEmpty &&
-                          isSupportHubRoom(controller.room))
+                          hasSupportMenu)
                         SizedBox(
                           height: height,
                           child: TextButton.icon(
-                            onPressed: () => controller.room.sendTextEvent(
-                              '/menu',
-                              parseCommands: false,
-                            ),
+                            onPressed: () => _openSupportMenu(context),
                             style: TextButton.styleFrom(
                               foregroundColor: theme.colorScheme.primary,
                               backgroundColor: theme.colorScheme.primary
@@ -253,7 +279,7 @@ class ChatInputRow extends StatelessWidget {
                       // есть команды. У BotFather и службы поддержки своя «Меню».
                       if (controller.sendController.text.isEmpty &&
                           !isBotFatherRoom(controller.room) &&
-                          !isSupportHubRoom(controller.room))
+                          !hasSupportMenu)
                         InteractiveBotMenu(
                           height: height,
                           room: controller.room,

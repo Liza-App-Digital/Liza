@@ -31,6 +31,8 @@ class NaviRailItem extends StatelessWidget {
   final void Function() onTap;
   final Widget icon;
   final Widget? selectedIcon;
+  final String badgeScope;
+  final String? badgeScopeRoomId;
   final bool Function(Room)? unreadBadgeFilter;
 
   const NaviRailItem({
@@ -40,6 +42,8 @@ class NaviRailItem extends StatelessWidget {
     required this.onTap,
     required this.icon,
     this.selectedIcon,
+    this.badgeScope = 'filtered',
+    this.badgeScopeRoomId,
     this.unreadBadgeFilter,
     super.key,
   });
@@ -182,6 +186,8 @@ class NaviRailItem extends StatelessWidget {
                           child: unreadBadgeFilter == null
                               ? icon
                               : UnreadRoomsBadge(
+                                  scope: badgeScope,
+                                  scopeRoomId: badgeScopeRoomId,
                                   filter: unreadBadgeFilter,
                                   badgePosition: BadgePosition.topEnd(
                                     top: -12,

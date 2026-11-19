@@ -11,11 +11,14 @@ void main() {
   test(
     'ReadBannerSweep: read=true из /notifications, токен по client_name, фильтр владельца',
     () async {
+      // AC:RL-push-causal-contract/10
       final output = await Directory.systemTemp.createTemp('liza-read-sweep-');
       try {
         final binary = '${output.path}/sweep';
         final compiled = await Process.run('swiftc', [
           'ios/Notification Service Extension/ReadBannerSweep.swift',
+          'ios/Notification Service Extension/DeliveredBanner.swift',
+          'ios/Notification Service Extension/NativePushJournal.swift',
           'test/native/read_banner_sweep/sweep_logic.swift',
           '-o',
           binary,

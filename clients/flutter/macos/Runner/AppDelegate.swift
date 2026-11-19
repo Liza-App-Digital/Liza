@@ -276,15 +276,9 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
 
       mutableContent.sound = UNNotificationSound(named: UNNotificationSoundName("liza_ding.aiff"))
 
-      // Бейдж — из КЛИЕНТ-авторитетного числа в App Group (его пишет Dart на
-      // каждый sync), а НЕ из сырого серверного counts.unread: последнее считает
-      // topology-скрытые/server-stuck комнаты, которые клиент исключает →
-      // накопительная инфляция. willPresent работает при живом приложении, так
-      // что App Group свежий. Пусто/0 → 1 (нижняя граница). Ставим РОВНО число,
-      // без инкремента. См. RL-app-badge-native-visible-count.
-      let badgeDefaults = UserDefaults(suiteName: lizaAppGroup())
-      let savedBadge = badgeDefaults?.object(forKey: "badge_count") as? Int
-      mutableContent.badge = NSNumber(value: (savedBadge ?? 0) > 0 ? savedBadge! : 1)
+      mutableContent.badge = PrimaryBadgeSnapshot.forAlert(
+        owner: userInfo["client_name"] as? String, defaults: UserDefaults(suiteName: lizaAppGroup())
+      )
 
       // userInfo во Flutter здесь НЕ передаём: `application(_:didReceiveRemoteNotification:)`
       // получает тот же пуш на приходе всегда, а этот делегат — только у активного

@@ -9,7 +9,7 @@ import UserNotifications
 /// не блокирует contentHandler. В журнал никогда не попадает payload/token.
 final class NativePushJournal {
     enum Stage: String, Codable {
-        case received, localSubmission, localResult, presentation, deliveredObserved, removalRequested
+        case received, localSubmission, localResult, presentation, deliveredObserved, removalRequested, removalObservedAbsent
         case nseReceived, nseCompleted, nseExpired, nseError, nseSwept, nseSuppressed, fcmReceived, token, diagnosticLoss
     }
     enum Reason: String, Codable { case first, unchanged, rotated, registration_failed, storage, dropped }

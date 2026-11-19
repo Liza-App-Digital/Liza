@@ -19,6 +19,7 @@ import 'package:liza/config/setting_keys.dart';
 import 'package:liza/utils/android_read_sweep.dart';
 import 'package:liza/utils/android_room_notification.dart';
 import 'package:liza/utils/app_badge.dart';
+import 'package:liza/utils/apns_push_service.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/client_download_content_extension.dart';
@@ -155,7 +156,9 @@ Future<void> pushHelper(
           l10n.incomingMessages,
           // Крэш-фолбэк: клиентское число если клиент есть, иначе не ставим
           // (не сырое серверное counts.unread — оно раздувает бейдж).
-          number: client == null ? null : AppBadge.visibleUnreadCount(client),
+          number: clients?.firstOrNull == null
+              ? null
+              : AppBadge.visibleUnreadCount(clients!.first),
           ticker: l10n.unreadChatsInApp(
             AppSettings.applicationName.value,
             (notification.counts?.unread ?? 0).toString(),
@@ -203,7 +206,8 @@ Future<void> _tryPushHelper(
 
   // Адресат — ДО getEventByPushNotification: на чужом клиенте тот падает в
   // generic-баннер. Явный [client] (одноклиентный вызов) имеет приоритет.
-  final allClients = client != null
+  final suppliedTargetOnly = client != null && clients == null;
+  final allClients = client != null && clients == null
       ? [client]
       : (clients ??
             await ClientManager.getClients(
@@ -219,8 +223,6 @@ Future<void> _tryPushHelper(
   // Бейдж иконки и App Group пишет ОДИН фиксированный клиент (первый) — иначе при
   // мультиаккаунте число мигало бы между аккаунтами «последним писателем».
   final badgeClient = allClients.first;
-  final isBadgeClient = identical(client, badgeClient) ||
-      client.clientName == badgeClient.clientName;
 
   // Check if user is currently viewing the room that sent the notification.
   // Like Liza: play sound + haptic but don't show a banner. «Активная»
@@ -298,6 +300,17 @@ Future<void> _tryPushHelper(
       return;
     }
     Logs().v('Notification is a clearing indicator.');
+    if (defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.macOS) {
+      if (clientName != null && clientName != client.clientName) return;
+      if (clientName == null && allClients.length > 1) return;
+      await ApnsPushService.clearReadBanners(
+        clients: () => allClients,
+        owner: client,
+        includeHidden: true,
+      );
+      return;
+    }
     // cancelAll — только когда аккаунт на устройстве один: при мультиаккаунте
     // clearing одного аккаунта (unread=0) снёс бы уведомления соседа.
     if (allClients.length == 1 &&
@@ -336,7 +349,14 @@ Future<void> _tryPushHelper(
         final room = roomId == null ? null : client.getRoomById(roomId);
         // При мультиаккаунте уведомление без payload и без своей комнаты —
         // неизвестного владельца: не гасим (консервативно).
-        if (room == null && ownerName == null && allClients.length > 1) {
+        if (ownerName == null &&
+            allClients.length > 1 &&
+            (room == null ||
+                allClients.any(
+                  (other) =>
+                      !identical(other, client) &&
+                      other.getRoomById(room.id) != null,
+                ))) {
           continue;
         }
         // Тот же инвариант видимости, что у бейджа (countsTowardAppBadge =
@@ -361,9 +381,10 @@ Future<void> _tryPushHelper(
   // (иначе вернём накопительную инфляцию; NSE уже показал последнее клиентское
   // число из App Group). См. RL-app-badge-native-visible-count.
   if (!kIsWeb && (Platform.isIOS || Platform.isMacOS)) {
-    if (isBadgeClient && client.prevBatch != null) {
-      await AppBadge.refreshFrom(client);
-    }
+    await AppBadge.refreshFrom(
+      client,
+      primary: suppliedTargetOnly ? null : () => allClients.firstOrNull,
+    );
   }
 
   // Наблюдаемость дрейфа счётчиков (ВТОРИЧНЫЙ human-facing сигнал): серверное
@@ -565,7 +586,9 @@ Future<void> _tryPushHelper(
     // клиенте visibleUnreadCount == null → number не ставим (не инфляцию).
     // См. RL-app-badge-native-visible-count. Число — от бейдж-клиента (первого),
     // а не от адресата пуша: единый писатель бейджа при мультиаккаунте.
-    number: AppBadge.visibleUnreadCount(badgeClient),
+    number: suppliedTargetOnly
+        ? AppBadge.primaryUnreadCount(badgeClient)
+        : AppBadge.visibleUnreadCount(badgeClient),
     category: AndroidNotificationCategory.message,
     shortcutId: event.room.id,
     tag: event.room.id,
