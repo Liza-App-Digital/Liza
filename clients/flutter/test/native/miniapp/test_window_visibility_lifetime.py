@@ -40,7 +40,7 @@ struct MINMAXINFO { POINT ptReserved,ptMaxSize,ptMaxPosition,ptMinTrackSize; };
 struct NCCALCSIZE_PARAMS { RECT rgrc[3]; };
 struct WINDOWPOS { UINT flags=0; };
 struct GeometryState {};
-void BeginManualResize(GeometryState&,const RECT&,bool) {}
+void BeginManualResize(GeometryState&,const RECT&,bool,UINT) {}
 void CaptureManualResize(GeometryState&,const RECT&,UINT,bool) {}
 void CancelManualResize(GeometryState&) {}
 void DpiChangedManualResize(GeometryState&) {}

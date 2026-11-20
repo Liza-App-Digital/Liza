@@ -16,6 +16,7 @@ import 'package:liza/utils/channel_discussion.dart';
 import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/date_time_extension.dart';
 import 'package:liza/utils/file_description.dart';
+import 'package:liza/utils/message_link.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_locals.dart';
 import 'package:liza/utils/room_status_extension.dart';
 import 'package:liza/utils/string_color.dart';
@@ -23,6 +24,7 @@ import 'package:liza/utils/upload_progress_tracker.dart';
 import 'package:liza/widgets/avatar.dart';
 import 'package:liza/widgets/matrix.dart';
 import 'package:liza/widgets/member_actions_popup_menu_button.dart';
+import 'package:liza/widgets/read_version_witness.dart';
 import 'package:liza/widgets/user_role_badge.dart';
 import '../../../config/app_config.dart';
 import 'channel_post_comments.dart';
@@ -122,6 +124,9 @@ class Message extends StatelessWidget {
   /// Открыть контекстное меню сообщения (long-press / правый клик по пузырю).
   final void Function(Event)? onContextMenu;
 
+  /// Необязательный факт кадра обычного MessageContent для read cursor.
+  final ValueChanged<ReadVersionEvidence>? onReadVersion;
+
   const Message(
     this.event, {
     this.nextEvent,
@@ -130,6 +135,7 @@ class Message extends StatelessWidget {
     this.longPressSelect = false,
     this.bubbleKey,
     this.onContextMenu,
+    this.onReadVersion,
     required this.onSelect,
     required this.onInfoTab,
     required this.scrollToEventId,
@@ -569,7 +575,7 @@ class Message extends StatelessWidget {
       ],
     );
 
-    final content = tgWidget != null
+    var content = tgWidget != null
         ? TgWidgetBubble(
             event: event,
             timeline: timeline,
@@ -601,6 +607,40 @@ class Message extends StatelessWidget {
                 ? messageFooter(overlay: true)
                 : messageFooter(overlay: false),
           );
+
+    // Custom/album renderer может агрегировать другую версию самостоятельно.
+    // Его build не доказывает, что пользователь видел содержимое displayEvent.
+    final onReadVersion = this.onReadVersion;
+    if (onReadVersion != null &&
+        tgWidget == null &&
+        event.eventId != displayEvent.eventId &&
+        event.galleryId == null &&
+        displayEvent.galleryId == null &&
+        {
+          MessageTypes.Text,
+          MessageTypes.Notice,
+          MessageTypes.Emote,
+          MessageTypes.Image,
+          MessageTypes.Video,
+          MessageTypes.Audio,
+          MessageTypes.File,
+          MessageTypes.Location,
+        }.contains(displayEvent.messageType) &&
+        !displayEvent.content.keys.any(
+          (key) =>
+              key.startsWith('com.liza.') &&
+              key != 'com.liza.forwarded' &&
+              key != 'com.liza.relay',
+        ) &&
+        MessageLink.bareLinkFrom(displayEvent.body) == null) {
+      content = ReadVersionWitness(
+        original: event,
+        displayed: displayEvent,
+        timeline: timeline,
+        onRendered: onReadVersion,
+        child: content,
+      );
+    }
 
     final resetAnimateIn = this.resetAnimateIn;
     var animateIn = this.animateIn;

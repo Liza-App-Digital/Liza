@@ -15,12 +15,21 @@ void main() {
   // AC:RL-push-native-diagnostics/8
   // ledger:RL-push-clearing-alert-v2
   // AC:RL-push-clearing-alert-v2/6 — nse_handler.swift: пуш снятия v2
+  // AC:RL-push-native-diagnostics/14
+  // AC:RL-push-native-diagnostics/15
+  // AC:RL-push-native-diagnostics/16
+  // AC:RL-push-native-diagnostics/17
   test(
     'production Swift spool и NSE handler на host',
     () async {
       final output = await Directory.systemTemp.createTemp('liza-push-native-');
       try {
-        for (final test in ['main', 'nse_handler', 'delivered_selection']) {
+        for (final test in [
+          'main',
+          'nse_handler',
+          'delivered_selection',
+          'coordinated_io',
+        ]) {
           final binary = '${output.path}/$test';
           final compiled = await Process.run('swiftc', [
             'ios/Notification Service Extension/NativePushJournal.swift',
@@ -54,4 +63,24 @@ void main() {
     skip: !Platform.isMacOS,
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  // Структурная проверка подключения, не исполнение callback на iOS/macOS.
+  // AC:RL-push-native-diagnostics/17
+  test('оба APNs callback используют очередь диагностики токена', () {
+    for (final plugin in [
+      'ios/Runner/ApnsPushPlugin.swift',
+      'macos/Runner/MacApnsPushPlugin.swift',
+    ]) {
+      final source = File(plugin).readAsStringSync();
+      expect(source, contains('NativePushJournal.shared?.enqueueToken(token)'));
+      expect(
+        source,
+        contains(
+          'NativePushJournal.shared?.enqueue(.token, reason: .registration_failed)',
+        ),
+      );
+      expect(source, isNot(contains('NativePushJournal.shared?.token(')));
+      expect(source, isNot(contains('NativePushJournal.shared?.append(')));
+    }
+  });
 }

@@ -568,7 +568,7 @@ public class MacApnsPushPlugin: NSObject, FlutterPlugin {
 
     public static func didRegisterForRemoteNotifications(deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
-        NativePushJournal.shared?.token(token)
+        NativePushJournal.shared?.enqueueToken(token)
 
         queue.sync {
             pendingToken = token

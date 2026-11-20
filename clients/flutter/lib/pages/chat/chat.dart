@@ -69,6 +69,8 @@ import 'package:liza/utils/platform_infos.dart';
 import 'package:liza/utils/chat_scroll_geometry.dart';
 import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/utils/read_marker_sender.dart';
+import 'package:liza/utils/read_marker_target.dart';
+import 'package:liza/widgets/read_version_witness.dart';
 import 'package:liza/utils/reply_draft_store.dart';
 import 'package:liza/utils/emoji_history_store.dart';
 import 'package:liza/utils/stories/story_media_picker.dart';
@@ -1066,6 +1068,10 @@ class ChatController extends State<ChatPageWithRoom>
 
   void updateView() {
     if (!mounted) return;
+    // SDK меняет Event/aggregation до rebuild. Старый кадр уже не разрешает
+    // чтение новой редакции, даже если ID или размеры строки ещё прежние.
+    _readVersionGeneration++;
+    _readVersions.clear();
     // Coalesce: SDK может вызвать onUpdate несколько раз за один sync batch
     // (typing, receipts, events). Одного rebuild в конце microtask достаточно.
     if (_updateViewScheduled) return;
@@ -1188,10 +1194,24 @@ class ChatController extends State<ChatPageWithRoom>
         (!eventContextId.isValidMatrixId || eventContextId.sigil != '\$')) {
       eventContextId = null;
     }
+    final timelineRoom = room;
+    Timeline? observedTimeline;
+    final dataVersion = TimelineReadDataVersion();
+    void onTimelineUpdate() {
+      // Расшифровка/history SDK могут не выдать onEvent/onSync. Владелец
+      // проекции дождётся DB barrier: сам onUpdate не доказывает commit.
+      // Обычный rebuild обновлением данных не считается.
+      final observed = observedTimeline;
+      if (observed != null && dataVersion.update(observed)) {
+        UnseenProjectionSubscription.timelineUpdated(timelineRoom);
+      }
+      updateView();
+    }
+
     try {
       timeline?.cancelSubscriptions();
-      final loaded = await room.getTimeline(
-        onUpdate: updateView,
+      final loaded = await timelineRoom.getTimeline(
+        onUpdate: onTimelineUpdate,
         eventContextId: eventContextId,
         onInsert: onInsert,
       );
@@ -1202,11 +1222,13 @@ class ChatController extends State<ChatPageWithRoom>
         return;
       }
       timeline = loaded;
+      observedTimeline = loaded;
+      dataVersion.update(loaded);
     } catch (e, s) {
       Logs().w('Unable to load timeline on event ID $eventContextId', e, s);
       if (!mounted) return;
-      final loaded = await room.getTimeline(
-        onUpdate: updateView,
+      final loaded = await timelineRoom.getTimeline(
+        onUpdate: onTimelineUpdate,
         onInsert: onInsert,
       );
       if (!mounted) {
@@ -1214,6 +1236,8 @@ class ChatController extends State<ChatPageWithRoom>
         return;
       }
       timeline = loaded;
+      observedTimeline = loaded;
+      dataVersion.update(loaded);
       if (e is TimeoutException || e is IOException) {
         _showScrollUpMaterialBanner(eventContextId!);
       }
@@ -1241,6 +1265,141 @@ class ChatController extends State<ChatPageWithRoom>
 
   final ReadMarkerSendCoordinator _readMarkerSender =
       ReadMarkerSendCoordinator();
+
+  int _readVersionGeneration = 0;
+  bool _readVersionWakeScheduled = false;
+  final Map<String, ({ReadVersionEvidence evidence, bool Function() isCurrent})>
+  _readVersions = {};
+
+  /// Observer создаётся при build ленты, но получает факт только после layout
+  /// реального MessageContent. Старые callback не переживают смену контекста.
+  ValueChanged<ReadVersionEvidence> readVersionObserver(Timeline timeline) {
+    final generation = _readVersionGeneration;
+    final capturedRoom = room;
+    final userId = capturedRoom.client.userID;
+    final viewClient = Matrix.of(context).client;
+    final scope = activeThreadId;
+    bool contextCurrent() =>
+        generation == _readVersionGeneration &&
+        _readContextCurrent(capturedRoom, timeline, scope, userId, viewClient);
+    return (evidence) {
+      if (!contextCurrent() || !evidence.isCurrent()) {
+        return;
+      }
+      _readVersions[evidence.visibleRowId] = (
+        evidence: evidence,
+        isCurrent: contextCurrent,
+      );
+      // cacheExtent тоже строит content: сохраняем только факт его версии.
+      // Ни wake, ни read plan не получают разрешения без живой геометрии.
+      // После ручного скролла build может не повториться — тогда существующий
+      // viewport callback проверит этот кадр уже с новым положением строки.
+      if (!_readVersionRowVisible(evidence.visibleRowId)) return;
+      if (_readVersionWakeScheduled) return;
+      _readVersionWakeScheduled = true;
+      // Все callbacks одного кадра будят существующий coordinator один раз.
+      Future.microtask(() {
+        _readVersionWakeScheduled = false;
+        if (!contextCurrent()) return;
+        // Повторный вход в доказанно прочитанный чат не шлёт receipt. SDK
+        // hasNewMessages/UNKNOWN по timestamp не является таким доказательством:
+        // actual кадр правки позволяет прочитать её и при неверных часах receipt.
+        final previewId = capturedRoom.lastEvent?.eventId;
+        final receipts = capturedRoom.receiptState.global;
+        final ownReceiptIds = {
+          receipts.ownPrivate?.eventId,
+          receipts.ownPublic?.eventId,
+          receipts.latestOwnReceipt?.eventId,
+        }.whereType<String>().where((id) => id.isNotEmpty);
+        final previewCovered =
+            previewId != null &&
+            (_confirmedReads.covers(capturedRoom) ||
+                (ownReceiptIds.isNotEmpty &&
+                    UnseenOrderCache.lookup(capturedRoom) == false) ||
+                ownReceiptIds.contains(previewId));
+        if (capturedRoom.notificationCount == 0 &&
+            capturedRoom.highlightCount == 0 &&
+            previewCovered) {
+          return;
+        }
+        // Кадр старой строки не даёт права прочитать новый невидимый хвост.
+        final visibleRowId = _newestVisibleEventId();
+        if (visibleRowId != null) setReadMarker(eventId: visibleRowId);
+      });
+    };
+  }
+
+  ReadVersionEvidence? _readVersionFor(String rowId) {
+    final record = _readVersions[rowId];
+    if (record == null || !record.isCurrent() || !record.evidence.isCurrent()) {
+      return null;
+    }
+    return record.evidence;
+  }
+
+  bool _readVersionRowVisible(String rowId) {
+    if (!scrollController.hasClients || scrollController.isAutoScrolling) {
+      return false;
+    }
+    final geometry = collectTagGeometry(scrollController);
+    final row = geometry?.tags.firstWhereOrNull((tag) => tag.eventId == rowId);
+    return geometry != null &&
+        row != null &&
+        row.rect.height > 0 &&
+        row.rect.bottom > 0 &&
+        row.rect.bottom <= geometry.viewport.height + 0.5;
+  }
+
+  bool _editTargetCurrent(
+    ReadMarkerTarget target,
+    Timeline timeline,
+    bool isFull,
+  ) {
+    if (!target.isEdit) return true;
+    if (_openPositioningPending ||
+        scrollUpBannerEventId != null ||
+        activeThreadId != null ||
+        ScreenLockState.isLocked ||
+        readMarkerGate(
+              readable: readableForeground(
+                lifecycle: WidgetsBinding.instance.lifecycleState,
+                isDesktop: PlatformInfos.isDesktop,
+                screenLocked: ScreenLockState.isLocked,
+              ),
+              isFull: isFull,
+              humanInput: HumanInputTracker.isRecent(roomId),
+            ) !=
+            ReadMarkerGate.send) {
+      return false;
+    }
+    final evidence = _readVersionFor(target.visibleRowId);
+    final original = timeline.events.firstWhereOrNull(
+      (event) => event.eventId == target.visibleRowId,
+    );
+    if (evidence == null ||
+        original == null ||
+        evidence.displayedVersionId != target.displayedVersionId ||
+        evidence.displayedFingerprint != target.displayedFingerprint ||
+        !_readVersionRowVisible(target.visibleRowId) ||
+        (isFull &&
+            (!_newestMessagesVisible ||
+                _newestVisibleEventId() != target.visibleRowId ||
+                room.lastEvent?.eventId != target.cursorId ||
+                timeline.events
+                        .firstWhereOrNull((event) => event.status.isSynced)
+                        ?.eventId !=
+                    target.cursorId))) {
+      return false;
+    }
+    return editedReadMarkerTarget(
+          original: original,
+          timeline: timeline,
+          displayedVersionId: evidence.displayedVersionId,
+          displayedFingerprint: evidence.displayedFingerprint,
+          retryCursorId: target.cursorId,
+        ) !=
+        null;
+  }
 
   void setReadMarker({String? eventId, bool force = false}) {
     if (eventId?.isValidMatrixId == false) return;
@@ -1298,20 +1457,29 @@ class ChatController extends State<ChatPageWithRoom>
       activeThreadId == scope &&
       capturedRoom.membership == Membership.join;
 
-  bool _retryTargetVisible(Timeline timeline, String targetId, bool isFull) {
+  bool _retryTargetVisible(
+    Timeline timeline,
+    ReadMarkerTarget target,
+    bool isFull,
+  ) {
     if (!timeline.allowNewEvent || scrollController.isAutoScrolling) {
       return false;
     }
     if (isFull) {
       return _newestMessagesVisible &&
           timeline.events.firstWhereOrNull((e) => e.status.isSynced)?.eventId ==
-              targetId;
+              target.cursorId &&
+          _editTargetCurrent(target, timeline, isFull);
     }
     final visibleId = _newestVisibleEventId();
     if (visibleId == null) return false;
     final visible = timeline.events.indexWhere((e) => e.eventId == visibleId);
-    final target = timeline.events.indexWhere((e) => e.eventId == targetId);
-    return visible >= 0 && target >= visible;
+    final targetIndex = timeline.events.indexWhere(
+      (e) => e.eventId == target.visibleRowId,
+    );
+    return visible >= 0 &&
+        targetIndex >= visible &&
+        _editTargetCurrent(target, timeline, isFull);
   }
 
   Future<void>? _sendReadMarkerNow({
@@ -1362,13 +1530,55 @@ class ChatController extends State<ChatPageWithRoom>
     final scope = activeThreadId;
     final raw = timeline.events.firstWhereOrNull((e) => e.status.isSynced);
     final visible = timeline.events.filterByVisibleInGui(threadId: scope);
-    final target = eventId == null
+    final visibleRowId = retry?.target.visibleRowId ?? eventId;
+    final target = visibleRowId == null
         ? visible.firstWhereOrNull((e) => e.status.isSynced)
         : visible.firstWhereOrNull(
-            (e) => e.eventId == eventId && e.status.isSynced,
+            (e) => e.eventId == visibleRowId && e.status.isSynced,
           );
     if (target == null) return null;
-    final targetId = target.eventId;
+    var readTarget =
+        retry?.target ??
+        ReadMarkerTarget(
+          visibleRowId: target.eventId,
+          displayedVersionId: target.eventId,
+          cursorId: target.eventId,
+        );
+    if (retry == null) {
+      final evidence = _readVersionFor(target.eventId);
+      final pendingEdit = _readMarkerAttempts.values.firstWhereOrNull(
+        (attempt) =>
+            !attempt.acknowledged &&
+            attempt.target.isEdit &&
+            attempt.target.visibleRowId == target.eventId &&
+            attempt.target.displayedVersionId == evidence?.displayedVersionId &&
+            attempt.target.displayedFingerprint ==
+                evidence?.displayedFingerprint,
+      );
+      // Timer мог истечь, когда строка ещё была вне viewport. Новое допустимое
+      // viewport-намерение возобновляет прежний exact cursor и его бюджет.
+      // Новая показанная редакция не подменяет цель старой попытки.
+      if (pendingEdit != null) readTarget = pendingEdit.target;
+    }
+    if (retry == null &&
+        !readTarget.isEdit &&
+        _newestMessagesVisible &&
+        _newestVisibleEventId() == target.eventId &&
+        visible.firstWhereOrNull((e) => e.status.isSynced)?.eventId ==
+            target.eventId) {
+      final evidence = _readVersionFor(target.eventId);
+      if (evidence != null) {
+        readTarget =
+            editedReadMarkerTarget(
+              original: target,
+              timeline: timeline,
+              displayedVersionId: evidence.displayedVersionId,
+              displayedFingerprint: evidence.displayedFingerprint,
+            ) ??
+            readTarget;
+      }
+    }
+    final targetId = readTarget.cursorId;
     var previous = _readMarkerAttempts[targetId];
     if (previous != null &&
         (!identical(previous.room, capturedRoom) ||
@@ -1384,6 +1594,8 @@ class ChatController extends State<ChatPageWithRoom>
     // но использует актуальную геометрию. Старый callback сам контекст не меняет.
     if (retry == null && previous != null) previous.timeline = timeline;
     retry ??= previous?.acknowledged == false ? previous : null;
+    // Найденная по cursor попытка сохраняет также версию и её fingerprint.
+    readTarget = retry?.target ?? readTarget;
     // Цель и бюджет повтора неизменны, но её положение в комнате меняется:
     // после нового B прежняя полная A становится частичной. Проверяем текущую
     // геометрию A, не требуем снова дочитать до нового хвоста B.
@@ -1397,6 +1609,7 @@ class ChatController extends State<ChatPageWithRoom>
       _logSuppressedAfterInput('lifecycle-defer');
       return null;
     }
+    if (!_editTargetCurrent(readTarget, timeline, isFull)) return null;
     if (retry != null &&
         (!_readContextCurrent(
               retry.room,
@@ -1405,7 +1618,7 @@ class ChatController extends State<ChatPageWithRoom>
               retry.userId,
               retry.viewClient,
             ) ||
-            !_retryTargetVisible(timeline, targetId, isFull))) {
+            !_retryTargetVisible(timeline, readTarget, isFull))) {
       return null;
     }
 
@@ -1428,7 +1641,9 @@ class ChatController extends State<ChatPageWithRoom>
       final ackIndex = timeline.events.indexWhere(
         (e) => e.eventId == _lastAcknowledgedReadId,
       );
-      final targetIndex = timeline.events.indexOf(target);
+      final targetIndex = timeline.events.indexWhere(
+        (e) => e.eventId == targetId,
+      );
       if (ackIndex >= 0 && ackIndex <= targetIndex) return null;
     }
     final attempt = _readMarkerAttempts.putIfAbsent(
@@ -1439,7 +1654,7 @@ class ChatController extends State<ChatPageWithRoom>
         scope: scope,
         userId: userId,
         viewClient: viewClient,
-        targetId: targetId,
+        target: readTarget,
       ),
     );
     if (attempt.permanentFailure ||
@@ -1493,7 +1708,7 @@ class ChatController extends State<ChatPageWithRoom>
                 userId,
                 viewClient,
               ) ||
-              !_retryTargetVisible(timeline, targetId, isFull) ||
+              !_retryTargetVisible(timeline, readTarget, isFull) ||
               ScreenLockState.isLocked ||
               readableForeground(
                     lifecycle: WidgetsBinding.instance.lifecycleState,
@@ -1505,12 +1720,13 @@ class ChatController extends State<ChatPageWithRoom>
           }
         }
         if (!_readContextCurrent(
-          capturedRoom,
-          timeline,
-          scope,
-          userId,
-          viewClient,
-        )) {
+              capturedRoom,
+              timeline,
+              scope,
+              userId,
+              viewClient,
+            ) ||
+            !_editTargetCurrent(readTarget, timeline, isFull)) {
           return;
         }
         Logs().d(
@@ -1538,12 +1754,13 @@ class ChatController extends State<ChatPageWithRoom>
             // попадает сюда; новый запрос обслуживается координатором.
             .timeout(const Duration(seconds: 30));
         if (!_readContextCurrent(
-          capturedRoom,
-          timeline,
-          scope,
-          userId,
-          viewClient,
-        )) {
+              capturedRoom,
+              timeline,
+              scope,
+              userId,
+              viewClient,
+            ) ||
+            !_editTargetCurrent(readTarget, timeline, isFull)) {
           return;
         }
         attempt.acknowledged = true;
@@ -1569,9 +1786,14 @@ class ChatController extends State<ChatPageWithRoom>
         }
         // HTTP уже подтверждён. Медленный native badge не должен занять
         // координатор следующей квитанции или вызвать повторную отправку marker.
-        unawaited(AppBadge.refreshFrom(capturedClient).catchError((Object e) {
-          Logs().w('Не удалось обновить бейдж после подтверждения прочтения', e);
-        }));
+        unawaited(
+          AppBadge.refreshFrom(capturedClient).catchError((Object e) {
+            Logs().w(
+              'Не удалось обновить бейдж после подтверждения прочтения',
+              e,
+            );
+          }),
+        );
       } catch (e) {
         Logs().w('Failed to set read marker', e);
         final status = e is MatrixException ? e.response?.statusCode : null;
@@ -1597,7 +1819,10 @@ class ChatController extends State<ChatPageWithRoom>
           attempt.timer = null;
           if (!mounted) return;
           _readMarkerSender.request(
-            () => _sendReadMarkerNow(eventId: targetId, retry: attempt),
+            () => _sendReadMarkerNow(
+              eventId: attempt.target.visibleRowId,
+              retry: attempt,
+            ),
             // Старый retry не вытесняет более новое пользовательское намерение.
             replacePending: false,
           );
@@ -1617,6 +1842,8 @@ class ChatController extends State<ChatPageWithRoom>
 
   @override
   void dispose() {
+    _readVersionGeneration++;
+    _readVersions.clear();
     // Иначе отложенная на 500 мс запись черновика дёргает Matrix.of(context) на
     // уже мёртвом State (гонка «набрал текст → сразу вышел из чата»).
     _storeInputTimeoutTimer?.cancel();
@@ -3775,7 +4002,7 @@ class _ReadMarkerAttempt {
   final String? scope;
   final String? userId;
   final Client viewClient;
-  final String targetId;
+  final ReadMarkerTarget target;
   int sends = 0;
   bool acknowledged = false;
   bool permanentFailure = false;
@@ -3789,6 +4016,6 @@ class _ReadMarkerAttempt {
     required this.scope,
     required this.userId,
     required this.viewClient,
-    required this.targetId,
+    required this.target,
   });
 }

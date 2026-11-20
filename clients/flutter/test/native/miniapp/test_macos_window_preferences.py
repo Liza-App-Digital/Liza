@@ -36,6 +36,59 @@ class MacOSWindowPreferencesTest(unittest.TestCase):
             return subprocess.run([str(binary), *arguments], check=True,
                                   capture_output=True, text=True, timeout=15)
 
+    def test_monitor_record_restart_validation_and_workarea_geometry(self):
+        # AC:RL-miniapp-detached-window/64 AC:RL-miniapp-detached-window/65
+        # AC:RL-miniapp-detached-window/66 AC:RL-miniapp-detached-window/67
+        # AC:RL-miniapp-detached-window/68 AC:RL-miniapp-detached-window/70
+        # AC:RL-miniapp-detached-window/71
+        suite = 'liza.miniapp.monitor.test.' + str(uuid.uuid4())
+        harness = r'''
+let suite = CommandLine.arguments[1]
+let defaults = UserDefaults(suiteName: suite)!
+let prefs = MiniAppWindowPreferences(defaults: defaults)
+let context = MiniAppGeometryContext(accountUserId: "@monitor:test", kind: "miniApp", generation: 1)
+let chosen = MiniAppMonitorPlacement(monitor: "AB515ED2-516B-4EEC-B388-1E9138DF6899",
+  size: NSSize(width: 783, height: 642), position: NSPoint(x: 0.8, y: 0.25))
+if CommandLine.arguments[2] == "write" {
+  prefs.writePlacement(account: context.accountUserId, placement: chosen)
+  defaults.synchronize()
+} else {
+  defer { defaults.removePersistentDomain(forName: suite); defaults.synchronize() }
+  let saved = prefs.readPlacement(context)!
+  precondition(saved.monitor == chosen.monitor && saved.size == chosen.size && saved.position == chosen.position)
+  let html = MiniAppGeometryContext(accountUserId: context.accountUserId, kind: "html", generation: 2)
+  let other = MiniAppGeometryContext(accountUserId: "@other:test", kind: "miniApp", generation: 1)
+  precondition(prefs.readPlacement(html) == nil && prefs.readPlacement(other) == nil)
+  // Finite dimensions/anchors and coherent version validation.
+  prefs.writePlacement(account: context.accountUserId, placement: MiniAppMonitorPlacement(
+    monitor: "", size: chosen.size, position: chosen.position))
+  precondition(prefs.readPlacement(context)!.monitor == saved.monitor)
+  for area in [NSRect(x: -2560, y: 40, width: 2560, height: 1400),
+               NSRect(x: 100, y: -1200, width: 3840, height: 2160),
+               NSRect(x: 0, y: 0, width: 320, height: 250)] {
+    let applied = saved.frame(area: area)
+    precondition(area.contains(applied))
+    let normalized = MiniAppWindowGeometry.position(frame: applied, main: area)!
+    if applied.width < area.width { precondition(abs(normalized.x - saved.position.x) < 0.000001) }
+    if applied.height < area.height { precondition(abs(normalized.y - saved.position.y) < 0.000001) }
+    let fallback = saved.frame(area: area, matched: false)
+    precondition(abs(fallback.midX - area.midX) < 0.000001 && abs(fallback.midY - area.midY) < 0.000001)
+    precondition(prefs.readPlacement(context)!.size == chosen.size) // applied clamp never writes
+  }
+  let key = "liza.miniapp.window.placement.v2." + Data(context.accountUserId.utf8).base64EncodedString()
+  for invalid: [String: Any] in [
+    ["version": 9, "monitor": "screen", "frame": [783.0,642.0,0.5,0.5]],
+    ["version": 2, "monitor": "screen", "frame": [783.0,642.0,2.0,0.5]],
+    ["version": 2, "monitor": "screen", "frame": [783.0,642.0]],
+    ["version": 2, "monitor": "screen", "frame": [-1.0,642.0,0.5,0.5]]] {
+    defaults.set(invalid, forKey: key)
+    precondition(prefs.readPlacement(context) == nil)
+  }
+}
+'''
+        self.run_swift(harness, (suite, 'write'))
+        self.run_swift(harness, (suite, 'read'))
+
     def test_geometry_main_cap_minimum_origin_and_fallback(self):
         # AC:RL-miniapp-detached-window/53 AC:RL-miniapp-detached-window/58 AC:RL-miniapp-detached-window/59 — исполняется production frame().
         self.run_swift(r'''
@@ -271,8 +324,8 @@ extension MiniAppWindowPlugin {
     window.setFrame(NSRect(origin: area.origin, size: NSSize(width: 700, height: 650)), display: false)
     center.post(name: NSWindow.didEndLiveResizeNotification, object: window)
     let chosen = window.frame.size
-    precondition(prefs.read(context) == chosen, "first manual shrink must persist despite initial isZoomed")
-    let next = MiniAppWindowGeometry.frame(preferred: prefs.read(context), main: area, area: area)
+    precondition(prefs.readPlacement(context)?.size == chosen, "first manual shrink must persist despite initial isZoomed")
+    let next = MiniAppWindowGeometry.frame(preferred: prefs.readPlacement(context)?.size, main: area, area: area)
     precondition(next.size == chosen)
 
     // Native notification без mouse event не допускает программный resize.
@@ -281,7 +334,7 @@ extension MiniAppWindowPlugin {
     center.post(name: NSWindow.willStartLiveResizeNotification, object: window)
     window.setFrame(NSRect(origin: area.origin, size: NSSize(width: 740, height: 660)), display: false)
     center.post(name: NSWindow.didEndLiveResizeNotification, object: window)
-    precondition(prefs.read(context) == chosen)
+    precondition(prefs.readPlacement(context)?.size == chosen)
     NSApp.currentEvent = mouseEvent
     // Toggle отменяет уже начатый gesture до программного zoom/restore.
     center.post(name: NSWindow.willStartLiveResizeNotification, object: window)
@@ -289,7 +342,7 @@ extension MiniAppWindowPlugin {
     toggle.method = "toggleMaximize"
     plugin.handle(toggle) { _ in }
     center.post(name: NSWindow.didEndLiveResizeNotification, object: window)
-    precondition(prefs.read(context) == chosen)
+    precondition(prefs.readPlacement(context)?.size == chosen)
 
     window.setFrame(NSRect(origin: area.origin, size: NSSize(width: 900, height: 700)), display: false)
     let before = window.frame
@@ -309,7 +362,7 @@ extension MiniAppWindowPlugin {
     window.minSize = NSSize(width: 1500, height: 1000)
     center.post(name: NSWindow.didChangeScreenNotification, object: window)
     precondition(window.minSize == NSSize(width: 393, height: 520), "screen change must refresh minimum")
-    precondition(prefs.read(context) == chosen, "navigation/screen fit must not overwrite preference")
+    precondition(prefs.readPlacement(context)?.size == chosen, "navigation/screen fit must not overwrite preference")
   }
 }
 MiniAppWindowPlugin.regression()
@@ -409,8 +462,9 @@ extension MiniAppWindowPlugin {
     plugin.handle(drag) { _ in }
     let context = plugin.geometryContext
     precondition(plugin.preferences.read(context) == nil, "move-only не переписывает размер")
-    precondition(plugin.preferences.readPosition(context) ==
-      MiniAppWindowGeometry.position(frame: chosen, main: main.frame), "ручная позиция потеряна")
+    precondition(plugin.preferences.readPlacement(context)?.size == chosenSize, "первый move фиксирует размер")
+    precondition(plugin.preferences.readPlacement(context)?.position ==
+      MiniAppWindowGeometry.position(frame: chosen, main: area), "ручная позиция потеряна")
     plugin.preferences.write(account: context.accountUserId, size: chosenSize)
     let reopened = ShiftOnShowWindow(contentRect: main.frame, styleMask: [.titled, .resizable],
       backing: .buffered, defer: false)
@@ -421,19 +475,19 @@ extension MiniAppWindowPlugin {
     NSApp.windows = [main, reopened]
     next.handle(call) { _ in }
     precondition(reopened.frame == chosen, "новое окно не восстановило ручную позицию")
-    let savedPosition = next.preferences.readPosition(context)
+    let savedPlacement = next.preferences.readPlacement(context)
     reopened.setFrameOrigin(main.frame.origin)
     let staleGeneration = next.moveGeneration
     next.observeGeometry()
     NotificationCenter.default.post(name: NSApplication.didResignActiveNotification,
                                     object: NSApplication.shared)
     next.finishManualMove(reopened, context: context,
-      origin: chosen.origin, generation: staleGeneration)
-    precondition(next.preferences.readPosition(context) == savedPosition,
+      origin: chosen.origin, generation: staleGeneration, initialSize: chosenSize)
+    precondition(next.preferences.readPlacement(context) == savedPlacement,
                  "старое завершение после deactivate не должно менять позицию")
     let wrongContext = MiniAppGeometryContext(accountUserId: "@other:test", kind: "miniApp", generation: 1)
     next.finishManualMove(reopened, context: wrongContext,
-      origin: chosen.origin, generation: next.moveGeneration)
+      origin: chosen.origin, generation: next.moveGeneration, initialSize: chosenSize)
     precondition(next.preferences.readPosition(wrongContext) == nil)
 
 

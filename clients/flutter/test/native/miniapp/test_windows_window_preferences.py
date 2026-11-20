@@ -33,6 +33,7 @@ PREFIX = r'''
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <cwchar>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -40,8 +41,9 @@ PREFIX = r'''
 #include <string>
 #include <utility>
 #include <vector>
+#include <iterator>
 using LONG=int; using UINT=unsigned; using DWORD=unsigned; using BYTE=unsigned char;
-using HWND=int; using HMONITOR=int; using LONG_PTR=intptr_t; using LSTATUS=int;
+using HWND=int; using HMONITOR=void*; using LONG_PTR=intptr_t; using LSTATUS=int;
 using HKEY=const std::wstring*;
 constexpr HKEY HKEY_CURRENT_USER=nullptr;
 constexpr DWORD KEY_QUERY_VALUE=1, KEY_SET_VALUE=2, REG_BINARY=3;
@@ -49,10 +51,15 @@ constexpr int ERROR_SUCCESS=0;
 struct RECT { LONG left,top,right,bottom; };
 struct SIZE { LONG cx,cy; };
 struct MONITORINFO { UINT cbSize; RECT rcMonitor,rcWork; };
+struct MONITORINFOEXW : MONITORINFO { wchar_t szDevice[32]{}; };
+struct DISPLAY_DEVICEW { DWORD cb; wchar_t DeviceID[128]{}; };
+using BOOL=int; using HDC=void*; using LPRECT=RECT*; using LPARAM=intptr_t;
+#define CALLBACK
+constexpr int TRUE=1, EDD_GET_DEVICE_INTERFACE_NAME=1;
 struct WINDOWPLACEMENT { UINT length; RECT rcNormalPosition; };
 constexpr int GWL_EXSTYLE=1, WS_EX_TOOLWINDOW=2;
 constexpr int SM_CXSIZEFRAME=1, SM_CXPADDEDBORDER=2;
-constexpr UINT MONITOR_DEFAULTTONEAREST=2, SWP_NOZORDER=1, SWP_NOACTIVATE=2, SWP_NOSIZE=4;
+constexpr UINT MONITOR_DEFAULTTOPRIMARY=1, MONITOR_DEFAULTTONEAREST=2, SWP_NOZORDER=1, SWP_NOACTIVATE=2, SWP_NOSIZE=4;
 struct RegistryValue { DWORD type; std::vector<BYTE> bytes; };
 std::map<std::wstring,std::map<std::wstring,RegistryValue>> registry;
 int reads=0,writes=0,closed=0;
@@ -95,10 +102,37 @@ bool iconic=false, toolwindow=false, zoomed=false;
 std::vector<UINT> placements;
 HWND MiniAppMainWindow() { return main_window; }
 std::optional<RECT> MainWindowFrame();
-HMONITOR MonitorFromWindow(HWND window,UINT) { return window==1 ? 1 : 2; }
+bool monitor_mode=false, external_connected=true, duplicate_identity=false, fail_external_area=false;
+RECT external_area{-2560,-400,0,1040};
+UINT external_dpi=144;
+int child_monitor=2;
+HMONITOR MonitorFromWindow(HWND window,UINT) {
+  return reinterpret_cast<HMONITOR>(window==1 ? 1 : monitor_mode ? child_monitor : 2);
+}
+HMONITOR MonitorFromWindow(std::nullptr_t,UINT) { return reinterpret_cast<HMONITOR>(1); }
 bool GetMonitorInfo(HMONITOR monitor,MONITORINFO* info) {
-  info->rcWork=monitor==1 ? main_area : child_area;
-  info->rcMonitor=monitor==1 ? main_monitor : child_area;
+  if(fail_external_area && monitor==reinterpret_cast<HMONITOR>(2)) return false;
+  info->rcWork=monitor==reinterpret_cast<HMONITOR>(1) ? main_area : monitor_mode ? external_area : child_area;
+  info->rcMonitor=monitor==reinterpret_cast<HMONITOR>(1) ? main_monitor : child_area;
+  return true;
+}
+HMONITOR MonitorFromRect(const RECT* rect,UINT) {
+  return reinterpret_cast<HMONITOR>(monitor_mode && rect->left < 0 ? 2 : 1);
+}
+bool GetMonitorInfoW(HMONITOR monitor,MONITORINFO* base) {
+  auto* info=reinterpret_cast<MONITORINFOEXW*>(base);
+  GetMonitorInfo(monitor,info);
+  if(monitor_mode && monitor==reinterpret_cast<HMONITOR>(2)) info->rcWork=external_area;
+  std::wcscpy(info->szDevice,monitor==reinterpret_cast<HMONITOR>(1) ? L"DISPLAY1" : L"DISPLAY2");
+  return true;
+}
+bool EnumDisplayDevicesW(const wchar_t* name,DWORD,DISPLAY_DEVICEW* device,DWORD) {
+  std::wcscpy(device->DeviceID,std::wstring(name)==L"DISPLAY1" || duplicate_identity ? L"stable-main" : L"stable-external");
+  return true;
+}
+bool EnumDisplayMonitors(void*,void*,BOOL (*callback)(HMONITOR,HDC,LPRECT,LPARAM),LPARAM data) {
+  callback(reinterpret_cast<HMONITOR>(1),nullptr,nullptr,data);
+  if(external_connected) callback(reinterpret_cast<HMONITOR>(2),nullptr,nullptr,data);
   return true;
 }
 bool IsIconic(HWND window) { return window==1 && iconic; }
@@ -116,8 +150,15 @@ int MulDiv(int value,UINT numerator,int denominator) {
 LONG GetSystemMetricsForDpi(int metric,UINT dpi) { return MulDiv(metric==1 ? 8 : 4,dpi,96); }
 bool SetWindowPos(HWND,std::nullptr_t,LONG x,LONG y,LONG w,LONG h,UINT flags) {
   placements.push_back(flags);
-  if (!(flags & SWP_NOSIZE)) child_frame={x,y,x+w,y+h};
-  child_dpi=main_dpi; child_area=main_area;
+  if (flags & SWP_NOSIZE) { w=child_frame.right-child_frame.left; h=child_frame.bottom-child_frame.top; }
+  child_frame={x,y,x+w,y+h};
+  const auto overlap=[&](const RECT& area) {
+    return double(std::max(0,std::min(child_frame.right,area.right)-std::max(x,area.left))) *
+        std::max(0,std::min(child_frame.bottom,area.bottom)-std::max(y,area.top));
+  };
+  if (monitor_mode && external_connected && overlap(external_area)>overlap(main_area)) {
+    child_monitor=2; child_dpi=external_dpi; child_area=external_area;
+  } else { child_monitor=1; child_dpi=main_dpi; child_area=main_area; }
   return true;
 }
 '''
@@ -139,93 +180,86 @@ void Drag(GeometryState& state,int w,int h,UINT dpi=96) {
   CompleteManualResize(state,child_frame,true);
 }
 void PositionCases() {
-  // AC:RL-miniapp-detached-window/61 — завершённый move-only восстанавливает
-  // позицию справа; отдельное предпочтение размера не перезаписывается.
-  const auto a=Account("@position:one"), b=Account("@position:two");
-  auto html=a; html.mini_app=false;
-  auto unknown=a; unknown.account="";
-  main_frame={100,100,1500,1100}; main_area={0,0,1920,1200};
-  main_window=1; child_dpi=96; main_dpi=96;
-  WritePreferredSize(a,{600,600});
-  assert(!ReadPreferredPosition(a));
-  auto reopened=MiniAppDefaultFrame(2,a);
-  assert(reopened.left==500 && reopened.top==300); // без позиции — центр
+  // AC:RL-miniapp-detached-window/64 — production move + snapshot + monitor restore.
+  monitor_mode=true; child_area=external_area; child_dpi=144; main_dpi=96;
+  main_area={0,0,1920,1040}; main_frame={100,100,580,620};
+  const auto a=Account("@monitor:test"), b=Account("@other-monitor:test");
   GeometryState state; BindGeometry(state,a); state.presented=true;
-  child_frame=reopened;
-  const int size_writes_before=value_writes[L"FrameSizeDp"];
-  BeginManualResize(state,child_frame,true);
-  child_frame={900,400,1500,1000};
-  CaptureManualResize(state,child_frame,96,true);
+  child_frame={-2000,-100,-800,800}; // 800x600dp before first move
+  BeginManualResize(state,child_frame,true,144);
+  child_frame={-1900,0,-700,900};
+  CaptureManualResize(state,child_frame,144,true);
   CompleteManualResize(state,child_frame,true);
-  assert(value_writes[L"FrameSizeDp"]==size_writes_before);
-  PositionIs(a,1,0.75); SizeIs(ReadPreferredSize(a),600,600);
-  reopened=MiniAppDefaultFrame(2,a);
-  assert(reopened.left==900 && reopened.top==400);
-  GeometryState second; BindGeometry(second,a); second.presented=true;
-  BeginManualResize(state,{100,100,700,700},true);
-  CaptureManualResize(state,{900,400,1500,1000},96,true);
-  BeginManualResize(second,{100,100,700,700},true);
-  CaptureManualResize(second,{500,200,1100,800},96,true);
-  CompleteManualResize(second,{500,200,1100,800},true);
-  PositionIs(a,0.5,0.25);
-  CompleteManualResize(state,{900,400,1500,1000},true);
-  PositionIs(a,1,0.75); // последнее завершение побеждает между окнами аккаунта
-  // Новый контекст, другой main/DPI и отрицательные координаты монитора.
-  GeometryState fresh; BindGeometry(fresh,a);
-  main_frame={-1800,-1000,-200,400}; main_area={-1920,-1080,0,480}; child_dpi=144;
-  reopened=MiniAppDefaultFrame(2,fresh.binding);
-  assert(reopened.left==-1100 && reopened.top==-625);
-  FrameIs(reopened,900,900); PositionIs(a,1,0.75);
-  const int writes_before_rejected=writes;
-  WritePreferredPosition(html,{0,1}); WritePreferredPosition(unknown,{0,1});
-  assert(!ReadPreferredPosition(html) && !ReadPreferredPosition(unknown));
-  assert(!ReadPreferredPosition(b));
-  assert(writes==writes_before_rejected);
-  for (auto invalid : {PreferredPosition{-0.1,0.5}, PreferredPosition{0.5,1.1},
-      PreferredPosition{std::numeric_limits<double>::infinity(),0.5},
-      PreferredPosition{0.5,std::numeric_limits<double>::quiet_NaN()}}) {
-    WritePreferredPosition(b,invalid); assert(!ReadPreferredPosition(b));
-    const double coordinates[2]{invalid.x,invalid.y};
-    const auto* bytes=reinterpret_cast<const BYTE*>(coordinates);
-    registry[PreferenceKey(b)][L"FramePositionNormalized"]={
-        REG_BINARY,std::vector<BYTE>(bytes,bytes+sizeof(coordinates))};
-    assert(!ReadPreferredPosition(b)); registry.erase(PreferenceKey(b));
+  auto placement=ReadMonitorPlacement(a);
+  assert(placement && std::wstring(placement->monitor)==L"path:stable-external");
+  assert(placement->size.width==800 && placement->size.height==600);
+  assert(!ReadMonitorPlacement(b));
+  auto restored=MiniAppDefaultFrame(2,a);
+  assert(SameFrame(restored,child_frame));
+  // Moving/resizing Liza does not influence the saved geometry.
+  main_frame={800,600,1000,800};
+  assert(SameFrame(MiniAppDefaultFrame(2,a),restored));
+  g_visibility[2].geometry.binding=a;
+  auto minimum=MinimumWindowSize(2); assert(minimum.cx==590 && minimum.cy==780);
+  // AC:RL-miniapp-detached-window/65 — missing monitor fallback never rewrites tuple.
+  const auto saved=registry[PreferenceKey(a)][L"MonitorPlacementV2"].bytes;
+  const auto count=writes;
+  external_connected=false; child_dpi=96;
+  auto fallback=MiniAppDefaultFrame(2,a);
+  assert(fallback.left>=0 && fallback.right<=1920);
+  FrameIs(fallback,800,600);
+  assert(writes==count && registry[PreferenceKey(a)][L"MonitorPlacementV2"].bytes==saved);
+  external_connected=true; child_dpi=144;
+  assert(SameFrame(MiniAppDefaultFrame(2,a),restored));
+  fail_external_area=true; // identity lookup succeeds, workarea handle becomes stale
+  const auto hotplug=MiniAppDefaultFrame(2,a);
+  assert(hotplug.left>=0 && hotplug.right<=main_area.right && hotplug.bottom<=main_area.bottom);
+  assert(hotplug.right>hotplug.left && hotplug.bottom>hotplug.top && writes==count);
+  fail_external_area=false;
+  // Changed workarea uses normalized anchor; logical size unchanged, no write.
+  const auto old_external=external_area; external_area={-1280,0,0,800};
+  const auto clamped=MiniAppDefaultFrame(2,a);
+  assert(clamped.left>=-1280 && clamped.right<=0 && clamped.bottom<=800);
+  assert(writes==count);
+  // AC:RL-miniapp-detached-window/66 — move under temporary clamp preserves preferred.
+  child_frame=clamped; BeginManualResize(state,child_frame,true,144);
+  child_frame.left-=1; child_frame.right-=1;
+  CaptureManualResize(state,child_frame,144,true); CompleteManualResize(state,child_frame,true);
+  placement=ReadMonitorPlacement(a); assert(placement->size.width==800 && placement->size.height==600);
+  external_area=old_external; child_area=external_area;
+  // AC:RL-miniapp-detached-window/67 — malformed snapshot ignored as a whole.
+  auto bad=*placement; bad.version=3;
+  const int before_bad=writes; WriteMonitorPlacement(a,bad); assert(writes==before_bad);
+  bad=*placement; bad.position.x=std::numeric_limits<double>::quiet_NaN();
+  WriteMonitorPlacement(a,bad); assert(writes==before_bad);
+  registry[PreferenceKey(b)][L"MonitorPlacementV2"]={REG_BINARY,{1,2,3}};
+  assert(!ReadMonitorPlacement(b));
+  duplicate_identity=true; assert(!FindMonitor(L"path:stable-main")); duplicate_identity=false;
+  // DPI second pass stays on selected monitor, independent from Liza.
+  child_dpi=96; child_monitor=1; child_frame={0,0,3840,2160};
+  placements.clear(); PlaceDefault(2);
+  assert(placements.size()==2 && !(placements[0]&SWP_NOSIZE) && child_dpi==144 && child_frame.left<0);
+  FrameIs(child_frame,1200,900);
+  // AC:RL-miniapp-detached-window/69 — target left/above/right × DPI96/144/192.
+  const int before_matrix=writes;
+  const RECT targets[]{{-2560,-400,0,1040},{0,-1440,2560,0},{1920,0,4480,1440}};
+  for (const auto& area : targets) {
+    for (UINT dpi : {96u,144u,192u}) {
+      external_area=area; external_dpi=dpi;
+      child_dpi=96; child_monitor=1; child_frame={0,0,3840,2160};
+      PlaceDefault(2);
+      assert(child_monitor==2 && child_dpi==dpi);
+      FrameIs(child_frame,MulDiv(800,dpi,96),MulDiv(600,dpi,96));
+      assert(child_frame.left>=area.left && child_frame.right<=area.right &&
+             child_frame.top>=area.top && child_frame.bottom<=area.bottom);
+      const auto normalized=ReadMonitorPlacement(a)->position;
+      assert(child_frame.left==area.left+static_cast<LONG>(std::lround((area.right-area.left-(child_frame.right-child_frame.left))*normalized.x)));
+      assert(child_frame.top==area.top+static_cast<LONG>(std::lround((area.bottom-area.top-(child_frame.bottom-child_frame.top))*normalized.y)));
+    }
   }
-  for (const RegistryValue& invalid : {RegistryValue{REG_BINARY,{1,2,3}},
-      RegistryValue{REG_BINARY,std::vector<BYTE>(32)}, RegistryValue{999,std::vector<BYTE>(16)}}) {
-    registry[PreferenceKey(b)][L"FramePositionNormalized"]=invalid;
-    assert(!ReadPreferredPosition(b));
-  }
-  registry_error=true; WritePreferredPosition(b,{0,0}); assert(!ReadPreferredPosition(a));
-  registry_error=false; registry.erase(PreferenceKey(b));
-  // Полноразмерное окно без travel сохраняет центр по обеим осям.
-  main_frame={0,0,800,600}; main_area={0,0,1920,1200}; child_dpi=96;
-  child_frame={0,0,700,550};
-  BeginManualResize(state,child_frame,true);
-  child_frame={0,0,800,600}; CaptureManualResize(state,child_frame,96,true);
-  CompleteManualResize(state,child_frame,true);
-  PositionIs(a,0.5,0.5);
-  // Программная смена позиции после кандидата неоднозначна даже при том же
-  // размере: не записываем ни размер, ни позицию.
-  const int writes_before_fit=writes;
-  BeginManualResize(state,child_frame,true);
-  CaptureManualResize(state,{10,10,810,610},96,true);
-  CompleteManualResize(state,{20,20,820,620},true);
-  assert(writes==writes_before_fit);
-  // Частично невидимый main: frame внутри фактического пересечения с workarea,
-  // даже ниже обычного минимума. Автоподгонка не меняет предпочтения.
-  WritePreferredSize(a,{600,600}); WritePreferredPosition(a,{1,0});
-  const int writes_before_clamp=writes;
-  for (const RECT frame : {RECT{-400,-300,1000,700}, RECT{900,500,1800,1200}}) {
-    main_frame=frame; main_area={0,0,1200,800};
-    reopened=MiniAppDefaultFrame(2,a);
-    assert(reopened.left>=std::max(frame.left,main_area.left));
-    assert(reopened.top>=std::max(frame.top,main_area.top));
-    assert(reopened.right<=std::min(frame.right,main_area.right));
-    assert(reopened.bottom<=std::min(frame.bottom,main_area.bottom));
-  }
-  FrameIs(reopened,300,300);
-  assert(writes==writes_before_clamp); SizeIs(ReadPreferredSize(a),600,600); PositionIs(a,1,0);
+  assert(writes==before_matrix);
+  assert(value_writes[L"MonitorPlacementV2"]>0);
+  monitor_mode=false; main_area={0,0,1920,1040}; child_area=main_area;
 }
 void MessageDpiCases() {
   // AC:RL-miniapp-detached-window/61 — исполняются реальные ветки WndProc:
@@ -503,12 +537,16 @@ class WindowsPreferencesTest(unittest.TestCase):
     def test_extracted_production_geometry_registry_and_gesture_gate(self):
         source = WINDOWS.read_text()
         structs = '\n'.join(extract(source, f'struct {name} {{') for name in [
-            'GeometryBinding', 'PreferredSize', 'PreferredPosition', 'GeometryState'])
+            'GeometryBinding', 'PreferredSize', 'PreferredPosition', 'MonitorPlacement', 'MonitorSearch', 'GeometryState'])
         preference_functions = '\n'.join(extract(source, signature) for signature in [
             'bool ValidPreferredSize(', 'std::wstring PreferenceKey(',
             'std::optional<PreferredSize> ReadPreferredSize(', 'void WritePreferredSize(',
             'bool ValidPreferredPosition(', 'std::optional<PreferredPosition> ReadPreferredPosition(',
-            'void WritePreferredPosition(', 'double NormalizedPosition(', 'bool SameFrame(',
+            'void WritePreferredPosition(', 'double NormalizedPosition(',
+            'bool ValidMonitorPlacement(', 'std::optional<MonitorPlacement> ReadMonitorPlacement(',
+            'void WriteMonitorPlacement(', 'std::wstring MonitorIdentity(',
+            'BOOL CALLBACK MatchMonitor(', 'HMONITOR FindMonitor(',
+            'void SaveMonitorPlacement(', 'bool SameFrame(',
             'void CancelManualResize(', 'void DpiChangedManualResize(', 'void BindGeometry(', 'bool SameBinding(',
             'bool SameFrameSize(', 'void BeginManualResize(', 'void CaptureManualResize(', 'void CompleteManualResize('])
         observer = '\nstruct Observer { GeometryState geometry; bool in_size_move=false; }; std::map<HWND,Observer> g_visibility;\n'
@@ -517,7 +555,7 @@ class WindowsPreferencesTest(unittest.TestCase):
             'LONG FrameInset(', 'RECT WorkArea(', 'SIZE FitWindowSize(',
             'std::optional<RECT> MainWindowFrame(', 'RECT MiniAppVisibleArea(', 'SIZE MiniAppAvailableSize(',
             'SIZE MinimumWindowSize(', 'void GrowToMinimum(', 'RECT DefaultFrame(',
-            'RECT MiniAppDefaultFrame(', 'RECT PresentationFrame(', 'void PlaceDefault('])
+            'RECT MiniAppDefaultFrame(', 'RECT PresentationFrame(', 'bool HasMonitorPlacement(', 'void PlaceDefault('])
         proc = extract(source, 'LRESULT CALLBACK MiniAppVisibilityProc(')
         gate_start = proc.index('  auto& geometry = found->second.geometry;')
         gate_end = proc.index('  const auto observer = found->second;', gate_start)
@@ -536,7 +574,7 @@ void DispatchGeometry(UINT message, uintptr_t wparam=0, intptr_t lparam=0) {
         self.assertIsNotNone(compiler, 'Нужен host C++ compiler')
         with tempfile.TemporaryDirectory() as directory:
             cpp, binary = Path(directory) / 'guard.cpp', Path(directory) / 'guard'
-            cpp.write_text(PREFIX + structs + preference_functions + observer + constants + geometry_functions + message_gate + SUFFIX)
+            cpp.write_text(PREFIX + '\nRECT WorkArea(HMONITOR);\n' + structs + preference_functions + observer + constants + geometry_functions + message_gate + SUFFIX)
             compiled = subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror', str(cpp), '-o', str(binary)],
                                       capture_output=True, text=True, timeout=60)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)

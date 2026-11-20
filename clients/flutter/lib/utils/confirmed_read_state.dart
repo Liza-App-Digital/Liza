@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:matrix/matrix.dart';
 
@@ -19,6 +21,19 @@ class ConfirmedReadState {
   }
 
   final revision = ValueNotifier<int>(0);
+  bool _projectionNotificationPending = false;
+
+  /// Сигнал пересчёта UI без изменения строгого ACK/счётчиков/receipt-state.
+  /// Один event-loop пакет гидратации даёт одно уведомление строкам и nav.
+  void invalidateProjection() {
+    if (_projectionNotificationPending) return;
+    _projectionNotificationPending = true;
+    Timer.run(() {
+      _projectionNotificationPending = false;
+      revision.value++;
+    });
+  }
+
   final Map<String, _RoomReadState> _rooms = {};
   String? _userId;
 

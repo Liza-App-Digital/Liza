@@ -15,6 +15,7 @@ import 'package:liza/utils/chat_scroll_geometry.dart';
 import 'package:liza/utils/formatting_text_controller.dart';
 import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/widgets/matrix.dart' as liza_matrix;
+import 'package:liza/widgets/read_version_witness.dart';
 
 import '../../utils/test_client.dart';
 
@@ -54,6 +55,12 @@ class _FakeChatController extends Fake implements ChatController {
   List<Event> selectedEvents = [];
   @override
   final Set<String> expandedEventIds = {};
+
+  // Этот страж проверяет позиционирование обычных сообщений. Квитанции
+  // редакций проверяет actual Controller в read_marker_ack_consistency_test.
+  @override
+  ValueChanged<ReadVersionEvidence> readVersionObserver(Timeline timeline) =>
+      (_) {};
 
   @override
   final FormattingTextEditingController sendController =

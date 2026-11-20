@@ -53,6 +53,7 @@ class ChatEventList extends StatelessWidget {
       threadId: controller.activeThreadId,
     );
     final animateInEventIndex = controller.animateInEventIndex;
+    final onReadVersion = controller.readVersionObserver(timeline);
 
     // create a map of eventId --> index to greatly improve performance of
     // ListView's findChildIndexCallback
@@ -211,6 +212,7 @@ class ChatEventList extends StatelessWidget {
                   !PlatformInfos.isMobile && !event.room.isContentProtected,
               child: Message(
                 event,
+                onReadVersion: onReadVersion,
                 bubbleKey: controller.bubbleKeyOf(event.eventId),
                 onContextMenu: controller.onMessageContextMenu,
                 animateIn: animateIn,

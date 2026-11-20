@@ -354,6 +354,10 @@ abstract final class AppBadge {
     String? ownerName, {
     void Function()? lateResult,
   }) async {
+    // В браузере нет нативного badge/App Group. Не обращаемся к dart:io и
+    // не выдаём пропуск за применённую запись (_writeSeq остаётся прежним).
+    if (kIsWeb) return;
+
     Future<bool> bounded(Future<void> native) async {
       // Следующая команда не зависит от прихода callback предыдущей. Поздний
       // результат не меняет writeSeq/permission latch завершённой операции.

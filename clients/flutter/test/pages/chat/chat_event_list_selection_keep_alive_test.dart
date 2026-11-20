@@ -14,6 +14,7 @@ import 'package:liza/pages/chat/chat.dart';
 import 'package:liza/pages/chat/chat_event_list.dart';
 import 'package:liza/utils/channel_peek.dart';
 import 'package:liza/widgets/matrix.dart' as liza_matrix;
+import 'package:liza/widgets/read_version_witness.dart';
 
 import '../../utils/test_client.dart';
 
@@ -53,6 +54,11 @@ class _FakeChatController extends Fake implements ChatController {
   List<Event> selectedEvents = [];
   @override
   final Set<String> expandedEventIds = {};
+
+  // Здесь проверяется lifetime SelectionArea, не квитанция редакции.
+  @override
+  ValueChanged<ReadVersionEvidence> readVersionObserver(Timeline timeline) =>
+      (_) {};
 
   // Пустая лента сама просит историю после кадра.
   @override

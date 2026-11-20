@@ -12,6 +12,7 @@
 #include <optional>
 #include <memory>
 #include <map>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,6 +41,14 @@ struct PreferredPosition {
   double x;
   double y;
 };
+// Один REG_BINARY: версия, typed identity, размер dp и anchor принадлежат одному жесту.
+struct MonitorPlacement {
+  DWORD version = 2;
+  DWORD reserved = 0;
+  wchar_t monitor[256]{};
+  PreferredSize size{};
+  PreferredPosition position{};
+};
 struct GeometryState {
   GeometryBinding binding;
   bool presented = false;
@@ -49,6 +58,7 @@ struct GeometryState {
   GeometryBinding resize_binding;
   std::optional<PreferredSize> candidate;
   RECT initial_frame{};
+  PreferredSize initial_size{};
   RECT candidate_frame{};
 };
 
@@ -153,6 +163,77 @@ double NormalizedPosition(LONG offset, LONG travel) {
   return travel > 0 ? std::clamp(offset / static_cast<double>(travel), 0.0, 1.0) : 0.5;
 }
 
+bool ValidMonitorPlacement(const MonitorPlacement& value) {
+  const auto end = std::find(std::begin(value.monitor), std::end(value.monitor), L'\0');
+  return value.version == 2 && value.reserved == 0 && end != std::end(value.monitor) &&
+      (std::wstring(value.monitor).find(L"path:") == 0 ||
+       std::wstring(value.monitor).find(L"gdi:") == 0) &&
+      std::wstring(value.monitor).size() > 5 &&
+      ValidPreferredSize(value.size) && ValidPreferredPosition(value.position);
+}
+
+std::optional<MonitorPlacement> ReadMonitorPlacement(const GeometryBinding& binding) {
+  const auto key = PreferenceKey(binding);
+  if (key.empty()) return std::nullopt;
+  HKEY handle = nullptr;
+  if (::RegOpenKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, KEY_QUERY_VALUE,
+                      &handle) != ERROR_SUCCESS) return std::nullopt;
+  MonitorPlacement value{};
+  DWORD type = 0, bytes = sizeof(value);
+  const auto status = ::RegQueryValueExW(handle, L"MonitorPlacementV2", nullptr,
+      &type, reinterpret_cast<BYTE*>(&value), &bytes);
+  ::RegCloseKey(handle);
+  return status == ERROR_SUCCESS && type == REG_BINARY && bytes == sizeof(value) &&
+      ValidMonitorPlacement(value) ? std::optional<MonitorPlacement>(value) : std::nullopt;
+}
+
+void WriteMonitorPlacement(const GeometryBinding& binding, const MonitorPlacement& value) {
+  const auto key = PreferenceKey(binding);
+  if (key.empty() || !ValidMonitorPlacement(value)) return;
+  HKEY handle = nullptr;
+  if (::RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, 0,
+      KEY_SET_VALUE, nullptr, &handle, nullptr) != ERROR_SUCCESS) return;
+  ::RegSetValueExW(handle, L"MonitorPlacementV2", 0, REG_BINARY,
+      reinterpret_cast<const BYTE*>(&value), sizeof(value));
+  ::RegCloseKey(handle);
+}
+
+std::wstring MonitorIdentity(HMONITOR monitor) {
+  MONITORINFOEXW info{};
+  info.cbSize = sizeof(info);
+  if (!::GetMonitorInfoW(monitor, reinterpret_cast<MONITORINFO*>(&info))) return {};
+  DISPLAY_DEVICEW device{};
+  device.cb = sizeof(device);
+  if (::EnumDisplayDevicesW(info.szDevice, 0, &device, EDD_GET_DEVICE_INTERFACE_NAME) &&
+      device.DeviceID[0]) return std::wstring(L"path:") + device.DeviceID;
+  return std::wstring(L"gdi:") + info.szDevice;
+}
+
+struct MonitorSearch {
+  std::wstring identity;
+  HMONITOR match = nullptr;
+  int matches = 0;
+};
+
+BOOL CALLBACK MatchMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data) {
+  auto& search = *reinterpret_cast<MonitorSearch*>(data);
+  if (MonitorIdentity(monitor) == search.identity) {
+    search.match = monitor;
+    ++search.matches;
+  }
+  return TRUE;
+}
+
+HMONITOR FindMonitor(const std::wstring& identity) {
+  MonitorSearch search{identity};
+  if (!::EnumDisplayMonitors(nullptr, nullptr, MatchMonitor,
+                            reinterpret_cast<LPARAM>(&search))) return nullptr;
+  return search.matches == 1 ? search.match : nullptr;
+}
+
+void SaveMonitorPlacement(const GeometryBinding& binding, const RECT& frame,
+                          const PreferredSize& size);
+
 void CancelManualResize(GeometryState& state) {
   state.resizing = false;
   state.manual_candidate = false;
@@ -189,13 +270,16 @@ bool SameFrame(const RECT& left, const RECT& right) {
 }
 
 void BeginManualResize(GeometryState& state, const RECT& initial_frame,
-                       bool normal_visible) {
+                       bool normal_visible, UINT dpi = 96) {
   CancelManualResize(state);
   if (!state.presented || !normal_visible ||
       !state.binding.mini_app || state.binding.account.empty()) return;
   state.resizing = true;
   state.resize_binding = state.binding;
   state.initial_frame = initial_frame;
+  const double scale = (dpi ? dpi : 96) / 96.0;
+  state.initial_size = {(initial_frame.right - initial_frame.left) / scale,
+                        (initial_frame.bottom - initial_frame.top) / scale};
 }
 
 void CaptureManualResize(GeometryState& state, const RECT& frame, UINT dpi,
@@ -233,6 +317,12 @@ void CompleteManualResize(GeometryState& state, const RECT& final_frame,
         !SameFrameSize(final_frame, state.initial_frame)) {
       WritePreferredSize(state.resize_binding, *state.candidate);
     }
+    const auto previous = ReadMonitorPlacement(state.resize_binding);
+    const auto old_size = ReadPreferredSize(state.resize_binding);
+    const bool resized = state.candidate && !state.dpi_changed &&
+        !SameFrameSize(final_frame, state.initial_frame);
+    SaveMonitorPlacement(state.resize_binding, final_frame, resized ? *state.candidate :
+        previous ? previous->size : old_size.value_or(state.initial_size));
     if (const auto main = MainWindowFrame()) {
       WritePreferredPosition(state.resize_binding, {
           NormalizedPosition(final_frame.left - main->left,
@@ -277,9 +367,26 @@ LONG FrameInset(UINT dpi) {
 RECT WorkArea(HMONITOR monitor) {
   MONITORINFO info{};
   info.cbSize = sizeof(info);
-  ::GetMonitorInfo(monitor, &info);
+  if (!::GetMonitorInfo(monitor, &info)) return {};
   return info.rcWork;
 }
+
+void SaveMonitorPlacement(const GeometryBinding& binding, const RECT& frame,
+                          const PreferredSize& size) {
+  const auto monitor = ::MonitorFromRect(&frame, MONITOR_DEFAULTTONEAREST);
+  const auto identity = MonitorIdentity(monitor);
+  if (identity.empty() || identity.size() >= 256) return;
+  const auto area = WorkArea(monitor);
+  if (area.right <= area.left || area.bottom <= area.top) return;
+  MonitorPlacement value{};
+  std::copy(identity.begin(), identity.end(), value.monitor);
+  value.size = size;
+  value.position = {
+      NormalizedPosition(frame.left - area.left, area.right - area.left - (frame.right - frame.left)),
+      NormalizedPosition(frame.top - area.top, area.bottom - area.top - (frame.bottom - frame.top))};
+  WriteMonitorPlacement(binding, value);
+}
+
 
 // Размер окна под контент dp_w×dp_h, но не больше 90% рабочей области:
 // на 1366×768@125% минимум 800×600 иначе не влезает и окно не сдвинуть.
@@ -344,7 +451,10 @@ SIZE MinimumWindowSize(HWND window) {
   if (observer != g_visibility.end() && !observer->second.geometry.binding.mini_app) {
     return FitWindowSize(kMinWidth, kMinHeight, dpi, area);
   }
-  const SIZE available = MiniAppAvailableSize(area);
+  const bool independent = observer != g_visibility.end() &&
+      ReadMonitorPlacement(observer->second.geometry.binding).has_value();
+  const SIZE available = independent ? SIZE{area.right - area.left, area.bottom - area.top} :
+      MiniAppAvailableSize(area);
   return {std::min<LONG>(::MulDiv(kMiniAppMinWidth, dpi, 96), available.cx),
           std::min<LONG>(::MulDiv(kMiniAppMinHeight, dpi, 96), available.cy)};
 }
@@ -463,7 +573,7 @@ LRESULT CALLBACK MiniAppVisibilityProc(HWND window, UINT message,
     found->second.in_size_move = true;
     RECT initial_frame{};
     const bool measured = ::GetWindowRect(window, &initial_frame) != FALSE;
-    BeginManualResize(geometry, initial_frame, normal_visible && measured);
+    BeginManualResize(geometry, initial_frame, normal_visible && measured, ::GetDpiForWindow(window));
   }
   if (message == WM_SIZING || message == WM_MOVING) {
     // Запрос пользователя до любой программной GrowToMinimum / monitor-fit.
@@ -604,14 +714,34 @@ RECT DefaultFrame(HWND window) {
 
 RECT MiniAppDefaultFrame(HWND window, const GeometryBinding& binding) {
   const HWND main_window = MiniAppMainWindow();
-  const RECT area = WorkArea(::MonitorFromWindow(
+  const auto placement = ReadMonitorPlacement(binding);
+  auto saved_monitor = placement ? FindMonitor(placement->monitor) : nullptr;
+  RECT area = WorkArea(saved_monitor ? saved_monitor : ::MonitorFromWindow(
       main_window ? main_window : window, MONITOR_DEFAULTTONEAREST));
-  const auto main = MainWindowFrame();
+  if (placement && (area.right <= area.left || area.bottom <= area.top)) {
+    // Hotplug между перечислением и GetMonitorInfo: handle уже мог устареть.
+    saved_monitor = nullptr;
+    area = WorkArea(::MonitorFromWindow(main_window ? main_window : window,
+                                       MONITOR_DEFAULTTONEAREST));
+    if (area.right <= area.left || area.bottom <= area.top) {
+      area = WorkArea(::MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY));
+    }
+    if (area.right <= area.left || area.bottom <= area.top) {
+      // Нет пригодного снимка дисплеев: не устанавливаем нулевую рамку.
+      RECT current{};
+      if (::GetWindowRect(window, &current) && current.right > current.left && current.bottom > current.top) {
+        return current;
+      }
+      return {0, 0, 960, 700};
+    }
+  }
+  const auto main = placement ? std::optional<RECT>{} : MainWindowFrame();
   UINT dpi = ::GetDpiForWindow(window);
   if (!dpi) dpi = 96;
   const double scale = dpi / 96.0;
-  const SIZE available = MiniAppAvailableSize(area);
-  const auto preferred = ReadPreferredSize(binding);
+  const SIZE available = placement ? SIZE{area.right - area.left, area.bottom - area.top} :
+      MiniAppAvailableSize(area);
+  const auto preferred = placement ? std::optional<PreferredSize>(placement->size) : ReadPreferredSize(binding);
   const double desired_width = preferred ? preferred->width * scale :
       main ? main->right - main->left : 960 * scale;
   const double desired_height = preferred ? preferred->height * scale :
@@ -621,8 +751,9 @@ RECT MiniAppDefaultFrame(HWND window, const GeometryBinding& binding) {
   const LONG height = std::min<LONG>(available.cy,
       static_cast<LONG>(std::lround(std::max(desired_height, kMiniAppMinHeight * scale))));
   const RECT anchor = main.value_or(area);
-  const auto position = ReadPreferredPosition(binding).value_or(PreferredPosition{0.5, 0.5});
-  const RECT visible = MiniAppVisibleArea(area);
+  const auto position = placement ? (saved_monitor ? placement->position : PreferredPosition{0.5, 0.5}) :
+      ReadPreferredPosition(binding).value_or(PreferredPosition{0.5, 0.5});
+  const RECT visible = placement ? area : MiniAppVisibleArea(area);
   const LONG left = std::clamp(anchor.left + static_cast<LONG>(std::lround(
       (anchor.right - anchor.left - width) * position.x)),
       visible.left, visible.right - width);
@@ -639,14 +770,26 @@ RECT PresentationFrame(HWND window) {
   return binding.mini_app ? MiniAppDefaultFrame(window, binding) : DefaultFrame(window);
 }
 
-// Сначала перенос на монитор Лизы, потом размер: при переносе между
+bool HasMonitorPlacement(HWND window) {
+  const auto observer = g_visibility.find(window);
+  return observer != g_visibility.end() &&
+      ReadMonitorPlacement(observer->second.geometry.binding).has_value();
+}
+
+// Сначала перенос на выбранный монитор, потом размер: при переносе между
 // мониторами с разным DPI плагин в WM_DPICHANGED применяет предложенный
 // системой rect и перебил бы размер, заданный одним вызовом.
 void PlaceDefault(HWND window) {
   const UINT flags = SWP_NOZORDER | SWP_NOACTIVATE;
   RECT frame = PresentationFrame(window);
-  ::SetWindowPos(window, nullptr, frame.left, frame.top, 0, 0,
-                 flags | SWP_NOSIZE);
+  const bool independent = HasMonitorPlacement(window);
+  // Старая большая рамка при NOSIZE могла бы остаться преимущественно на
+  // соседнем мониторе. В новом режиме первый frame целиком внутри target,
+  // поэтому WM_DPICHANGED завершится до окончательного расчёта в его DPI.
+  ::SetWindowPos(window, nullptr, frame.left, frame.top,
+                 independent ? frame.right - frame.left : 0,
+                 independent ? frame.bottom - frame.top : 0,
+                 flags | (independent ? 0 : SWP_NOSIZE));
   frame = PresentationFrame(window);
   ::SetWindowPos(window, nullptr, frame.left, frame.top,
                  frame.right - frame.left, frame.bottom - frame.top, flags);

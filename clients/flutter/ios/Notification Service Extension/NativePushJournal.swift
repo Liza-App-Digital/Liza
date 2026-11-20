@@ -5,8 +5,9 @@ import CoreFoundation
 import UserNotifications
 
 /// Независимый App Group spool: отдельный атомарный файл на запись, а не
-/// UserDefaults read-modify-write. Lock общий у extension и Runner; contention
-/// не блокирует contentHandler. В журнал никогда не попадает payload/token.
+/// UserDefaults read-modify-write. Доступ Runner/NSE координируется Foundation:
+/// iOS защищает предоставленный accessor от suspension. Callback только enqueue.
+/// В журнал никогда не попадает payload/token.
 final class NativePushJournal {
     enum Stage: String, Codable {
         case received, localSubmission, localResult, presentation, deliveredObserved, removalRequested, removalObservedAbsent
@@ -130,12 +131,15 @@ final class NativePushJournal {
     static let ttlMs: Int64 = 7 * 24 * 60 * 60 * 1000
     let directory: URL
     private let clock: () -> Int64
+    private let makeCoordinator: () -> NSFileCoordinator
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(directory: URL, clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }) {
+    init(directory: URL, clock: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
+         makeCoordinator: @escaping () -> NSFileCoordinator = { NSFileCoordinator(filePresenter: nil) }) {
         self.directory = directory
         self.clock = clock
+        self.makeCoordinator = makeCoordinator
     }
 
     static var shared: NativePushJournal? {
@@ -180,6 +184,34 @@ final class NativePushJournal {
     func enqueue(_ stage: Stage, eventId: String? = nil, reason: Reason? = nil, value: Int? = nil,
                 sent: Int64? = nil, context: Context? = nil, outcome: Outcome? = nil,
                 presentationOptions: UInt? = nil, observedDate: Date? = nil, matchedRequestIds: [String]? = nil) -> Bool {
+        var entry = capture(stage, eventId: eventId, reason: reason, value: value, sent: sent,
+                              context: context, outcome: outcome, presentationOptions: presentationOptions, observedDate: observedDate,
+                              matchedRequestIds: matchedRequestIds)
+        entry.capture_policy = .async_best_effort
+        let captured = entry
+        return submit { self.write(captured, deferLoss: true) }
+    }
+
+    /// APNs callback не ждёт coordination и не передаёт raw token в очередь.
+    /// Сравнение fingerprint последовательно с записью, время — исходного callback.
+    @discardableResult
+    func enqueueToken(_ token: String, preferences prefs: UserDefaults = .standard) -> Bool {
+        let digest = Self.hash(token)
+        var entry = capture(.token)
+        entry.capture_policy = .async_best_effort
+        let captured = entry
+        return submit {
+            let key = "push.diagnostics.token_digest"
+            let old = prefs.string(forKey: key)
+            var entry = captured
+            entry.reason = old == nil ? .first : (old == digest ? .unchanged : .rotated)
+            guard self.write(entry, deferLoss: true) else { return false }
+            prefs.set(digest, forKey: key)
+            return true
+        }
+    }
+
+    private func submit(_ work: @escaping () -> Bool) -> Bool {
         guard Self.pendingLock.try() else {
             OSAtomicIncrement64Barrier(&Self.queueLoss); return false
         }
@@ -189,13 +221,8 @@ final class NativePushJournal {
         }
         Self.pending += 1
         Self.pendingLock.unlock()
-        var entry = capture(stage, eventId: eventId, reason: reason, value: value, sent: sent,
-                              context: context, outcome: outcome, presentationOptions: presentationOptions, observedDate: observedDate,
-                              matchedRequestIds: matchedRequestIds)
-        entry.capture_policy = .async_best_effort
-        let captured = entry
         Self.writerQueue.async {
-            if !self.write(captured, deferLoss: true) {
+            if !work() {
                 // Единственный счётчик async failure: включает недоступный
                 // каталог/open. Не удваиваем spool contention/write loss.
                 OSAtomicIncrement64Barrier(&Self.queueLoss)
@@ -249,19 +276,19 @@ final class NativePushJournal {
     }
 
     private func write(_ entry: Entry, deferLoss: Bool = false) -> Bool {
-        locked(fallback: false, reportLoss: !deferLoss) {
+        locked(fallback: false, reportLoss: !deferLoss) { directory in
             do {
                 let data = try encoder.encode(entry)
                 guard data.count <= Self.maxEntryBytes else {
-                    if !deferLoss { addLoss(1) }
+                    if !deferLoss { addLoss(1, in: directory) }
                     return false
                 }
                 try data.write(to: directory.appendingPathComponent(entry.id + ".json"), options: .atomic)
             } catch {
-                if !deferLoss { addLoss(1) }
+                if !deferLoss { addLoss(1, in: directory) }
                 return false
             }
-            _ = retained()
+            _ = retained(in: directory)
             return true
         }
     }
@@ -269,8 +296,8 @@ final class NativePushJournal {
     private func flushQueueLoss() {
         let count = OSAtomicAdd64Barrier(0, &Self.queueLoss)
         guard count > 0 else { return }
-        let persisted = locked(fallback: false) { () -> Bool in
-            return addLoss(Int(min(count, 2147483647)))
+        let persisted = locked(fallback: false) { directory -> Bool in
+            return addLoss(Int(min(count, 2147483647)), in: directory)
         }
         if persisted { _ = OSAtomicAdd64Barrier(-count, &Self.queueLoss) }
     }
@@ -290,9 +317,9 @@ final class NativePushJournal {
     func read() -> [[String: Any]]? {
         // Вызывается bridge с utility queue. Callback не использует barrier.
         Self.writerQueue.sync { flushQueueLoss() }
-        return locked(fallback: nil) {
-            var entries = retained().map { $0.1 }
-            let loss = lossCount()
+        return locked(fallback: nil) { directory in
+            var entries = retained(in: directory).map { $0.1 }
+            let loss = lossCount(in: directory)
             if loss > 0 {
                 entries.append(Entry(id: "native-diagnostic-loss", t: clock(), s: .diagnosticLoss,
                                      reason: .dropped, value: loss))
@@ -304,7 +331,7 @@ final class NativePushJournal {
         }
     }
 
-    private func locked<T>(fallback: T, reportLoss: Bool = false, _ body: () -> T) -> T {
+    private func locked<T>(fallback: T, reportLoss: Bool = false, _ body: (URL) -> T) -> T {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
@@ -313,22 +340,36 @@ final class NativePushJournal {
             var mutableDirectory = directory
             try mutableDirectory.setResourceValues(resource)
         } catch { return fallback }
-        let fd = open(directory.appendingPathComponent("journal.lock").path, O_CREAT | O_RDWR, 0o600)
-        guard fd >= 0 else { return fallback }
-        defer { close(fd) }
-        // Файловый I/O выполняется с вне-UI очереди Reader; writer не ждёт lock.
-        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-            if reportLoss { _ = concurrentLoss(increment: true) }
-            return fallback
+        var result = fallback
+        var accessed = false
+        var error: NSError?
+        // Новый coordinator на операцию, без общего purposeIdentifier/presenter.
+        // При grant Foundation даёт background task Runner И NSE. Без него iOS
+        // может убить suspended процесс, удерживающий flock (0xdead10cc).
+        makeCoordinator().coordinate(writingItemAt: directory, options: [], error: &error) { scopedDirectory in
+            accessed = true
+            let fd = open(scopedDirectory.appendingPathComponent("journal.lock").path, O_CREAT | O_RDWR, 0o600)
+            guard fd >= 0 else { return }
+            defer { close(fd) }
+            // Совместимость с участником старой версии, ещё не использующим
+            // coordination. Lock и весь IO завершаются ДО возврата accessor.
+            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+                if reportLoss { _ = concurrentLoss(in: scopedDirectory, increment: true) }
+                return
+            }
+            defer { flock(fd, LOCK_UN) }
+            result = body(scopedDirectory)
         }
-        defer { flock(fd, LOCK_UN) }
-        return body()
+        // Отмена до grant: не пытаться писать loss вне защищённого scope.
+        // Async failure уже считает submit; failed flush сохраняет свой backlog.
+        if !accessed && reportLoss { OSAtomicIncrement64Barrier(&Self.queueLoss) }
+        return result
     }
 
     /// Фиксированные 8 байт вместо массива loss-файлов. mmap + системный atomic
     /// работают между NSE/Runner процессами без ожидания journal.lock. msync
     /// сохраняет счётчик до возврата writer; сам callback не ждёт чужой lock.
-    private func concurrentLoss(increment: Bool = false) -> Int {
+    private func concurrentLoss(in directory: URL, increment: Bool = false) -> Int {
         let path = directory.appendingPathComponent("contention.count").path
         let fd = open(path, increment ? O_CREAT | O_RDWR : O_RDWR, 0o600)
         guard fd >= 0 else { return 0 }
@@ -352,18 +393,18 @@ final class NativePushJournal {
         return Int(max(0, min(2147483647, value)))
     }
 
-    private func lossCount() -> Int {
-        min(2147483647, baseLossCount() + concurrentLoss())
+    private func lossCount(in directory: URL) -> Int {
+        min(2147483647, baseLossCount(in: directory) + concurrentLoss(in: directory))
     }
-    private func baseLossCount() -> Int {
+    private func baseLossCount(in directory: URL) -> Int {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent("loss.count")),
               let raw = String(data: data, encoding: .utf8), let n = Int(raw) else { return 0 }
         return max(0, min(2147483647, n))
     }
     @discardableResult
-    private func addLoss(_ count: Int) -> Bool {
+    private func addLoss(_ count: Int, in directory: URL) -> Bool {
         guard count > 0 else { return true }
-        let data = Data(String(min(2147483647, baseLossCount() + count)).utf8)
+        let data = Data(String(min(2147483647, baseLossCount(in: directory) + count)).utf8)
         do {
             try data.write(to: directory.appendingPathComponent("loss.count"), options: .atomic)
             return true
@@ -379,7 +420,7 @@ final class NativePushJournal {
         return v
     }
 
-    private func retained() -> [(URL, Entry, Int)] {
+    private func retained(in directory: URL) -> [(URL, Entry, Int)] {
         let files = (try? FileManager.default.contentsOfDirectory(at: directory,
                     includingPropertiesForKeys: [.fileSizeKey])) ?? []
         var entries: [(URL, Entry, Int)] = []
@@ -428,7 +469,7 @@ final class NativePushJournal {
             try? FileManager.default.removeItem(at: removed.0)
             dropped += 1
         }
-        addLoss(dropped)
+        addLoss(dropped, in: directory)
         return entries
     }
 }

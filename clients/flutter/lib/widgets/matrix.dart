@@ -24,6 +24,7 @@ import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/utils/app_badge.dart';
+import 'package:liza/utils/unseen_messages.dart';
 import 'package:liza/utils/push_rule_defaults.dart';
 import 'package:liza/utils/client_manager.dart';
 import 'package:liza/utils/custom_http_client.dart';
@@ -531,6 +532,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
   final onKeyVerificationRequestSub = <String, StreamSubscription>{};
   final onNotification = <String, StreamSubscription>{};
   final onSyncBadgeUpdate = <String, StreamSubscription>{};
+  final _unseenProjections = <String, UnseenProjectionSubscription>{};
   final onSyncGhostSeen = <String, StreamSubscription>{};
   final _ghostSeenRooms = <String, Set<String>>{};
   // Не сбрасывается в _cancelSubs: иначе повторный вход до первого sync
@@ -879,6 +881,9 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     // sync-ребилд ChatListItem отрисует имя.
     unawaited(_prefetchDmHeroes(c));
 
+    // Функциональная гидратация для всех аккаунтов и платформ, включая web.
+    _unseenProjections[name] ??= UnseenProjectionSubscription(c);
+
     // Keep badge count in sync after each sync cycle (rate-limited).
     if (PlatformInfos.isMobile || PlatformInfos.isMacOS) {
       onSyncBadgeUpdate[name] ??= c.onSync.stream
@@ -920,6 +925,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
   }
 
   void _cancelSubs(String name) {
+    _unseenProjections.remove(name)?.dispose();
     onRoomKeyRequestSub[name]?.cancel();
     onRoomKeyRequestSub.remove(name);
     onKeyVerificationRequestSub[name]?.cancel();
@@ -1436,6 +1442,10 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    for (final projection in _unseenProjections.values) {
+      projection.dispose();
+    }
+    _unseenProjections.clear();
     _pushContract?.dispose();
     AppBadge.unbindPrimary(this);
     WidgetsBinding.instance.removeObserver(this);

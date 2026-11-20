@@ -233,7 +233,7 @@ public class ApnsPushPlugin: NSObject, FlutterPlugin {
 
     public static func didRegisterForRemoteNotifications(deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
-        NativePushJournal.shared?.token(token)
+        NativePushJournal.shared?.enqueueToken(token)
         pendingToken = token
         channel?.invokeMethod("onToken", arguments: token)
 
@@ -244,7 +244,7 @@ public class ApnsPushPlugin: NSObject, FlutterPlugin {
     }
 
     public static func didFailToRegisterForRemoteNotifications(error: Error) {
-        NativePushJournal.shared?.append(.token, reason: .registration_failed)
+        NativePushJournal.shared?.enqueue(.token, reason: .registration_failed)
         if let pending = pendingTokenResult {
             pending(FlutterError(
                 code: "REGISTRATION_FAILED",

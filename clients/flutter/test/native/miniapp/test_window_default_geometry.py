@@ -65,6 +65,7 @@ RECT main_area{}, child_area{}, frame{};
 UINT main_dpi=96, child_dpi=144;
 HWND main_window=1;
 struct GeometryBinding { bool mini_app=false; };
+bool HasMonitorPlacement(HWND) { return false; }
 struct GeometryState { GeometryBinding binding{}; };
 struct Observer { GeometryState geometry{}; };
 std::map<HWND,Observer> g_visibility{{1,{}},{2,{}}};
