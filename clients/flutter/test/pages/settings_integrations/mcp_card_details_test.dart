@@ -184,7 +184,7 @@ void main() {
     // У XL нет allowlist и он вообще не может быть включён для Лизы, поэтому
     // обещать тематики/примеры нечем — но адресата назвать ОБЯЗАНЫ, иначе
     // пользователь пойдёт писать команды не в тот чат.
-    expect(find.text(l10n.settingsMcpAddresseeXlBot), findsOneWidget);
+    expect(find.text(l10n.settingsMcpAddresseeLiza), findsOneWidget);
     expect(find.text(l10n.settingsMcpExamples), findsNothing,
         reason: 'у XL блока примеров быть не должно');
 

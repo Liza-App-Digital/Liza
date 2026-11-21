@@ -72,6 +72,10 @@ abstract class AppConfig {
   /// использует пароль и не обращается к внешнему OTP.
   static bool get phoneAuthEnabled => !isLocal;
 
+  /// Сервер, на который ведёт «Вход для проверяющих» (логин и пароль без
+  /// телефона и почты). Аккаунты для App Review заведены на общем инстансе.
+  static const String reviewerLoginHomeserver = 'user.liza.ru';
+
   static const String versionGateBaseUrl = 'https://versions.tech.liza.ru';
 
   /// Мониторинг ошибок (Sentry-совместимый бэкенд GlitchTip).

@@ -108,8 +108,9 @@ class InvitationSelectionView extends StatelessWidget {
                                     profile.userId,
                                     searchResultLabel(
                                       profile,
-                                      handles:
-                                          Matrix.of(context).userHandleService,
+                                      handles: Matrix.of(
+                                        context,
+                                      ).userHandleService,
                                       unknown: L10n.of(context).user,
                                     ).title,
                                   ),
@@ -118,43 +119,34 @@ class InvitationSelectionView extends StatelessWidget {
                           ),
                         ),
                       )
-                    : FutureBuilder<List<User>>(
-                        future: controller.getContacts(context),
-                        builder: (BuildContext context, snapshot) {
-                          if (!snapshot.hasData) {
-                            return const Center(
-                              child: CircularProgressIndicator.adaptive(
-                                strokeWidth: 2,
-                              ),
-                            );
-                          }
-                          final contacts = snapshot.data!;
+                    : Builder(
+                        builder: (context) {
+                          final contacts = controller.getContacts(context);
                           return ListView.builder(
                             physics: const NeverScrollableScrollPhysics(),
                             shrinkWrap: true,
                             itemCount: contacts.length,
-                            itemBuilder: (BuildContext context, int i) =>
-                                _InviteContactListTile(
-                                  user: contacts[i],
-                                  profile: Profile(
-                                    avatarUrl: contacts[i].avatarUrl,
-                                    displayName:
-                                        contacts[i].displayName ??
-                                        contacts[i].id.localpart ??
-                                        L10n.of(context).user,
-                                    userId: contacts[i].id,
-                                  ),
-                                  isMember: participants.contains(
-                                    contacts[i].id,
-                                  ),
-                                  onTap: () => controller.inviteAction(
-                                    context,
-                                    contacts[i].id,
-                                    contacts[i].displayName ??
-                                        contacts[i].id.localpart ??
-                                        L10n.of(context).user,
-                                  ),
+                            itemBuilder: (BuildContext context, int i) {
+                              final contact = contacts[i];
+                              final name =
+                                  contact.displayName ??
+                                  contact.userId.localpart ??
+                                  L10n.of(context).user;
+                              return _InviteContactListTile(
+                                key: ValueKey(contact.userId),
+                                profile: Profile(
+                                  avatarUrl: contact.avatarUrl,
+                                  displayName: name,
+                                  userId: contact.userId,
                                 ),
+                                isMember: participants.contains(contact.userId),
+                                onTap: () => controller.inviteAction(
+                                  context,
+                                  contact.userId,
+                                  name,
+                                ),
+                              );
+                            },
                           );
                         },
                       );
@@ -169,13 +161,11 @@ class InvitationSelectionView extends StatelessWidget {
 
 class _InviteContactListTile extends StatelessWidget {
   final Profile profile;
-  final User? user;
   final bool isMember;
   final void Function() onTap;
 
   const _InviteContactListTile({
     required this.profile,
-    this.user,
     required this.isMember,
     required this.onTap,
     super.key,
@@ -188,7 +178,11 @@ class _InviteContactListTile extends StatelessWidget {
     final handles = Matrix.of(context).userHandleService;
     // Имя → @ник → localpart: находка по нику без подтянувшегося профиля
     // показывается ником, а не техническим user_<hex8> (LABA-2552).
-    final label = searchResultLabel(profile, handles: handles, unknown: l10n.user);
+    final label = searchResultLabel(
+      profile,
+      handles: handles,
+      unknown: l10n.user,
+    );
 
     return ListTile(
       leading: Avatar(
@@ -203,11 +197,7 @@ class _InviteContactListTile extends StatelessWidget {
         runSpacing: 2,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          Text(
-            label.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
+          Text(label.title, maxLines: 1, overflow: TextOverflow.ellipsis),
           UserRoleBadge(
             userId: profile.userId,
             hideRoleCodes: const {

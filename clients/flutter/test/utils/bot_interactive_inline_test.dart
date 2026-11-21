@@ -143,8 +143,10 @@ void main() {
         send: (c, txid) async => r'$sent',
       );
       controller.update('@liza скажи что-нибудь');
-      expect(controller.loading, isTrue);
+      // Обычное упоминание бота не показывает индикатор ни на одном шаге.
+      expect(controller.loading, isFalse);
       await tester.pump(const Duration(milliseconds: 350));
+      expect(controller.loading, isFalse);
       await tester.pump();
       await tester.pump();
       expect(controller.loading, isFalse);

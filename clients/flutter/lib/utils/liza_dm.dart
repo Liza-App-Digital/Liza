@@ -8,19 +8,11 @@ import 'package:matrix/matrix.dart';
 
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/direct_chat_ensure.dart';
+import 'package:liza/utils/liza_request_room.dart';
 import 'package:liza/utils/miniapp_room.dart';
 import 'package:liza/widgets/future_loading_dialog.dart';
 
-/// State-событие комнаты-запроса к Лизе («+» → «Новый запрос»). Ставится в
-/// `initialState` при создании; `placeholder` — начальное имя комнаты: бот
-/// `liza.py` переименует комнату в «Лиза: <суть>» только пока имя равно ему.
-/// Тип внесён в `importantStateEvents` (client_manager.dart) — иначе после
-/// холодного старта partial-комната вернула бы getState=null.
-const String lizaRequestStateType = 'com.liza.assistant.request';
-
-/// Комната — отдельный запрос к Лизе, а не её основной чат.
-bool isLizaRequestRoom(Room room) =>
-    room.getState(lizaRequestStateType) != null;
+export 'package:liza/utils/liza_request_room.dart';
 
 /// Живая 1:1-комната с ассистентом Лизой.
 ///
@@ -139,6 +131,13 @@ Future<String> createLizaRequestRoom(
       content: {'placeholder': title, if (firstMessage) 'first_message': true},
     ),
     StateEvent(type: EventTypes.RoomName, content: {'name': title}),
+    // Вопрос из пустой панели уходит до join Лизы. history_visibility=shared
+    // оставляет его видимым боту после вступления — иначе getChatHistory
+    // возвращает только приветствие, и пикап вопроса не находит.
+    StateEvent(
+      type: EventTypes.HistoryVisibility,
+      content: {'history_visibility': 'shared'},
+    ),
   ],
 );
 

@@ -185,6 +185,8 @@ abstract class ClientManager {
         // Маркер чата-запроса к Лизе: на нём держится закрепление основного
         // чата с Лизой (isLizaAssistantRoom) в списке — partial-комнаты.
         'com.liza.assistant.request',
+        // Серверный статус XL: карточка настроек не должна зависеть от Keychain.
+        'com.liza.xl.status',
         // Скрытие отдельных участников из списка (LABA-2381) держится на этом
         // room state. Без записи здесь partial-комната вернула бы getState=null
         // и скрытый участник всплывал бы в списке (тот же класс, что topology).

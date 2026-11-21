@@ -53,20 +53,33 @@ Future<bool> sendNewLizaRequest(BuildContext context, String text) async {
     messenger.showSnackBar(SnackBar(content: Text(errorText)));
     return false;
   }
+  // Вопрос до join Лизы не попадает в её sync и остаётся невидимым в
+  // getChatHistory. Если комната уже пришла в sync — ждём вступления (обычно
+  // <1 с) и только потом шлём; если ещё нет — вопрос уходит в черновик.
   final room = client.getRoomById(roomId);
-  if (room != null) {
-    // Не ждём: локальное эхо и повтор при сбое — у SDK.
-    room.sendTextEvent(text).catchError((Object e, StackTrace s) {
-      Logs().w('[LizaRequest] вопрос в $roomId не отправлен', e, s);
-      return null;
-    });
-  } else {
+  if (room == null) {
     // Комната создана, но ещё не пришла в sync — вопрос ждёт в поле ввода чата.
     try {
       await writeComposerDraft(store, roomId, text);
     } catch (e, s) {
       Logs().w('[LizaRequest] черновик вопроса в $roomId не сохранён', e, s);
     }
+  } else if (await waitForMemberJoin(client, roomId, MatrixState.lizaMxid)) {
+    try {
+      await room.sendTextEvent(text);
+    } catch (e, s) {
+      Logs().w('[LizaRequest] вопрос в $roomId не отправлен', e, s);
+      await writeComposerDraft(store, roomId, text);
+      messenger.showSnackBar(SnackBar(content: Text(errorText)));
+    }
+  } else {
+    // Лиза не вступила за таймаут: не теряем вопрос, оставляем в поле ввода.
+    try {
+      await writeComposerDraft(store, roomId, text);
+    } catch (e, s) {
+      Logs().w('[LizaRequest] черновик вопроса в $roomId не сохранён', e, s);
+    }
+    messenger.showSnackBar(SnackBar(content: Text(errorText)));
   }
   NewRequestTransition.arm(roomId);
   router.go('/rooms/$roomId');

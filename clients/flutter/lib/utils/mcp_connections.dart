@@ -136,7 +136,7 @@ const List<McpServer> mcpCatalog = [
     // XL_MCP_URL по умолчанию тестовый, а 'xl' отсутствует в серверном
     // CATALOG Лизы. Обещать проверяемые тематики нечем — вместо этого
     // раскрытие называет адресата.
-    addressee: McpAddressee.xlBot,
+    addressee: McpAddressee.liza,
   ),
 ];
 

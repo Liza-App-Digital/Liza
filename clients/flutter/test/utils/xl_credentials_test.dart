@@ -72,7 +72,7 @@ void main() {
     });
   });
 
-  test('MXID бота указывает на дом ботов', () {
-    expect(xlBotMxid, '@xl_bot:bots.liza.ru');
+  test('статус XL — отдельное state-событие, не account_data', () {
+    expect(xlStatusStateType, 'com.liza.xl.status');
   });
 }

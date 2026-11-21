@@ -1595,6 +1595,7 @@
     "placeholders": {}
   },
   "password": "Пароль",
+  "reviewerLogin": "Вход для проверяющих",
   "@password": {
     "type": "String",
     "placeholders": {}

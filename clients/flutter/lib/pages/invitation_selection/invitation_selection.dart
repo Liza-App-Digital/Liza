@@ -7,6 +7,8 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/invitation_selection/invitation_selection_view.dart';
 import 'package:liza/utils/federated_user_search_service.dart';
+import 'package:liza/utils/invite_contacts.dart';
+import 'package:liza/utils/stories/frequent_contacts.dart';
 import 'package:liza/utils/bot_interactive_api.dart';
 import 'package:liza/widgets/interactive_bot_permissions.dart';
 import 'package:liza/utils/user_handle_service.dart';
@@ -35,6 +37,28 @@ class InvitationSelectionController extends State<InvitationSelection> {
 
   String? get roomId => widget.roomId;
 
+  /// Сообщений за окно по собеседникам — снимок кэша частых контактов на
+  /// момент открытия экрана. Не пересчитывается, пока экран открыт: иначе
+  /// порядок строк прыгал бы под пальцем. Пустой кэш = порядок по свежести.
+  Map<String, int> _activity = const {};
+
+  @override
+  void initState() {
+    super.initState();
+    final client = Matrix.of(context).client;
+    final snapshot = <String, int>{};
+    for (final a in FrequentContactsCache.instance.cached(client.userID)) {
+      snapshot[a.userId] = (snapshot[a.userId] ?? 0) + a.messageCount;
+    }
+    _activity = snapshot;
+    // Прогрев для СЛЕДУЮЩЕГО открытия; без setState — текущий порядок не трогаем.
+    unawaited(
+      FrequentContactsCache.instance
+          .refreshIfStale(client)
+          .then((_) {}, onError: (_) {}),
+    );
+  }
+
   @override
   void dispose() {
     coolDown?.cancel();
@@ -42,39 +66,17 @@ class InvitationSelectionController extends State<InvitationSelection> {
     super.dispose();
   }
 
-  Future<List<User>> getContacts(BuildContext context) async {
-    final client = Matrix.of(context).client;
-    final room = client.getRoomById(roomId!)!;
-
-    final participants = (room.summary.mJoinedMemberCount ?? 0) > 100
-        ? room.getParticipants()
-        : await room.requestParticipants();
-    participants.removeWhere(
-      (u) => ![Membership.join, Membership.invite].contains(u.membership),
-    );
-    final contacts = client.rooms
-        .where((r) => r.isDirectChat)
-        .map((r) => r.unsafeGetUserFromMemoryOrFallback(r.directChatMatrixID!))
-        .toList();
-    contacts.sort(
-      (a, b) => a.calcDisplayname().toLowerCase().compareTo(
-        b.calcDisplayname().toLowerCase(),
-      ),
-    );
-    // Pin AI accounts first in contacts list (Liza first among AI)
+  List<InviteContact> getContacts(BuildContext context) {
     final matrix = Matrix.of(context);
-    final aiContacts = contacts.where((u) => matrix.isAiUser(u.id)).toList();
-    if (aiContacts.isNotEmpty) {
-      contacts.removeWhere((u) => matrix.isAiUser(u.id));
-      aiContacts.sort((a, b) {
-        if (a.id == MatrixState.lizaMxid) return -1;
-        if (b.id == MatrixState.lizaMxid) return 1;
-        return 0;
-      });
-      contacts.insertAll(0, aiContacts);
-    }
+    final contacts = inviteContactPeers(
+      matrix.client.rooms,
+      lizaMxid: MatrixState.lizaMxid,
+      isAi: matrix.isAiUser,
+      isBotOrAi: matrix.isBotOrAiUser,
+      activity: _activity,
+    );
     // Префетч ролей для шильдиков (актуально для пользователей вне общих комнат).
-    unawaited(matrix.userRoleService.fetchRoles(contacts.map((u) => u.id)));
+    unawaited(matrix.userRoleService.fetchRoles(contacts.map((c) => c.userId)));
     return contacts;
   }
 

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:matrix/matrix.dart';
 
 import '../chat_topology.dart';
@@ -180,10 +181,7 @@ class FrequentContactsCache {
       _byAccount[accountId] ?? const [];
 
   /// Пересчитывает, если кэш старше [ttl]; иначе отдаёт готовое.
-  Future<List<DmActivity>> refreshIfStale(
-    Client client, {
-    DateTime? now,
-  }) {
+  Future<List<DmActivity>> refreshIfStale(Client client, {DateTime? now}) {
     final accountId = client.userID;
     if (accountId == null) return Future.value(const []);
     final at = now ?? DateTime.now();
@@ -202,6 +200,12 @@ class FrequentContactsCache {
         .whenComplete(() {
           _inFlight.remove(accountId);
         });
+  }
+
+  @visibleForTesting
+  void seed(String accountId, List<DmActivity> activity) {
+    _byAccount[accountId] = activity;
+    _computedAt[accountId] = DateTime.now();
   }
 
   void reset() {

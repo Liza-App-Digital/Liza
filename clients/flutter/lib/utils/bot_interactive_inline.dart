@@ -64,7 +64,9 @@ class BotInlineController extends ChangeNotifier {
       r'^@([A-Za-z0-9_]{1,64})\s([\s\S]{0,4096})$',
     ).firstMatch(text);
     if (match != null) {
-      loading = true;
+      // Индикатор — только когда бот подтверждён как inline-способный (см. _create):
+      // «@Liza текст» к обычному боту — просто упоминание, полоска над композером
+      // там мигала впустую (жалоба 20.11).
       _debounce = Timer(
         const Duration(milliseconds: 350),
         () => _create(generation, match[1]!, match[2]!),
@@ -97,6 +99,8 @@ class BotInlineController extends ChangeNotifier {
         return;
       }
       recognisedBot = true;
+      loading = true;
+      _notify();
       final created = await api.request(
         'POST',
         '/liza/interactive/query',

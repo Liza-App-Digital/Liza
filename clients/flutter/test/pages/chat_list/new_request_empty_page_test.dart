@@ -26,8 +26,8 @@
 //     второй запрос — `calls` красный.
 //   RP-3 (AC-4): `FocusNode()` без onKeyEvent → Enter не создаёт комнату.
 //   RP-4 (AC-8): показывать поле при read-only → `update_read_only_bar` не найден.
-//   RP-5 (AC-6): вернуть ожидание join Лизы → комната без Лизы, переход и PUT
-//     не наступают — красный; вернуть showFutureLoadingDialog → AlertDialog найден.
+//   RP-5 (AC-6): вернуть блокирующий showFutureLoadingDialog → AlertDialog найден;
+//     вопрос, отправленный до join, бот не видит — поэтому отправка ждёт join.
 //   RP-6 (AC-6): не ставить `first_message` → маркер без флага, красный.
 //   RP-7 (AC-13): убрать лимит кругов (`_loopsLeft--`) → кадры планируются
 //     бесконечно, красный.
@@ -334,7 +334,7 @@ void main() {
         'placeholder': 'Новый запрос',
         'first_message': true,
       });
-      // Лиза ещё не вступила — вопрос всё равно ушёл и чат открыт.
+      // Лиза уже в комнате (fake join) — вопрос ушёл, чат открыт.
       expect(client.room?.sent, ['план на неделю']);
       expect(find.text('room $_requestRoomId'), findsOneWidget);
       expect(store.getString('draft_$_requestRoomId'), isNull);
@@ -1502,6 +1502,7 @@ class _PanelClient extends Client {
   int calls = 0;
   Map<String, Object?>? marker;
   bool syncRoom = true;
+  bool assistantJoined = true;
   bool fail = false;
   Completer<void>? _hold;
 
@@ -1534,7 +1535,7 @@ class _PanelClient extends Client {
     await _hold?.future;
     if (fail) throw Exception('M_LIMIT_EXCEEDED');
     // Как на проде сразу после createRoom: Лиза только приглашена, не вступила.
-    final created = room = _RecordingRoom(this);
+    final created = room = _RecordingRoom(this, assistantJoined: assistantJoined);
     if (syncRoom) rooms.add(created);
     return created.id;
   }
@@ -1545,10 +1546,26 @@ class _PanelClient extends Client {
 const _requestRoomId = '!request:server';
 
 class _RecordingRoom extends Room {
-  _RecordingRoom(Client client)
+  _RecordingRoom(Client client, {this.assistantJoined = true})
     : super(id: _requestRoomId, client: client, membership: Membership.join);
 
+  final bool assistantJoined;
   final sent = <String>[];
+
+  @override
+  StrippedStateEvent? getState(String type, [String stateKey = '']) {
+    if (type == EventTypes.RoomMember &&
+        stateKey == MatrixState.lizaMxid &&
+        assistantJoined) {
+      return StrippedStateEvent(
+        type: EventTypes.RoomMember,
+        stateKey: stateKey,
+        senderId: stateKey,
+        content: {'membership': 'join'},
+      );
+    }
+    return super.getState(type, stateKey);
+  }
 
   @override
   Future<String?> sendTextEvent(

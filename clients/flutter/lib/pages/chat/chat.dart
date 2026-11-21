@@ -44,7 +44,6 @@ import 'package:liza/utils/chat_topology.dart';
 import 'package:liza/utils/fluid_page.dart';
 import 'package:liza/utils/composer_prefill.dart';
 import 'package:liza/utils/miniapp_room.dart';
-import 'package:liza/utils/xl_credentials.dart';
 import 'package:liza/utils/copy_media_eligibility.dart';
 import 'package:liza/utils/direct_chat_draft.dart';
 import 'package:liza/utils/edit_prefill.dart';
@@ -804,7 +803,6 @@ class ChatController extends State<ChatPageWithRoom>
         });
     // Бот XL держит ключ только в памяти процесса — после его рестарта
     // мерчант увидел бы просьбу подключить интеграцию заново без этого.
-    maybeResendXlKey(sendingClient, room);
   }
 
   /// Подтягивает ленту привязанного чата ради счётчиков комментариев под

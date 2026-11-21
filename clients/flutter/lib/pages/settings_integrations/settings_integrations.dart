@@ -7,7 +7,6 @@ import 'package:collection/collection.dart';
 
 import 'package:matrix/matrix.dart';
 
-import 'package:liza/utils/direct_chat_ensure.dart';
 import 'package:liza/utils/miniapp_room.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/settings_integrations/settings_integrations_view.dart';
@@ -43,7 +42,9 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
   /// устройство). Отличаем от «не подключено» — иначе мерчант видит
   /// «Подключено», пишет боту, получает «подключите интеграцию» и не
   /// понимает, что для этого надо зайти в настройки и ввести ключ заново.
-  bool _keyUnreadable = false;
+  /// Серверное состояние XL из state-event в основном DM с Лизой. `null` —
+  /// ещё не спросили/сеть: тогда показываем локальный account_data.
+  bool? _serverXlConnected;
 
   /// Какая карточка раскрыта ФОРМОЙ ВВОДА КЛЮЧА (у XL подключение — не тумблер).
   ///
@@ -71,13 +72,15 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
   /// Подключён ли кабинет XL — судим по наличию записи в account_data, а не
   /// по локальному состоянию поля (переживает пересоздание экрана).
   bool get isConnected {
+    if (_serverXlConnected != null) return _serverXlConnected!;
     final client = Matrix.of(context).client;
     final content = client.accountData[xlCredentialsAccountDataType]?.content;
     return content != null && content.isNotEmpty;
   }
 
-  /// Показывать ли статус «ключ нечитаем» вместо «Подключено».
-  bool get keyUnreadable => isConnected && _keyUnreadable;
+  /// Локальный Keychain больше не нужен: ключ хранится в XL-боте и живёт
+  /// после переустановки. Старую ошибку расшифровки не показываем.
+  bool get keyUnreadable => false;
 
   /// Основной DM с Лизой ИИ — комната, где живёт state-event с подключениями.
   /// Не первый попавшийся DM с @liza: это мог быть запрос или mini App-чат, а
@@ -122,12 +125,24 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      _checkKeyReadable();
+      _refreshXlStatus();
       _refreshEnabled();
       // Правка с другого устройства/ботом: перечитываем авторитетно.
       _syncSub = Matrix.of(context).client.onSync.stream
-          .where(McpConnections.syncAffectsConnections)
-          .listen((_) => _refreshEnabled());
+          .where(
+            (s) =>
+                McpConnections.syncAffectsConnections(s) ||
+                (s.rooms?.join?.values.any(
+                      (r) =>
+                          r.state?.any((e) => e.type == xlStatusStateType) ??
+                          false,
+                    ) ??
+                    false),
+          )
+          .listen((_) {
+            _refreshXlStatus();
+            _refreshEnabled();
+          });
     });
   }
 
@@ -151,15 +166,13 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
     setState(() => _serverEnabled = fetched);
   }
 
-  /// Сверяет, читается ли сохранённый ключ ЛОКАЛЬНЫМ ключом шифрования.
-  /// Запись в account_data может пережить переустановку приложения — сам
-  /// AES-ключ в Keychain нет.
-  Future<void> _checkKeyReadable() async {
-    if (!mounted || !isConnected) return;
-    final client = Matrix.of(context).client;
-    final plainKey = await XlCredentials.readStoredKey(client);
-    if (!mounted) return;
-    setState(() => _keyUnreadable = plainKey == null);
+  /// Серверный статус XL; локальный account_data остаётся лишь запасным путём.
+  Future<void> _refreshXlStatus() async {
+    final room = lizaRoom;
+    if (room == null) return;
+    final connected = await XlStatus.fetch(room);
+    if (!mounted || connected == null) return;
+    setState(() => _serverXlConnected = connected);
   }
 
   /// Включает/выключает беcключевое расширение (ВкусВилл).
@@ -223,20 +236,8 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
   void _snack(String text) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 
-  /// Находит существующий DM с ботом XL, иначе создаёт.
-  ///
-  /// Сверяем ПОЛНЫЙ mxid, а не localpart — по тому же соображению, что и
-  /// `_findOrCreateLizaDm` в `miniapp_invite_redeem.dart`: DM может быть с
-  /// одноимённым ботом на другом домашнем сервере, которому ключ отправлять
-  /// нельзя.
-  Future<Room> _findOrCreateXlDm(Client client) async {
-    for (final room in client.rooms) {
-      if (room.directChatMatrixID == xlBotMxid) return room;
-    }
-    final roomId = await client.ensureDirectChat(xlBotMxid);
-    return client.getRoomById(roomId) ??
-        (throw Exception('DM с $xlBotMxid не найден после создания'));
-  }
+  /// Ключ XL теперь едет в основной DM с Лизой — отдельного @xl_bot больше нет.
+  Room? get _xlRoom => lizaRoom;
 
   Future<void> save() async {
     final plainKey = keyController.text.trim();
@@ -253,15 +254,12 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
         final iv = XlCredentials.generateIv();
         final encoded = XlCredentials.encryptKey(plainKey, encryptionKey, iv);
 
-        // Порядок важен: сначала доставка ключа боту, только потом запись в
-        // account_data. Иначе при сбое отправки запись останется, экран
-        // покажет «Подключено», а бот ключа не получит — мерчант окажется
-        // в тупике.
-        final room = await _findOrCreateXlDm(client);
-        // Сбрасываем отметку «ключ уже отправлен»: мерчант мог сменить ключ,
-        // и новый обязан доехать до бота при следующем открытии чата.
-        resetXlKeyResendState();
+        // Сначала доставка ключа Лизе (она перешлёт его XL-боту), только
+        // потом локальный account_data и серверный статус.
+        final room = _xlRoom;
+        if (room == null) throw StateError('нет основного чата с Лизой');
         await room.sendEvent(XlCredentials.buildEvent(plainKey));
+        await XlStatus.write(room, true);
 
         await client.setAccountData(
           client.userID!,
@@ -274,7 +272,7 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
 
     keyController.clear();
     setState(() {
-      _keyUnreadable = false;
+      _serverXlConnected = true;
       expandedKeyForm = null;
     });
     ScaffoldMessenger.of(context).showSnackBar(
@@ -286,16 +284,26 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
     final client = Matrix.of(context).client;
     final result = await showFutureLoadingDialog(
       context: context,
-      future: () => client.setAccountData(
-        client.userID!,
-        xlCredentialsAccountDataType,
-        {},
-      ),
+      future: () async {
+        final room = _xlRoom;
+        if (room != null) {
+          // Пустой ключ — сигнал XL-боту удалить запись; статус в Matrix — для UI.
+          await room.sendEvent(XlCredentials.buildEvent(''));
+          await XlStatus.write(room, false);
+        }
+        await client.setAccountData(
+          client.userID!,
+          xlCredentialsAccountDataType,
+          {},
+        );
+      },
     );
     if (result.isError || !mounted) return;
 
     keyController.clear();
-    setState(() => _keyUnreadable = false);
+    setState(() {
+      _serverXlConnected = false;
+    });
   }
 
   @override

@@ -36,6 +36,12 @@ http.Response response(Object data) => http.Response(
   200,
   headers: {'content-type': 'application/json; charset=utf-8'},
 );
+Map<String, Object?> _bot(String mxid, bool? hasMenu) => {
+  'registered': true,
+  'mxid': mxid,
+  'has_menu': ?hasMenu,
+};
+
 void main() {
   tearDown(() => BotInteractiveApi.transportFactory = http.Client.new);
   Future<(Client, Room)> setup(WidgetTester tester) async {
@@ -62,7 +68,7 @@ void main() {
     BotInteractiveApi.transportFactory = () => MockClient(
       (_) async => response({
         'bots': [
-          {'registered': true, 'mxid': '@shop:hs'},
+          {'registered': true, 'has_menu': true, 'mxid': '@shop:hs'},
         ],
       }),
     );
@@ -133,7 +139,7 @@ void main() {
           r.url.path.endsWith('/room')
               ? {
                   'bots': [
-                    {'registered': true, 'mxid': '@shop:hs'},
+                    {'registered': true, 'has_menu': true, 'mxid': '@shop:hs'},
                   ],
                 }
               : {
@@ -178,6 +184,151 @@ void main() {
     },
   );
 
+  testWidgets('бургер скрыт, когда у всех ботов комнаты нет меню (has_menu)', (
+    tester,
+  ) async {
+    // AC:RL-bot-api-interactive-client/21
+    // AC:RL-bot-api-interactive-client/23
+    final (_, room) = await setup(tester);
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    final cases = <(String, List<Map<String, Object?>>, bool)>[
+      ('один бот без меню', [_bot('@a:hs', false)], false),
+      (
+        'оба бота без меню',
+        [_bot('@a:hs', false), _bot('@b:hs', false)],
+        false,
+      ),
+      (
+        'один из двух с меню',
+        [_bot('@a:hs', false), _bot('@b:hs', true)],
+        true,
+      ),
+      ('бот с меню', [_bot('@a:hs', true)], true),
+    ];
+    for (final (name, bots, visible) in cases) {
+      BotInteractiveApi.transportFactory = () =>
+          MockClient((_) async => response({'bots': bots}));
+      await tester.pumpWidget(
+        app(
+          InteractiveBotMenu(
+            key: UniqueKey(),
+            room: room,
+            controller: controller,
+            onChanged: (_) {},
+            onOpenApp: (_) async {},
+          ),
+        ),
+      );
+      await settle(tester);
+      expect(
+        find.byIcon(Icons.menu),
+        visible ? findsOneWidget : findsNothing,
+        reason: name,
+      );
+    }
+    await tester.pumpWidget(app(const SizedBox()));
+  });
+
+  testWidgets('шлюз без has_menu: решает /menu, без команд кнопки нет', (
+    tester,
+  ) async {
+    // AC:RL-bot-api-interactive-client/26
+    final (_, room) = await setup(tester);
+    final controller = TextEditingController();
+    addTearDown(controller.dispose);
+    final menus = <Object>[
+      {
+        'menu_button': {'type': 'commands'},
+        'commands': <Object>[],
+      },
+      {
+        'menu_button': {'type': 'commands'},
+        'commands': [
+          {'command': 'INVALID!'},
+        ],
+      },
+      {
+        'menu_button': {'type': 'commands'},
+        'commands': [
+          {'command': 'start'},
+        ],
+      },
+      {
+        'menu_button': {
+          'type': 'web_app',
+          'web_app': {'url': 'https://x.example/app'},
+        },
+        'commands': <Object>[],
+      },
+    ];
+    final expected = [false, false, true, true];
+    for (var i = 0; i < menus.length; i++) {
+      BotInteractiveApi.transportFactory = () => MockClient(
+        (r) async => r.url.path.endsWith('/room')
+            ? response({
+                'bots': [_bot('@a:hs', null)],
+              })
+            : response(menus[i]),
+      );
+      await tester.pumpWidget(
+        app(
+          InteractiveBotMenu(
+            key: UniqueKey(),
+            room: room,
+            controller: controller,
+            onChanged: (_) {},
+            onOpenApp: (_) async {},
+          ),
+        ),
+      );
+      await settle(tester);
+      expect(
+        find.byIcon(Icons.menu),
+        expected[i] ? findsOneWidget : findsNothing,
+        reason: 'случай $i',
+      );
+    }
+    await tester.pumpWidget(app(const SizedBox()));
+  });
+
+  testWidgets(
+    'команды появились позже — кнопка появляется сама, исчезли — пропадает',
+    (tester) async {
+      // AC:RL-bot-api-interactive-client/27
+      final (_, room) = await setup(tester);
+      var hasMenu = false;
+      BotInteractiveApi.transportFactory = () => MockClient(
+        (_) async => response({
+          'bots': [_bot('@a:hs', hasMenu)],
+        }),
+      );
+      final controller = TextEditingController();
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        app(
+          InteractiveBotMenu(
+            room: room,
+            controller: controller,
+            onChanged: (_) {},
+            onOpenApp: (_) async {},
+          ),
+        ),
+      );
+      await settle(tester);
+      expect(find.byIcon(Icons.menu), findsNothing);
+      hasMenu = true;
+      await tester.pump(const Duration(seconds: 31));
+      await settle(tester);
+      expect(find.byIcon(Icons.menu), findsOneWidget);
+      hasMenu = false;
+      await tester.pump(const Duration(seconds: 31));
+      await settle(tester);
+      expect(find.byIcon(Icons.menu), findsNothing);
+      await tester.pumpWidget(app(const SizedBox()));
+    },
+  );
+
   testWidgets(
     'групповое меню: выбор бота, scoped команды, адресованная вставка без отправки',
     (tester) async {
@@ -189,8 +340,8 @@ void main() {
         if (request.url.path.endsWith('/room')) {
           return response({
             'bots': [
-              {'registered': true, 'mxid': '@shop:hs'},
-              {'registered': true, 'mxid': '@help:hs'},
+              {'registered': true, 'has_menu': true, 'mxid': '@shop:hs'},
+              {'registered': true, 'has_menu': true, 'mxid': '@help:hs'},
             ],
           });
         }
@@ -413,7 +564,7 @@ void main() {
           'bots': requests == 1
               ? []
               : [
-                  {'registered': true, 'mxid': '@new:hs'},
+                  {'registered': true, 'has_menu': true, 'mxid': '@new:hs'},
                 ],
         });
       });

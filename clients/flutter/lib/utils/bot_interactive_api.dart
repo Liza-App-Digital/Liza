@@ -138,6 +138,11 @@ class RegisteredBot {
   /// Бот подписан на inline-запросы. Старый шлюз поля не отдаёт — тогда как раньше.
   bool get supportsInlineQueries => data['supports_inline_queries'] != false;
 
+  /// У бота есть что показать в меню (команды или web_app) именно здесь и сейчас.
+  /// `null` — шлюз поля не отдал (старая версия): решать по `/liza/bots/menu`.
+  bool? get hasMenu =>
+      data['has_menu'] is bool ? data['has_menu'] as bool : null;
+
   /// Только подсказка при приглашении: ни один флаг не назначает Matrix PL.
   bool requestsAdministratorRights({required bool isChannel}) {
     final defaults = data['default_administrator_rights'];

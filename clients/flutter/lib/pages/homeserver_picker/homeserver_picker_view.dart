@@ -4,6 +4,7 @@ import 'package:liza/config/app_config.dart';
 import 'package:liza/pages/homeserver_picker/auth_outcome_view.dart';
 import 'package:liza/pages/homeserver_picker/login_entry_actions.dart';
 import 'package:liza/pages/homeserver_picker/login_entry_description.dart';
+import 'package:liza/pages/homeserver_picker/reviewer_login_link.dart';
 import 'package:liza/widgets/layouts/login_scaffold.dart';
 import 'package:liza/widgets/matrix.dart';
 import 'homeserver_picker.dart';
@@ -171,6 +172,12 @@ class HomeserverPickerView extends StatelessWidget {
                                       ? controller.submitPhoneAction
                                       : null,
                                 ),
+                                if (AppConfig.phoneAuthEnabled)
+                                  ReviewerLoginLink(
+                                    onPressed: controller.isLoading
+                                        ? null
+                                        : controller.reviewerLoginAction,
+                                  ),
                                 // Локальная разработка (APP_ENV=local): вход паролем в
                                 // локальный Synapse (OIDC локально нет). Минуя ProdamusID.
                                 if (AppConfig.isLocal) ...[

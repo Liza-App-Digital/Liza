@@ -6,6 +6,7 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/utils/liza_request_room.dart';
 import 'package:liza/utils/matrix_sdk_extensions/matrix_locals.dart';
 import '../../../config/app_config.dart';
 
@@ -22,6 +23,11 @@ class StateMessage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // В чате-запросе системных событий быть не должно: создание чата, join,
+    // смена имени/описания/аватара и «Больше событий» — шум под первым вопросом.
+    if (isLizaRequestRoom(event.room)) {
+      return const SizedBox.shrink();
+    }
     if (_hiddenEventTypes.contains(event.type)) {
       return const SizedBox.shrink();
     }

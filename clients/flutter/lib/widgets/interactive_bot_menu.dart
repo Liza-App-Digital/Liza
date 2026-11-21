@@ -33,6 +33,8 @@ class InteractiveBotMenu extends StatefulWidget {
 class _InteractiveBotMenuState extends State<InteractiveBotMenu>
     with WidgetsBindingObserver {
   late BotInteractiveApi _api;
+
+  /// Боты комнаты, у которых есть что показать в меню (команды или web_app).
   List<RegisteredBot> _bots = const [];
   bool _busy = false;
   int _generation = 0;
@@ -40,6 +42,7 @@ class _InteractiveBotMenuState extends State<InteractiveBotMenu>
   StreamSubscription? _sync;
   Timer? _retry;
   Timer? _refresh;
+  Timer? _poll;
   String _membershipSignature() {
     final members =
         widget.room.states[EventTypes.RoomMember]?.values
@@ -50,7 +53,31 @@ class _InteractiveBotMenuState extends State<InteractiveBotMenu>
     return members.join('|');
   }
 
+  static final _commandName = RegExp(r'^[a-z0-9_]{1,32}$');
+
+  static bool _menuHasContent(Map<dynamic, dynamic> response) {
+    final button = response['menu_button'];
+    if (button is Map && button['type'] == 'web_app') return true;
+    final commands = response['commands'];
+    return commands is List &&
+        commands.whereType<Map>().any((command) {
+          final name = command['command'];
+          return name is String && _commandName.hasMatch(name);
+        });
+  }
+
+  /// Команды бота могут появиться позже (setMyCommands) — события sync об этом нет,
+  /// поэтому пока чат открыт, список перепроверяется по таймеру.
+  void _startPolling() {
+    _poll?.cancel();
+    _poll = Timer.periodic(const Duration(seconds: 30), (_) {
+      final state = WidgetsBinding.instance.lifecycleState;
+      if (state == null || state == AppLifecycleState.resumed) _load();
+    });
+  }
+
   void _attach() {
+    _startPolling();
     _api = BotInteractiveApi(widget.room.client);
     _members = _membershipSignature();
     _sync = widget.room.client.onSync.stream.listen((_) => _checkMembers());
@@ -85,6 +112,7 @@ class _InteractiveBotMenuState extends State<InteractiveBotMenu>
       _sync?.cancel();
       _retry?.cancel();
       _refresh?.cancel();
+      _poll?.cancel();
       _api.dispose();
       _bots = const [];
       _attach();
@@ -105,16 +133,33 @@ class _InteractiveBotMenuState extends State<InteractiveBotMenu>
       );
       if (!mounted || generation != _generation || !api.isCurrent) return;
       final raw = response['bots'];
-      setState(
-        () => _bots = raw is List
-            ? [
-                for (final item in raw)
-                  if (item is Map<String, dynamic> &&
-                      RegisteredBot.parse(item) != null)
-                    RegisteredBot.parse(item)!,
-              ]
-            : [],
-      );
+      final registered = <RegisteredBot>[
+        if (raw is List)
+          for (final item in raw)
+            if (item is Map<String, dynamic> &&
+                RegisteredBot.parse(item) != null)
+              RegisteredBot.parse(item)!,
+      ];
+      final withMenu = <RegisteredBot>[];
+      for (final bot in registered) {
+        if (bot.hasMenu == true) {
+          withMenu.add(bot);
+        } else if (bot.hasMenu == null) {
+          // Шлюз без has_menu: решаем по факту, а не «на всякий случай» показываем.
+          try {
+            final menu = await api.request(
+              'GET',
+              '/liza/bots/menu',
+              query: {'mxid': bot.mxid, 'room_id': widget.room.id},
+            );
+            if (_menuHasContent(menu)) withMenu.add(bot);
+          } catch (_) {
+            // Нет сессии/меню у этого бота — кнопки для него нет; таймер перепроверит.
+          }
+          if (!mounted || generation != _generation || !api.isCurrent) return;
+        }
+      }
+      setState(() => _bots = withMenu);
     } catch (_) {
       if (!mounted || generation != _generation || !api.isCurrent) return;
       _retry = Timer(const Duration(seconds: 5), () {
@@ -170,7 +215,7 @@ class _InteractiveBotMenuState extends State<InteractiveBotMenu>
       if (commands is! List) return;
       final validCommands = commands.whereType<Map>().where((command) {
         final name = command['command'];
-        return name is String && RegExp(r'^[a-z0-9_]{1,32}$').hasMatch(name);
+        return name is String && _commandName.hasMatch(name);
       }).toList();
       if (validCommands.isEmpty) {
         await showInteractiveConsent<void>(
@@ -244,6 +289,7 @@ class _InteractiveBotMenuState extends State<InteractiveBotMenu>
     WidgetsBinding.instance.removeObserver(this);
     _sync?.cancel();
     _refresh?.cancel();
+    _poll?.cancel();
     _retry?.cancel();
     _api.dispose();
     super.dispose();

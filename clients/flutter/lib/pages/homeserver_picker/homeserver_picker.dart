@@ -306,6 +306,33 @@ class HomeserverPickerController extends State<HomeserverPicker> {
   void submitPhoneAction(String phone) =>
       openPhoneAuth(context, phone, addMultiAccount: widget.addMultiAccount);
 
+  /// «Вход для проверяющих»: экран логина и пароля на общем сервере, минуя
+  /// телефон и ProdamusID.
+  Future<void> reviewerLoginAction() async {
+    setState(() {
+      error = null;
+      isLoading = true;
+    });
+    try {
+      final client = await Matrix.of(context).getLoginClient();
+      await client.checkHomeserver(
+        Uri.https(AppConfig.reviewerLoginHomeserver, ''),
+      );
+      if (!mounted) return;
+      context.push('$_basePath/login', extra: client);
+    } catch (e) {
+      if (!mounted) return;
+      setState(
+        () => error = e.toLocalizedString(
+          context,
+          ExceptionContext.checkHomeserver,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => isLoading = false);
+    }
+  }
+
   /// Starts an analysis of the given homeserver. It uses the current domain and
   /// makes sure that it is prefixed with https. Then it searches for the
   /// well-known information and forwards to the login page depending on the

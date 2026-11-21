@@ -24,8 +24,10 @@ const String xlCredentialsAccountDataType = 'com.liza.xl.credentials';
 /// msgtype служебного события, которым ключ доезжает до бота.
 const String xlCredentialsMsgtype = 'com.liza.xl.credentials';
 
-/// MXID агента XL. Живёт на доме ботов, как остальные AI-ассистенты.
-const String xlBotMxid = '@xl_bot:bots.liza.ru';
+/// Состояние XL на сервере (state-event в основном DM с Лизой). Источник
+/// истины для карточки: локальный account_data может не расшифроваться после
+/// переустановки, а ключ в XL-боте при этом жив.
+const String xlStatusStateType = 'com.liza.xl.status';
 
 /// Ключ в `flutterSecureStorage`, под которым хранится локальный AES-ключ
 /// шифрования account_data-записи с ключом XL.
@@ -134,55 +136,26 @@ abstract final class XlCredentials {
   }
 }
 
-/// Нужно ли переотправить ключ боту при открытии комнаты.
-///
-/// Бот хранит ключ только в памяти процесса: после его рестарта ключ теряется,
-/// и без переотправки мерчант увидит просьбу подключить интеграцию заново.
-bool shouldResendXlKey({
-  required String? directChatMxid,
-  required bool hasStoredKey,
-}) => directChatMxid == xlBotMxid && hasStoredKey;
-
-/// Переотправляет ключ XL боту при открытии DM с ним, если ключ подключён.
-///
-/// Ошибки глотаются в лог (как `_ensureLizaDm` в `widgets/matrix.dart`) — сбой
-/// переотправки не должен ломать открытие чата.
-/// Комнаты, куда ключ уже отправлен в этом запуске приложения.
-///
-/// Бот держит ключ в памяти процесса, поэтому переотправка нужна — но ровно
-/// один раз за запуск, а не на каждое открытие чата. Без этого счётчика вход
-/// на вкладку слал ключ снова (а пересоздание виджета — по нескольку раз
-/// подряд), и бот на каждое отвечал «Кабинет XL подключён», топя в спаме
-/// собственные полезные ответы.
-final Set<String> _xlKeySentRooms = <String>{};
-
-/// Сбрасывает отметку об отправке — нужно, когда мерчант сменил ключ.
-void resetXlKeyResendState() => _xlKeySentRooms.clear();
-
-Future<void> maybeResendXlKey(Client client, Room room) async {
-  try {
-    if (_xlKeySentRooms.contains(room.id)) return;
-
-    final hasStoredKey =
-        client.accountData[xlCredentialsAccountDataType] != null;
-    if (!shouldResendXlKey(
-      directChatMxid: room.directChatMatrixID,
-      hasStoredKey: hasStoredKey,
-    )) {
-      return;
+/// Состояние подключения XL в Matrix: так карточка не зависит от локального Keychain.
+abstract final class XlStatus {
+  static Future<bool?> fetch(Room room) async {
+    try {
+      final content = await room.client
+          .getRoomStateWithKey(room.id, xlStatusStateType, '')
+          .timeout(const Duration(seconds: 15));
+      return content['connected'] == true;
+    } on MatrixException catch (e) {
+      if (e.errcode == 'M_NOT_FOUND') return null;
+      return null;
+    } catch (_) {
+      return null;
     }
-
-    final plainKey = await XlCredentials.readStoredKey(client);
-    if (plainKey == null) return;
-
-    // Метку ставим ДО отправки: параллельные вызовы (пересоздание виджета
-    // чата) не должны успеть проскочить, пока await ещё не вернулся.
-    _xlKeySentRooms.add(room.id);
-    await room.sendEvent(XlCredentials.buildEvent(plainKey));
-  } catch (e, s) {
-    _xlKeySentRooms.remove(room.id); // не доехало — дать шанс следующему входу
-    Logs().w('[XlCredentials] Не удалось переотправить ключ XL-боту', e, s);
   }
+
+  static Future<void> write(Room room, bool connected) =>
+      room.client.setRoomStateWithKey(room.id, xlStatusStateType, '', {
+        'connected': connected,
+      });
 }
 
 /// Боевая реализация: AES-256-CTR из vodozemac (тот же примитив, что у
