@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/utils/reader_profile_resolver.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/utils/adaptive_bottom_sheet.dart';
 import 'package:liza/utils/date_time_extension.dart';
@@ -78,14 +79,16 @@ class _ReadReceiptsListState extends State<ReadReceiptsList> {
         if (timedOut) return null;
         final currentAfterState = currentMember();
         if (currentAfterState != null) return currentAfterState;
-        final profile = await room.client.getUserProfile(fallback.id);
+        final profile = await ReaderProfileResolver.of(
+          room.client,
+        ).fetch(fallback.id);
         if (timedOut) return null;
         return currentMember() ??
             User(
               fallback.id,
               room: room,
-              displayName: profile.displayname,
-              avatarUrl: profile.avatarUrl?.toString(),
+              displayName: profile?.displayName,
+              avatarUrl: profile?.avatarUrl?.toString(),
             );
       }
 

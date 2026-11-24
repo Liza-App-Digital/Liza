@@ -39,6 +39,9 @@ class MxcImage extends StatefulWidget {
   /// placeholder, чтобы «сбой» не выглядел как вечная «загрузка» (аватарки:
   /// буква вместо человечка).
   final Widget Function(BuildContext context)? failedBuilder;
+
+  /// Вызывается один раз при переходе в терминальный сбой (не из build).
+  final VoidCallback? onFailed;
   final String? cacheKey;
   final Client? client;
   final BorderRadius borderRadius;
@@ -51,6 +54,7 @@ class MxcImage extends StatefulWidget {
     this.fit,
     this.placeholder,
     this.failedBuilder,
+    this.onFailed,
     this.isThumbnail = true,
     this.animated = false,
     this.cacheWidth,
@@ -594,6 +598,7 @@ class _MxcImageState extends State<MxcImage> {
         // медиа сам, пока смонтирован. Показываем tap-to-retry вместо
         // неотличимого от «грузится» спиннера/блюра.
         setState(() => _failed = true);
+        widget.onFailed?.call();
         _recordGiveUp(mediaStuckReasonFor(e), _attachmentHost(), e);
         return;
       }
@@ -665,6 +670,7 @@ class _MxcImageState extends State<MxcImage> {
       if (_ownKey == key) _dropOwnData();
       if (mounted && !_failed && widget.cacheKey == key) {
         setState(() => _failed = true);
+        widget.onFailed?.call();
       }
     });
   }

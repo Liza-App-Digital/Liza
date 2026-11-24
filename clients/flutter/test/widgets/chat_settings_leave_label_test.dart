@@ -92,6 +92,35 @@ void main() {
         stateKey: '',
       ),
     );
+    // Кроме меня в комнате есть второй участник: иначе это «последний участник
+    // группы» и диалог (по RL-last-member-leave-deletes-room) честно говорит
+    // про удаление, а не про архив.
+    room.setState(
+      Event(
+        eventId: '\$other',
+        senderId: '@other:example.invalid',
+        originServerTs: DateTime.fromMillisecondsSinceEpoch(1000),
+        type: EventTypes.RoomMember,
+        content: const {'membership': 'join'},
+        room: room,
+        stateKey: '@other:example.invalid',
+      ),
+    );
+    // Я не владелец (PL 0), владелец — создатель: выход идёт обычным путём.
+    room.setState(
+      Event(
+        eventId: '\$pl',
+        senderId: '@creator:example.invalid',
+        originServerTs: DateTime.fromMillisecondsSinceEpoch(1000),
+        type: EventTypes.RoomPowerLevels,
+        content: const {
+          'users': {'@creator:example.invalid': 100},
+        },
+        room: room,
+        stateKey: '',
+      ),
+    );
+    room.summary.mJoinedMemberCount = 2;
     client.rooms.add(room);
     return room;
   }

@@ -473,14 +473,24 @@ void main() {
       await teardownScreen(tester);
     });
 
-    testWidgets('компания + место в чужой: выбор с «В своей компании»', (
-      tester,
-    ) async {
+    // AC:RL-new-group-place-picker/11 — замечание Романа 23.11: «В какой
+    // своей?»; абстрактного пункта нет,
+    // своя компания стоит первым пунктом под своим именем, один раз.
+    testWidgets('компания + место в чужой: первый пункт — имя своей компании, '
+        'без «В своей компании» и без дубля', (tester) async {
       addSpace(ownRoot, 'Своя');
       addSpace(_companyB, 'Бета');
       await pumpWithClass(tester, company: true, mainId: ownRoot);
       expect(_picker, findsOneWidget);
-      expect(find.text('В своей компании'), findsOneWidget);
+      expect(find.text('Своя'), findsOneWidget, reason: 'выбрана по умолчанию');
+      expect(find.text('В своей компании'), findsNothing);
+      await tester.tap(_picker);
+      await tester.pumpAndSettle();
+      // выбранное значение + пункт меню; третий был бы дублем из places
+      expect(find.text('Своя'), findsNWidgets(2));
+      expect(find.text('Бета'), findsWidgets);
+      await tester.tap(find.text('Бета').last);
+      await tester.pumpAndSettle();
       await teardownScreen(tester);
     });
 
@@ -515,12 +525,13 @@ void main() {
     });
 
     testWidgets('компания, порог «Создание чатов» открыт рядовым (0): '
-        '«В своей компании»', (tester) async {
+        'первый пункт — своя компания', (tester) async {
       addSpace(ownRoot, 'Своя', myLevel: 0, children: [_subB]);
       ownRootEvents(companyCreateChatKey, 0);
       addSpace(_companyB, 'Бета');
       await pumpWithClass(tester, company: true, mainId: ownRoot);
-      expect(find.text('В своей компании'), findsOneWidget);
+      expect(find.text('Своя'), findsOneWidget);
+      expect(find.text('В своей компании'), findsNothing);
       await teardownScreen(tester);
     });
   });

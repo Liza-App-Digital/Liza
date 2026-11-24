@@ -7,11 +7,10 @@ from twisted.internet import defer
 
 from synapse.module_api import ModuleApi
 
+from ._admin_servlets import install_admin_servlets
 from ._api import (
-    CatalogCollectionDispatcher,
     CatalogHandler,
     CatalogReloadHandler,
-    CatalogReloadResource,
     RoleDispatcher,
     RolesBatchResource,
     RolesListHandler,
@@ -110,22 +109,22 @@ class UserRolesModule:
             RolesBatchResource(api, self._user_role_handler),
         )
 
-        # Admin CRUD каталога (Task 6)
-        api.register_web_resource(
-            "/_synapse/admin/v1/user_roles/catalog",
-            CatalogCollectionDispatcher(api, self._handler),
-        )
-
         # Reload endpoint (Task 8): подхватывает изменения, сделанные через
         # прямой SQL мимо HTTP API, и рассылает to-device по изменённым кодам.
-        # Регистрируется ОТДЕЛЬНО от dispatcher'а, чтобы Twisted взял более
-        # специфичный путь /catalog/reload, а не /catalog/<code>.
         self._reload_handler = CatalogReloadHandler(
             self._catalog, self._broadcaster
         )
-        api.register_web_resource(
-            "/_synapse/admin/v1/user_roles/catalog/reload",
-            CatalogReloadResource(api, self._reload_handler),
+
+        # Admin-эндпоинты (роль + CRUD каталога + reload).
+        # NB: не api.register_web_resource - /_synapse/admin это JsonResource
+        # с isLeaf=True, вложенные ресурсы Twisted не обходит и отдаёт 404.
+        # Регистрируем servlet-маршруты на самом admin-JsonResource; подробности
+        # и ловушка - в _admin_servlets.py.
+        install_admin_servlets(
+            api,
+            self._user_role_handler,
+            self._handler,
+            self._reload_handler,
         )
 
         # Federation endpoint: чужие HS приходят сюда за ролями наших юзеров.
@@ -137,18 +136,6 @@ class UserRolesModule:
         # ресурсы там недостижимы. Регистрируемся monkey-patch'ем
         # register_servlets ДО того как Synapse создаст TransportLayerServer.
         install_federation_servlet(api, self._catalog)
-
-        # Admin alias для PUT/GET роли (Task 7).
-        # Старый /_synapse/client/roles/v1/role/<uid> остаётся как deprecated,
-        # новые клиенты/админ-скрипты должны ходить сюда.
-        api.register_web_resource(
-            "/_synapse/admin/v1/user_roles/role",
-            RoleDispatcher(
-                api,
-                self._user_role_handler,
-                "/_synapse/admin/v1/user_roles/role",
-            ),
-        )
 
         logger.info(
             "UserRolesModule loaded (default_role=%s)",

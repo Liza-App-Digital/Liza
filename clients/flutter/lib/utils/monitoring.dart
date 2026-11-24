@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding;
 import 'package:http/http.dart' as http show ClientException;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:matrix/matrix.dart' show Client;
+import 'package:liza/utils/avatar_stats.dart';
 import 'package:liza/utils/push_rule_defaults.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -109,6 +110,8 @@ abstract final class Monitoring {
       options.beforeBreadcrumb = filterBreadcrumb;
     });
     _active = true;
+    AvatarStats.instance.onBurst = (reason) =>
+        reportAvatarIssue(reason: reason);
     try {
       _pushProducerInfo = await PackageInfo.fromPlatform();
       PushJournal.instance.configureObservedBuild(
@@ -584,6 +587,71 @@ abstract final class Monitoring {
     }
   }
 
+  /// Префикс алёрта «аватарка не показана». Роутится notifier'ом в «Liza · Медиа»
+  /// по общему маркеру `[media-` без правки notifier (RL-seen-by-strip-avatar-resolution).
+  static const String avatarMissPrefix = '[media-avatar-miss]';
+
+  /// Закрытый перечень причин для title: из него и только из него. Без MXID и
+  /// текстов ошибок (пин `RL-mediadiag-no-secret`).
+  static const Set<String> avatarReasons = {'profile-error'};
+
+  static const Duration _avatarThrottle = Duration(minutes: 30);
+  static final Map<String, DateTime> _avatarLastSent = {};
+
+  /// Чистый троттл «не чаще раза в 30 мин на причину» — без `_active`/Sentry.
+  @visibleForTesting
+  static bool avatarIssueThrottleAllows(String reason, DateTime now) {
+    final last = _avatarLastSent[reason];
+    if (last != null && now.difference(last) < _avatarThrottle) return false;
+    _avatarLastSent[reason] = now;
+    return true;
+  }
+
+  @visibleForTesting
+  static String avatarIssueTitle(String reason, String? host) =>
+      buildAlertTitle(prefix: avatarMissPrefix, reason: reason, host: host);
+
+  /// Всплеск сбоев догрузки профилей читателей (GS-B). Не исключение — симптом.
+  static void reportAvatarIssue({required String reason, String? host}) {
+    if (!_active || !avatarReasons.contains(reason)) return;
+    if (!avatarIssueThrottleAllows(reason, DateTime.now())) return;
+    Sentry.captureMessage(
+      avatarIssueTitle(reason, host),
+      level: SentryLevel.warning,
+      withScope: (scope) => scope.setTag('liza.category', 'avatar'),
+    );
+  }
+
+  /// Title суточного отчёта об аватарках. Под `[health]` (notifier глушит),
+  /// без `env=` — как у push-report: иначе замаскирует пропажу heartbeat флота.
+  @visibleForTesting
+  static String avatarReportTitle(int build) =>
+      '$healthPrefix avatar-report build=$build';
+
+  /// Отправляет накопленные счётчики исходов догрузки профилей одним событием
+  /// (GS-A: знаменатель считается на устройстве, GlitchTip считает события, а
+  /// не доли). Зовётся при уходе приложения в фон; без данных ничего не шлёт.
+  static Future<void> flushAvatarReport() async {
+    if (!_active || AvatarStats.instance.isEmpty) return;
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final build = int.tryParse(info.buildNumber) ?? 0;
+      final counts = AvatarStats.instance.takeSnapshot();
+      Sentry.captureMessage(
+        avatarReportTitle(build),
+        level: SentryLevel.info,
+        withScope: (scope) {
+          scope.setTag('liza.category', 'avatar-report');
+          scope.setTag('liza.env', AppConfig.monitoringEnv);
+          scope.setTag('liza.build', '$build');
+          scope.setContexts('avatar_report', counts);
+        },
+      );
+    } catch (_) {
+      // Диагностика не должна мешать уходу в фон.
+    }
+  }
+
   /// Префикс title heartbeat живости флота. Notifier ПОДАВЛЯЕТ этот маркер
   /// (в чат не постит) — heartbeat нужен как СЧЁТЧИК живых репортеров в самом
   /// GlitchTip (сколько устройств какой сборки шлют события), а не как алёрт.
@@ -949,14 +1017,18 @@ abstract final class Monitoring {
         'accounts_total': accounts.length,
         'accounts_included': bounded.length,
         'truncated': bounded.length != accounts.length,
-        'any_source_truncated': bounded.length != accounts.length ||
-            nativeTruncated || journalCoverage['tail_truncated'] == true,
+        'any_source_truncated':
+            bounded.length != accounts.length ||
+            nativeTruncated ||
+            journalCoverage['tail_truncated'] == true,
         'counter_scope': 'installation',
         'journal_account_binding': 'per_record_when_present',
         'account_mapping_scope': 'report_snapshot_only',
         'record_event_hash': 'sha256-128_when_present',
         'dart_journal': {
-          'status': journalCoverage.isEmpty ? 'unknown' : 'bounded_observations',
+          'status': journalCoverage.isEmpty
+              ? 'unknown'
+              : 'bounded_observations',
           for (final key in const [
             'retained_entries',
             'exported_entries',

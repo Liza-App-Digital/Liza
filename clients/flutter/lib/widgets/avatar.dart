@@ -30,6 +30,13 @@ class Avatar extends StatelessWidget {
   final bool isDeleted;
   final StoryRingState? storyRing;
 
+  /// Один раз при терминальном сбое загрузки миниатюры (не из build).
+  final VoidCallback? onImageFailed;
+
+  /// Пока миниатюра грузится — рисовать букву, а не иконку `person_2`
+  /// (читательская полоска: буква → фото без промежуточного кадра).
+  final bool letterWhileLoading;
+
   /// Колбэк тапа, когда у аватарки активное кольцо (есть сторис). Имеет
   /// приоритет над [onTap]: тап по кружку открывает сторис-просмотрщик.
   final void Function()? onStoryTap;
@@ -78,6 +85,8 @@ class Avatar extends StatelessWidget {
     this.isDeleted = false,
     this.storyRing,
     this.onStoryTap,
+    this.onImageFailed,
+    this.letterWhileLoading = false,
     super.key,
   });
 
@@ -173,7 +182,8 @@ class Avatar extends StatelessWidget {
                     width: innerSize,
                     height: innerSize,
                     failedBuilder: (_) => letterFallback,
-                    placeholder: (_) => noPic
+                    onFailed: onImageFailed,
+                    placeholder: (_) => noPic || letterWhileLoading
                         ? letterFallback
                         : Center(
                             child: Icon(

@@ -1142,6 +1142,11 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     );
     _loggedLifecycle = state;
     _pushContract?.lifecycleChanged();
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      unawaited(Monitoring.flushAvatarReport());
+    }
     final refreshHttpClients = _resumeHttpRefreshGate.onStateChange(state);
     // На iOS/Android `inactive` означает «приложение скоро уйдёт в фон»
     // (входящий звонок, шторка уведомлений) — sync безопасно ставить.

@@ -133,6 +133,12 @@ void main() {
     return timeline;
   }
 
+  // Читатели вне room state догружают профиль (10 с таймаут) — гасим таймеры.
+  Future<void> drainProfileTimeouts(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 11));
+  }
+
   Future<void> initClient(WidgetTester tester) async {
     // runAsync — sqflite ffi внутри prepareTestClient делает реальный I/O.
     await tester.runAsync(() async {
@@ -225,6 +231,7 @@ void main() {
         final room = buildRoom('!group:example.invalid', flag: c.flag);
         await pumpFeed(tester, room, count: 3, readAt: 1, readersCount: 3);
         expect(find.byType(SeenByAvatars), findsOneWidget);
+        await drainProfileTimeouts(tester);
       });
     }
 
@@ -263,6 +270,7 @@ void main() {
         // тот же rebuild тем же деревом.
         await pumpFeed(tester, room, count: 2, readAt: 0, readersCount: 3);
         expect(find.byType(SeenByAvatars), findsNothing);
+        await drainProfileTimeouts(tester);
       },
     );
   });

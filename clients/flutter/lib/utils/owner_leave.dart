@@ -42,8 +42,12 @@ Future<OwnerLeaveOutcome> handleSoleOwnerLeave(
 ) async {
   final kind = leaveActionKindFor(context, room);
   if (!ownerHandoffApplies(kind, room)) return OwnerLeaveOutcome.notHandled;
-  // Не владелец — тяжёлую загрузку участников большого пространства не делаем.
-  if (!isOwnerLevel(room.ownPowerLevel)) return OwnerLeaveOutcome.notHandled;
+  // Не владелец и в комнате явно есть кто-то ещё (счётчики sync-summary; нет
+  // счётчика — считаем «есть») — тяжёлую загрузку участников не делаем.
+  if (!isOwnerLevel(room.ownPowerLevel) &&
+      (kind != LeaveActionKind.leaveChat || _mayHaveOthers(room))) {
+    return OwnerLeaveOutcome.notHandled;
+  }
 
   final l10n = L10n.of(context);
   final myId = room.client.userID;
@@ -60,6 +64,27 @@ Future<OwnerLeaveOutcome> handleSoleOwnerLeave(
   final joined = participants
       .where((u) => u.membership == Membership.join)
       .toList();
+
+  // Последний участник группы: чат удаляется (leave → forget), иначе пустая
+  // комната копится на сервере. «Кто-то ещё» = любой join/invite/knock, включая
+  // ботов, скрытых и пользователей других серверов: сомнение → обычный выход.
+  if (kind == LeaveActionKind.leaveChat &&
+      myId != null &&
+      isLastMemberOfGroup(
+        myId: myId,
+        others: participants.map((u) => (u.id, u.membership)),
+      )) {
+    return _confirmAndRun(
+      context,
+      title: leaveActionLabel(l10n, kind),
+      message: l10n.lastMemberLeaveDeletesChatMessage,
+      action: () async {
+        await room.leave();
+        await room.forget();
+      },
+    );
+  }
+
   final owners = joined.where((u) => isOwnerLevel(u.powerLevel)).toList();
   if (owners.length != 1 || owners.first.id != myId) {
     return OwnerLeaveOutcome.notHandled;
@@ -104,12 +129,26 @@ Future<OwnerLeaveOutcome> handleSoleOwnerLeave(
     action = room.leave;
   }
 
+  return _confirmAndRun(
+    context,
+    title: title,
+    message: message,
+    action: action,
+  );
+}
+
+Future<OwnerLeaveOutcome> _confirmAndRun(
+  BuildContext context, {
+  required String title,
+  required String message,
+  required Future<void> Function() action,
+}) async {
   final confirmed = await showOkCancelAlertDialog(
     context: context,
     title: title,
     message: message,
     okLabel: title,
-    cancelLabel: l10n.cancel,
+    cancelLabel: L10n.of(context).cancel,
     isDestructive: true,
   );
   if (confirmed != OkCancelResult.ok || !context.mounted) {
@@ -123,3 +162,24 @@ Future<OwnerLeaveOutcome> handleSoleOwnerLeave(
       ? OwnerLeaveOutcome.left
       : OwnerLeaveOutcome.failed;
 }
+
+/// В комнате по счётчикам sync-summary есть кто-то кроме меня. Нет счётчика —
+/// «да»: ложное «я один» ведёт к удалению, ложное «есть другие» — к обычному
+/// выходу.
+bool _mayHaveOthers(Room room) {
+  final joined = room.summary.mJoinedMemberCount;
+  if (joined == null) return true;
+  return joined > 1 || (room.summary.mInvitedMemberCount ?? 0) > 0;
+}
+
+/// Я последний в группе: никого, кроме меня, со статусом join/invite/knock.
+bool isLastMemberOfGroup({
+  required String myId,
+  required Iterable<(String, Membership)> others,
+}) => others.every(
+  (m) =>
+      m.$1 == myId ||
+      (m.$2 != Membership.join &&
+          m.$2 != Membership.invite &&
+          m.$2 != Membership.knock),
+);

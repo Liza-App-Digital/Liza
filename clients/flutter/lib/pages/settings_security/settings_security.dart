@@ -61,7 +61,7 @@ class SettingsSecurityController extends State<SettingsSecurity> {
           useRootNavigator: false,
           context: context,
           title: l10n.warning,
-          message: l10n.deactivateAccountWarning,
+          message: l10n.deleteAccountFirstWarning,
           okLabel: l10n.ok,
           cancelLabel: l10n.cancel,
           isDestructive: true,

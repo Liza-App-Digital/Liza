@@ -81,6 +81,17 @@ class NewGroupController extends State<NewGroup> {
     return main.canCreateInCompany(CompanyCreateKind.chat);
   }
 
+  /// Своя компания, когда «Автоматически» значит «в неё» (замечание Романа
+  /// 23.11: «В какой своей?»). Пункт подписывается её именем, а не абстрактным
+  /// «В своей компании»; `null` — сервер не общий/без права/корень ещё не
+  /// известен клиенту (подпись откатывается на общую).
+  Room? get ownCompanyRoom {
+    if (companyInstance != true || canCreateInOwnCompany == false) return null;
+    final mainId = Matrix.of(context).singleSpaceService.mainRootSpaceId;
+    if (mainId == null) return null;
+    return Matrix.of(context).client.getRoomById(mainId);
+  }
+
   bool get showPlacePicker =>
       createGroupType == CreateGroupType.group &&
       shouldShowPlacePicker(

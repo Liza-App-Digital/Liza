@@ -37,10 +37,7 @@ Future<bool> showDeleteAccountDialog(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                accountTitle,
-                style: theme.textTheme.titleMedium,
-              ),
+              Text(accountTitle, style: theme.textTheme.titleMedium),
               const SizedBox(height: 4),
               // SelectableText, а не errorText: длинный логин переносится
               // целиком и его можно скопировать.
@@ -52,6 +49,8 @@ Future<bool> showDeleteAccountDialog(
               ),
               const SizedBox(height: 16),
               Text(l10n.deleteAccountConsequences),
+              const SizedBox(height: 12),
+              Text(l10n.deleteAccountRetention),
             ],
           ),
         ),

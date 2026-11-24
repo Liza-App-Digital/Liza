@@ -2,6 +2,7 @@
 // владения одним событием ДО выхода (Надежда 15.10: «Да. Я бы сделала так же»).
 //
 // ledger:RL-sole-owner-leave-all-exits
+// ledger:RL-last-member-leave-deletes-room
 
 // ignore_for_file: depend_on_referenced_packages
 
@@ -130,6 +131,7 @@ void main() {
       Map<String, int> members = const {_bob: 50},
       String? chatType,
       int extraJoined = 0,
+      Set<String> invited = const {},
     }) {
       final me = client.userID!;
       final all = {me: myLevel, ...members};
@@ -139,7 +141,7 @@ void main() {
         membership: Membership.join,
         summary: RoomSummary.fromJson({
           'm.joined_member_count': all.length + extraJoined,
-          'm.invited_member_count': 0,
+          'm.invited_member_count': invited.length,
         }),
       );
       room.setState(
@@ -165,6 +167,11 @@ void main() {
             'membership': 'join',
             'displayname': entry.key == _bob ? 'Боб' : entry.key,
           }, key: entry.key),
+        );
+      }
+      for (final id in invited) {
+        room.setState(
+          state(room, EventTypes.RoomMember, {'membership': 'invite'}, key: id),
         );
       }
       if (entity == _Entity.subspace) {
@@ -372,26 +379,13 @@ void main() {
     );
 
     // AC:RL-sole-owner-leave-all-exits/5
-    testWidgets('нет кандидатов: группа — leave без forget, канал — с forget', (
+    // AC:RL-last-member-leave-deletes-room/2
+    testWidgets('нет кандидатов: канал — leave+forget, подпространство — leave', (
       tester,
     ) async {
       FakeMatrixApi.calledEndpoints.clear();
       client.rooms.clear();
-      var run = pumpHost(
-        tester,
-        buildRoom(entity: _Entity.group, members: const {}),
-      );
-      await run();
-      expect(find.textContaining('Вы последний участник'), findsOneWidget);
-      await confirm(tester, 'Выйти из чата');
-      expect(indexOf('/leave'), isNonNegative);
-      expect(indexOf('/forget'), -1);
-      expect(indexOf('/state/m.room.power_levels'), -1);
-      await teardownTree(tester);
-
-      FakeMatrixApi.calledEndpoints.clear();
-      client.rooms.clear();
-      run = pumpHost(
+      final run = pumpHost(
         tester,
         buildRoom(entity: _Entity.channel, members: const {}),
       );
@@ -400,6 +394,145 @@ void main() {
       await confirm(tester, 'Покинуть канал');
       expect(indexOf('/leave'), isNonNegative);
       await teardownTree(tester);
+
+      // Подпространство «у всех» не удаляем: пустое — обычный выход без forget.
+      FakeMatrixApi.calledEndpoints.clear();
+      client.rooms.clear();
+      final run2 = pumpHost(
+        tester,
+        buildRoom(entity: _Entity.subspace, members: const {}),
+      );
+      await run2();
+      await confirm(tester, 'Покинуть');
+      expect(indexOf('/leave'), isNonNegative);
+      expect(indexOf('/forget'), -1);
+      await teardownTree(tester);
+    });
+
+    // AC:RL-last-member-leave-deletes-room/1
+    testWidgets('∀ {владелец, не владелец}: единственный в группе → leave, '
+        'затем forget', (tester) async {
+      for (final level in [100, 50, 0]) {
+        FakeMatrixApi.calledEndpoints.clear();
+        client.rooms.clear();
+        final run = pumpHost(
+          tester,
+          buildRoom(entity: _Entity.group, myLevel: level, members: const {}),
+        );
+        await run();
+        expect(
+          find.textContaining('чат будет удалён'),
+          findsOneWidget,
+          reason: 'PL $level',
+        );
+        await confirm(tester, 'Выйти из чата');
+        final leave = indexOf('/leave');
+        expect(leave, isNonNegative, reason: 'PL $level');
+        expect(indexOf('/forget'), greaterThan(leave), reason: 'PL $level');
+        expect(lastOutcome, OwnerLeaveOutcome.left, reason: 'PL $level');
+        await teardownTree(tester);
+      }
+    });
+
+    // AC:RL-last-member-leave-deletes-room/3
+    testWidgets('∀ {join другого, приглашённый}: forget НЕ идёт', (
+      tester,
+    ) async {
+      final cases = <String, Room Function()>{
+        'владелец, второй участник (bob 50)': () =>
+            buildRoom(entity: _Entity.group),
+        'владелец, остался только приглашённый': () => buildRoom(
+          entity: _Entity.group,
+          members: const {},
+          invited: const {_bob},
+        ),
+        'не владелец, есть другой': () => buildRoom(
+          entity: _Entity.group,
+          myLevel: 0,
+          members: const {_bob: 100},
+        ),
+      };
+      for (final entry in cases.entries) {
+        FakeMatrixApi.calledEndpoints.clear();
+        client.rooms.clear();
+        final run = pumpHost(tester, entry.value());
+        await run();
+        expect(
+          find.textContaining('чат будет удалён'),
+          findsNothing,
+          reason: entry.key,
+        );
+        if (find.byType(AdaptiveDialogAction).evaluate().isNotEmpty) {
+          await confirm(tester, 'Выйти из чата');
+        }
+        expect(indexOf('/forget'), -1, reason: entry.key);
+        await teardownTree(tester);
+      }
+    });
+
+    // AC:RL-last-member-leave-deletes-room/4
+    testWidgets('личка и чат обсуждения: удаления нет', (tester) async {
+      final cases = <String, Room Function()>{
+        'чат обсуждения': () => buildRoom(
+          entity: _Entity.group,
+          members: const {},
+          chatType: channelDiscussionChatType,
+        ),
+      };
+      for (final entry in cases.entries) {
+        FakeMatrixApi.calledEndpoints.clear();
+        client.rooms.clear();
+        final run = pumpHost(tester, entry.value());
+        expect(await run(), OwnerLeaveOutcome.notHandled, reason: entry.key);
+        expect(indexOf('/forget'), -1, reason: entry.key);
+        await teardownTree(tester);
+      }
+    });
+
+    // AC:RL-last-member-leave-deletes-room/5
+    testWidgets('отмена диалога → ни leave, ни forget', (tester) async {
+      FakeMatrixApi.calledEndpoints.clear();
+      client.rooms.clear();
+      final run = pumpHost(
+        tester,
+        buildRoom(entity: _Entity.group, members: const {}),
+      );
+      await run();
+      await tester.tap(find.widgetWithText(AdaptiveDialogAction, 'Отмена'));
+      await settle(tester);
+      expect(lastOutcome, OwnerLeaveOutcome.cancelled);
+      expect(indexOf('/leave'), -1);
+      expect(indexOf('/forget'), -1);
+      await teardownTree(tester);
+    });
+  });
+
+  // AC:RL-last-member-leave-deletes-room/3
+  group('isLastMemberOfGroup', () {
+    test('бот/скрытый/удалённый join, invite, knock → не последний', () {
+      for (final m in [Membership.join, Membership.invite, Membership.knock]) {
+        expect(
+          isLastMemberOfGroup(
+            myId: '@me:x',
+            others: [('@me:x', Membership.join), ('@other:y', m)],
+          ),
+          isFalse,
+          reason: '$m',
+        );
+      }
+    });
+    test('ушедшие/забаненные не считаются', () {
+      expect(
+        isLastMemberOfGroup(
+          myId: '@me:x',
+          others: [
+            ('@me:x', Membership.join),
+            ('@a:x', Membership.leave),
+            ('@b:x', Membership.ban),
+          ],
+        ),
+        isTrue,
+      );
     });
   });
 }

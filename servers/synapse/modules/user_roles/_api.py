@@ -769,22 +769,3 @@ class CatalogReloadResource(_JsonResource):
         status, payload = await self._handler.reload()
         self._json_response(request, payload, status)
 
-
-class CatalogCollectionDispatcher(resource.Resource):
-    """Routes /catalog (POST) vs /catalog/<code> (PATCH/DELETE).
-
-    Twisted's leaf-resource model means a single CatalogResource handles
-    both the collection (no path segments after `catalog`) and the items
-    (`catalog/<code>`); the dispatcher just makes sure either form is
-    routed there.
-    """
-
-    def __init__(self, module_api: "ModuleApi", handler: "CatalogHandler") -> None:
-        super().__init__()
-        self._resource = CatalogResource(module_api, handler)
-
-    def getChild(self, path: bytes, request: server.Request) -> resource.Resource:
-        return self._resource
-
-    def render_POST(self, request: server.Request) -> int:
-        return self._resource.render_POST(request)

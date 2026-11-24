@@ -32,6 +32,8 @@ GET /_matrix/federation/v1/com.liza/user_roles_batch?user_ids=...
 ### Админские (требуют admin-токен)
 
 ```
+GET    /_synapse/admin/v1/user_roles/role                     # своя роль
+GET    /_synapse/admin/v1/user_roles/role/<user_id>           # роль юзера
 PUT    /_synapse/admin/v1/user_roles/role/<user_id>           # сменить роль юзера
 POST   /_synapse/admin/v1/user_roles/catalog                  # добавить роль
 PATCH  /_synapse/admin/v1/user_roles/catalog/<code>           # переименовать/перекрасить
@@ -40,6 +42,23 @@ POST   /_synapse/admin/v1/user_roles/catalog/reload           # подхвати
 ```
 
 Старый путь `PUT /_synapse/client/roles/v1/role/<user_id>` сохранён как deprecated alias на тот же handler. Будет удалён после раскатки нового Flutter-клиента (см. Phase 3 в spec).
+
+### ⚠️ Почему админ-эндпоинты не через `register_web_resource`
+
+`/_synapse/admin` — это `JsonResource` с `isLeaf = True`
+(`synapse/http/server.py`). `create_resource_tree` цепляет ресурсы модуля
+детьми этого листа, но Twisted не обходит детей листа: запрос сразу уходит в
+`render` админского `JsonResource`, и вложенный ресурс отдаёт 404
+`M_UNRECOGNIZED`. Именно так админ-пути ролей молча не работали с момента
+появления (Task 6/7): клиентский deprecated-алиас работал, а `PUT` в
+`/_synapse/admin/...` — нет.
+
+Поэтому модуль регистрирует админ-маршруты servlet'ами **на самом**
+admin-JsonResource (`_admin_servlets.py`, патч
+`synapse.rest.admin.register_servlets`). Не возвращайте
+`api.register_web_resource("…/_synapse/admin/…")` — пути снова станут
+недостижимыми. Тест-страж:
+`tests/test_admin_servlets.py` (`ledger:RL-user-roles-admin-route-reachable`).
 
 ## Управление каталогом
 

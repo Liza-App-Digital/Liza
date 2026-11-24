@@ -37,6 +37,7 @@ import 'forwarded_content.dart';
 import 'reply_content.dart';
 import 'bubble_under_row.dart';
 import 'seen_by_receipts_sheet.dart';
+import 'package:liza/widgets/reader_avatar.dart';
 import 'state_message.dart';
 import 'bot_interactive_content.dart';
 
@@ -1406,9 +1407,11 @@ class SeenByAvatars extends StatelessWidget {
             for (var i = 0; i < visible.length; i++)
               Positioned(
                 left: i * _step,
-                child: Avatar(
-                  mxContent: visible[i].user.avatarUrl,
-                  name: visible[i].user.calcDisplayname(),
+                // Ключ по MXID: при смене набора читателей состояние аватарки
+                // (подписка, картинка) не должно переезжать на другого человека.
+                child: ReaderAvatar(
+                  key: ValueKey(visible[i].user.id),
+                  user: visible[i].user,
                   size: _size,
                   isHexagonal: Matrix.of(context).isAiUser(visible[i].user.id),
                 ),

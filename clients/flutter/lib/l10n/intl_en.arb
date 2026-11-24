@@ -967,6 +967,10 @@
     "type": "String",
     "placeholders": {}
   },
+  "deleteAccountFirstWarning": "This will delete your account and your data. This cannot be undone! Are you sure?",
+  "@deleteAccountFirstWarning": {"description": "Первый диалог удаления аккаунта: именно удаление, а не деактивация (Apple 5.1.1(v), RL-account-erasure-full)"},
+  "deleteAccountRetention": "What is deleted: your profile, phone number and email, sign-in record, your bots and their settings, support requests, AI assistant memory. Messages you sent to other people stay in their chats under the name \"Deleted account\". Messages of your bots are hidden for everyone. What is kept: copies of messages and files, and information about orders in mini apps and about your bots and mini apps are retained as required by law for up to 5 years. We cannot delete copies on other people's devices or servers. Backups are overwritten over time.",
+  "@deleteAccountRetention": {"description": "Что стирается и что остаётся по закону при удалении аккаунта; срок «до 5 лет» — верхняя граница, юристы уточняют (RL-account-erasure-full)"},
   "device": "Device",
   "@device": {
     "type": "String",
@@ -4539,6 +4543,8 @@
   },
   "ownerLeaveLastMemberMessage": "You are the last member. After you leave, no one will remain here.",
   "@ownerLeaveLastMemberMessage": {},
+  "lastMemberLeaveDeletesChatMessage": "You are the last member. When you leave, the chat will be deleted.",
+  "@lastMemberLeaveDeletesChatMessage": {},
   "channelSubscribe": "Subscribe",
   "@channelSubscribe": {
     "description": "Кнопка подписки на канал внизу экрана для читателя без подписки"

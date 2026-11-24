@@ -108,11 +108,18 @@ class NewGroupView extends StatelessWidget {
                         // в компанию — она будет «для себя» (задача 12).
                         true when controller.canCreateInOwnCompany == false =>
                           L10n.of(context).groupPlacePersonal,
-                        true => L10n.of(context).groupPlaceOwnCompany,
+                        true =>
+                          controller.ownCompanyRoom
+                                  ?.getLocalizedDisplayname() ??
+                              L10n.of(context).groupPlaceOwnCompany,
                         null => L10n.of(context).groupPlaceAuto,
                       }),
                     ),
-                    for (final p in controller.places)
+                    // Своя компания уже есть первым пунктом под своим именем —
+                    // второй раз её не показываем.
+                    for (final p in controller.places.where(
+                      (p) => p.space.id != controller.ownCompanyRoom?.id,
+                    ))
                       DropdownMenuItem<GroupPlace?>(
                         value: p,
                         child: Text(
