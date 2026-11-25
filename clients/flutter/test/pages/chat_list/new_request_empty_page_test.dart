@@ -333,6 +333,7 @@ void main() {
       expect(client.marker, {
         'placeholder': 'Новый запрос',
         'first_message': true,
+        'question': 'план на неделю',
       });
       // Лиза уже в комнате (fake join) — вопрос ушёл, чат открыт.
       expect(client.room?.sent, ['план на неделю']);

@@ -44,8 +44,7 @@ class TypedMentionResolver {
       if (match.end < text.length && text[match.end] == ':') return whole;
       final key = token.toLowerCase();
       if (key == 'room') return whole;
-      final matches =
-          candidates.where((c) => c.tokens.contains(key)).toList();
+      final matches = candidates.where((c) => c.tokens.contains(key)).toList();
       if (matches.length != 1) return whole;
       return '$lead${matches.first.pill}';
     });
@@ -68,8 +67,11 @@ class TypedMentionResolver {
         final slug = slugify(displayName.toLowerCase());
         if (slug.length >= 2) tokens.add(slug);
       }
-      final localpart =
-          user.id.split(':').first.replaceFirst('@', '').toLowerCase();
+      final localpart = user.id
+          .split(':')
+          .first
+          .replaceFirst('@', '')
+          .toLowerCase();
       if (localpart.length >= 2) tokens.add(localpart);
       if (tokens.isEmpty) continue;
       result.add(MentionCandidate(pill: user.mention, tokens: tokens));
@@ -78,10 +80,8 @@ class TypedMentionResolver {
   }
 
   /// Удобная обёртка над двумя шагами.
-  static String resolveForRoom(String text, Room room) => resolve(
-        text,
-        candidatesFrom(room.getParticipants(), room.client.userID),
-      );
+  static String resolveForRoom(String text, Room room) =>
+      resolve(text, candidatesFrom(room.getParticipants(), room.client.userID));
 
   /// Реплика блока `addMentions` из SDK `Room.sendTextEvent` (matrix-4.1.0
   /// `room.dart:738-770`). Нужна, когда форматированное сообщение уходит через
@@ -94,27 +94,29 @@ class TypedMentionResolver {
     Room room, {
     Event? inReplyTo,
   }) {
-    var potentialMentions = message
-        .split('@')
-        .map(
-          (text) => text.startsWith('[')
-              ? '@${text.split(']').first}]'
-              : '@${text.split(RegExp(r'\s+')).first}',
-        )
-        .toList()
-      ..removeAt(0);
+    var potentialMentions =
+        message
+            .split('@')
+            .map(
+              (text) => text.startsWith('[')
+                  ? '@${text.split(']').first}]'
+                  : '@${text.split(RegExp(r'\s+')).first}',
+            )
+            .toList()
+          ..removeAt(0);
 
     final hasRoomMention = potentialMentions.remove('@room');
 
-    potentialMentions = potentialMentions
-        .map(
-          (mention) =>
-              mention.isValidMatrixId ? mention : room.getMention(mention),
-        )
-        .nonNulls
-        .toSet()
-        .toList()
-      ..remove(room.client.userID);
+    potentialMentions =
+        potentialMentions
+            .map(
+              (mention) =>
+                  mention.isValidMatrixId ? mention : room.getMention(mention),
+            )
+            .nonNulls
+            .toSet()
+            .toList()
+          ..remove(room.client.userID);
 
     if (inReplyTo != null) potentialMentions.add(inReplyTo.senderId);
 
@@ -122,6 +124,36 @@ class TypedMentionResolver {
     return {
       if (hasRoomMention) 'room': true,
       if (potentialMentions.isNotEmpty) 'user_ids': potentialMentions,
+    };
+  }
+
+  /// Content ПРАВКИ текста для `room.sendEvent(..., editEventId:)`. Правка никого
+  /// не пингует (как в Telegram): SDK копирует content и наверх события, и в
+  /// `m.new_content`, а `.m.rule.is_user_mention` в Synapse стоит РАНЬШЕ
+  /// `.m.rule.suppress_edits` — полный набор упоминаний наверху подсветил бы
+  /// адресатов повторно. `sendTextEvent` для правок поэтому не годится: он сам
+  /// кладёт найденные упоминания. Пустой ключ — явное «никого» (MSC3952).
+  static Map<String, Object?> editTextContent(String body) => {
+    'msgtype': MessageTypes.Text,
+    'body': body,
+    'm.mentions': <String, Object?>{},
+  };
+
+  /// Поля `extraContent` для медиа-ОТВЕТА (голосовое): `sendFileEvent` SDK, в
+  /// отличие от `sendTextEvent`, не кладёт автора ответа в `m.mentions`. После
+  /// Synapse ≥1.164 (MSC4210) подсветку даёт только явный `m.mentions` — без него
+  /// голосовой ответ не уведомлял бы автора (в Telegram ответ уведомляет).
+  /// Ответ самому себе — без ключа.
+  static Map<String, Object?> replyMentionsExtra(
+    Event? inReplyTo,
+    String? myUserId,
+  ) {
+    final sender = inReplyTo?.senderId;
+    if (sender == null || sender == myUserId) return const {};
+    return {
+      'm.mentions': <String, Object?>{
+        'user_ids': [sender],
+      },
     };
   }
 }

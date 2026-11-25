@@ -23,6 +23,7 @@ from synapse_modules.channel_sync._logic import (
     JOIN_RULES_STATE,
     TOPOLOGY_STATE,
     build_mirror_content,
+    build_mirror_edit,
     channel_deleted_of,
     discussion_room_of,
     discussion_settings_for,
@@ -779,11 +780,9 @@ class ChannelSyncModule:
         if mapping is None:
             return
         mirror_event_id, discussion_id = mapping
-        new_content = dict(content.get("m.new_content") or {})
-        new_content["m.relates_to"] = {
-            "rel_type": "m.replace",
-            "event_id": mirror_event_id,
-        }
+        new_content = build_mirror_edit(content, mirror_event_id)
+        if new_content is None:
+            return
         try:
             await self._api.create_and_send_event_into_room({
                 "type": "m.room.message",

@@ -89,7 +89,14 @@ abstract class PushRuleDefaults {
     setEnabled,
   ) async {
     for (final rule in deviations) {
-      await setEnabled(rule.kind, rule.ruleId, rule.defaultEnabled);
+      try {
+        await setEnabled(rule.kind, rule.ruleId, rule.defaultEnabled);
+      } on MatrixException catch (e) {
+        // Synapse ≥1.164 (MSC4210) больше не обслуживает легаси-правила
+        // (`.m.rule.contains_display_name`, `.roomnotif`) и отвечает 404 на их
+        // правку: такое правило пропускаем, остальные отклонения всё равно чиним.
+        if (e.error != MatrixError.M_NOT_FOUND) rethrow;
+      }
     }
   }
 }

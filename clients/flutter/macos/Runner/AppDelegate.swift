@@ -117,6 +117,11 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
         if call.method == "bringToFront" {
           self?.bringWindowToFront()
           result(nil)
+        } else if call.method == "bundleVersionOnDisk" {
+          result(AppDelegate.bundleVersionOnDisk())
+        } else if call.method == "quit" {
+          result(nil)
+          DispatchQueue.main.async { NSApp.terminate(nil) }
         } else {
           result(FlutterMethodNotImplemented)
         }
@@ -125,6 +130,17 @@ class AppDelegate: FlutterAppDelegate, UNUserNotificationCenterDelegate {
 
     // Set ourselves as UNUserNotificationCenter delegate for notification tap handling.
     UNUserNotificationCenter.current().delegate = self
+  }
+
+  /// `CFBundleVersion` бандла на ДИСКЕ. TestFlight меняет `.app` под работающим
+  /// процессом, а `Bundle.main.infoDictionary` закеширован при старте — поэтому
+  /// файл читается заново. Нечитаемый plist (идёт запись) → nil.
+  static func bundleVersionOnDisk() -> String? {
+    let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+    guard let plist = NSDictionary(contentsOf: url),
+          let version = plist["CFBundleVersion"] as? String,
+          !version.isEmpty else { return nil }
+    return version
   }
 
   /// Выводит главное окно на передний план и активирует приложение.

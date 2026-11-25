@@ -122,13 +122,23 @@ Future<String> createLizaRequestRoom(
   String lizaMxid, {
   required String title,
   bool firstMessage = false,
+  String? question,
 }) => client.ensureDirectChat(
   lizaMxid,
   forceNew: true,
   initialState: [
     StateEvent(
       type: lizaRequestStateType,
-      content: {'placeholder': title, if (firstMessage) 'first_message': true},
+      content: {
+        'placeholder': title,
+        if (firstMessage) 'first_message': true,
+        // Дублируем вопрос в state: сообщение может не доехать до HS ботов
+        // из-за федеративной гонки сразу после join (прод 24.11).
+        if (firstMessage && question != null && question.trim().isNotEmpty)
+          'question': question.trim().length > 4000
+              ? question.trim().substring(0, 4000)
+              : question.trim(),
+      },
     ),
     StateEvent(type: EventTypes.RoomName, content: {'name': title}),
     // Вопрос из пустой панели уходит до join Лизы. history_visibility=shared

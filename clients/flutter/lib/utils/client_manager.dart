@@ -11,6 +11,7 @@ import 'package:matrix/matrix.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:universal_html/html.dart' as html;
 
+import 'package:liza/utils/liza_client.dart';
 import 'package:liza/utils/push_contract.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/config/setting_keys.dart';
@@ -162,7 +163,7 @@ abstract class ClientManager {
         ? await AuthDiagnostics.getAndroidSdkVersion()
         : null;
 
-    final client = Client(
+    final client = LizaClient(
       clientName,
       httpClient: CustomHttpClient.createHTTPClient(
         androidSdkVersion: androidSdk,

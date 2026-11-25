@@ -313,6 +313,11 @@ abstract final class Monitoring {
   static const String audioTranscriptionFailurePrefix =
       '[audio-transcription-fail]';
 
+  /// Рекордер отдал пустой/битый файл, отправка отменена
+  /// (RL-voice-empty-recording-guard). Префикс `[media-` — notifier роутит в
+  /// «Liza · Медиа»; reason — `codec-<fourcc>` (закрытое множество fourcc).
+  static const String voiceRecordBrokenPrefix = '[media-voice-record-broken]';
+
   /// Строит стабильный low-cardinality title аудио-сигнала. host+reason в TITLE
   /// (как у видео) — дедуп notifier `room|title` различает инциденты по хосту
   /// сам. Никаких секретов/локаторов контента: [reason] обязан быть из

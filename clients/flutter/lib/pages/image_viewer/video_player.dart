@@ -19,6 +19,7 @@ import 'package:liza/utils/e2ee_media_proxy.dart';
 import 'package:liza/utils/file_description.dart';
 import 'package:liza/utils/foreground_witness.dart';
 import 'package:liza/utils/idle_timeout_stream.dart';
+import 'package:liza/utils/media_qoe_session.dart';
 import 'package:liza/utils/mp4_faststart.dart';
 import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/video_prefetch_cache.dart';
@@ -526,6 +527,11 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
   bool _awaitingFirstFrame = false;
   bool _firstFrameDeadlinePassed = false;
   bool _pausedByViewer = false;
+
+  // QoE-маяк (RL-media-qoe-beacon): одна сессия на старт воспроизведения
+  // (тап play / автостарт сторис / повтор), а не на `_VideoAttempt` — свап и
+  // повтор создают новые попытки внутри той же сессии. Только наблюдает.
+  MediaQoeViewSession? _qoe;
   Timer? _firstFrameDeadlineTimer;
 
   // --- Телеметрия видео-проблем (комната «Liza · Видео») ---
@@ -560,6 +566,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
   /// плашка (например, от соседней страницы карусели) не дожила поверх оверлея.
   void _enterErrorState([String? details]) {
     if (!_current(_attempt)) return;
+    _qoe?.finishError();
     _lastErrorDetails = details ?? _lastErrorDetails;
     _retire(_attempt);
     _scaffoldMessenger?.clearSnackBars();
@@ -704,6 +711,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
         final suspended = _foreground!.suspended;
         if (suspended == _wasSuspended) return;
         _wasSuspended = suspended;
+        _qoe?.backgroundChanged(suspended);
         _flight.event(
           suspended ? FlightEvent.backgrounded : FlightEvent.foregrounded,
         );
@@ -848,6 +856,14 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
           speedKBs: ((speed ?? 0) / 1024).round(),
           proxyKb: ((_proxyReceived(a)) ~/ 1024),
         );
+        _qoe
+          ?..stallChanged(paused)
+          ..addNetSample(speed?.round())
+          ..setPath(
+            _useLocalFile
+                ? 'download'
+                : (a.proxySessionId != null ? 'proxy' : 'stream'),
+          );
         if (paused && !_pausedForCache) _flight.event(FlightEvent.stalled);
         final entered = paused && !_pausedForCache;
         if (paused != _pausedForCache) setState(() => _pausedForCache = paused);
@@ -1075,7 +1091,24 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
   void _onPlayPressed() {
     if (_started) return;
     setState(() => _started = true);
+    _beginQoe();
     unawaited(_start(_attempt));
+  }
+
+  void _beginQoe() {
+    if (_qoe?.finished == false) return;
+    try {
+      final info = widget.event.content.tryGetMap<String, Object?>('info');
+      final size = info?['size'];
+      _qoe = MediaQoeViewSession(
+        surface: widget.storyMode ? 'story' : 'viewer',
+        mime: info?['mimetype'] as String?,
+        sizeBytes: size is int ? size : null,
+        e2ee: widget.event.isAttachmentEncrypted,
+        host: _mediaOriginHost,
+      );
+      if (_foreground?.suspended ?? false) _qoe!.backgroundChanged(true);
+    } catch (_) {}
   }
 
   @override
@@ -1094,6 +1127,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
     }
     if (oldWidget.event.eventId != widget.event.eventId ||
         oldWidget.event.attachmentMxcUrl != widget.event.attachmentMxcUrl) {
+      _qoe?.finishExit();
       _retire(_attempt);
       if (_retrying != null) {
         _restartForChangedEvent = true;
@@ -1112,12 +1146,16 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
       _pausedByViewer = true;
       if (_current(a)) unawaited(a.player.pause());
       _evaluateFirstFrameGate();
+      // Неактивная страница карусели не уничтожается: без итога watch_ms
+      // копился бы до dispose и искажал просмотр.
+      _qoe?.finishExit();
     }
     if (!oldWidget.isActive &&
         widget.isActive &&
         _started &&
         widget.storyMode) {
       _pausedByViewer = false;
+      _beginQoe();
       if (_current(a)) unawaited(_playIfAllowed(a));
     }
   }
@@ -1616,6 +1654,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
     }
     _awaitingFirstFrame = false;
     _firstFrameDeadlineTimer?.cancel();
+    _qoe?.markFirstFrame(byDeadline: _firstFrameDeadlinePassed);
     _flight.event(FlightEvent.firstFrame);
     setState(() => _frameShown = true);
   }
@@ -1668,6 +1707,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
   /// Существующий non-E2EE swap сохраняется, старый engine завершается.
   Future<void> _swapToLocal({required String trigger, Duration? seekTo}) async {
     if (!_current(_attempt) || _swappingToLocal || _useLocalFile) return;
+    _qoe?.markSwapped();
     _reportVideoSwap(trigger);
     setState(() {
       _swappingToLocal = true;
@@ -1927,6 +1967,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
     _lifecycle?.dispose();
     _foreground?.dispose();
     _scaffoldMessenger?.clearSnackBars();
+    _qoe?.finishExit();
     unawaited(_retire(_attempt));
     super.dispose();
   }
@@ -2256,6 +2297,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
     _retrying = completion.future;
     () async {
       try {
+        _qoe?.finishRetry();
         final next = await _freshAfter(_attempt);
         if (next == null) return;
         setState(() {
@@ -2269,6 +2311,7 @@ class EventVideoPlayerState extends State<EventVideoPlayer> {
           _pausedForCache = false;
           _pausedByViewer = !widget.isActive;
         });
+        if (autoStart) _beginQoe();
         _swapReported = false;
         _rebufferAggregator.reset();
         _failedToOpenCount = 0;

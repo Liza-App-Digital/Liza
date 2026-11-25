@@ -19,6 +19,11 @@ import 'package:matrix/matrix.dart';
 Future<Map<String, Object?>> buildForwardedContent(Event event) async {
   final content = Map<String, Object?>.from(event.content);
   content.remove('m.relates_to');
+  // Пересылка никого не пингует (как в Telegram): чужой m.mentions (вкл. room:true)
+  // повторно подсветил бы упомянутых в оригинале. Пустой ключ — явное «никого»
+  // и заодно выключает легаси-подсветку по имени (MSC3952/MSC4210).
+  content['m.mentions'] = <String, Object?>{};
+  content.remove('m.new_content');
   String? fromName;
   try {
     final sender = await event.fetchSenderUser();

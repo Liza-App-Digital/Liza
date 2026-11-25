@@ -13,8 +13,10 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'package:liza/config/setting_keys.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/object_url.dart';
 import 'package:liza/utils/platform_infos.dart';
+import 'package:liza/utils/voice_file_probe.dart';
 import 'package:liza/utils/voice_recording_codec.dart';
 import 'package:liza/utils/voice_recording_guard.dart';
 import 'package:liza/widgets/adaptive_dialogs/show_ok_cancel_alert_dialog.dart';
@@ -29,10 +31,14 @@ class RecordingViewModel extends StatefulWidget {
   /// Подмена платформы в тестах (на VM `Platform.isWindows` не подделать).
   final bool? isWindows;
 
+  /// Подмена проверки записанного файла в тестах.
+  final VoiceFileProbe? probeFile;
+
   const RecordingViewModel({
     required this.builder,
     this.createRecorder,
     this.isWindows,
+    this.probeFile,
     super.key,
   });
 
@@ -296,6 +302,35 @@ class RecordingViewModelState extends State<RecordingViewModel> {
       cancel();
       return;
     }
+    // Таймер снимаем после stop(): уже начатый тик амплитуды мог дописать +100 мс.
+    // isSending — до проверки: кнопка отправки гаснет, второй тап не отправит
+    // дважды, пока читаются заголовки файла.
+    final timer = duration;
+    setState(() => isSending = true);
+    final info = await (widget.probeFile ?? probeVoiceFile)(path);
+    if (!mounted) return;
+    if (info != null && isBrokenVoiceRecording(info, timer)) {
+      // Рекордер ОС отдал путь к пустому файлу (macOS 24.11: сырой PCM 0,044 с
+      // при таймере 48,9 с) — отправить значит отдать собеседнику «пшик».
+      Logs().w(
+        '${Monitoring.voiceRecordBrokenPrefix} $info timer=${timer.inMilliseconds}ms',
+      );
+      Monitoring.reportAudioIssue(
+        prefix: Monitoring.voiceRecordBrokenPrefix,
+        reason: 'codec-${info.codec}',
+        context: {
+          'sr': '${info.sampleRate}',
+          'ch': '${info.channels}',
+          'file_ms': '${info.duration.inMilliseconds}',
+          'timer_ms': '${timer.inMilliseconds}',
+        },
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(L10n.of(context).voiceRecordingBroken)),
+      );
+      cancel();
+      return;
+    }
     const waveCount = AudioPlayerWidget.wavesCount;
     final step = amplitudeTimeline.length < waveCount
         ? 1
@@ -308,9 +343,6 @@ class RecordingViewModelState extends State<RecordingViewModel> {
     // Отправка началась — отменять уже нечего, снимаем guard, чтобы навигация
     // во время досыла не показывала диалог «сбросить запись?».
     _unregisterGuard();
-    setState(() {
-      isSending = true;
-    });
     try {
       await onSend(path, duration.inMilliseconds, waveform, fileName);
     } catch (e, s) {

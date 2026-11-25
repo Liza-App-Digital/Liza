@@ -615,10 +615,20 @@ class SendFileDialogState extends State<SendFileDialog> {
         final xfile = sources[i];
         final txid = client.generateUniqueTransactionId();
         txids.add(txid);
-        UploadProgressTracker.instance.register(txid);
+        final mime = resolveXFileMime(xfile);
+        int? sizeBytes;
+        try {
+          sizeBytes = await xfile.length();
+        } catch (_) {}
+        UploadProgressTracker.instance.register(
+          txid,
+          mime: mime,
+          sizeBytes: sizeBytes,
+          e2ee: room.encrypted,
+          album: sources.length > 1,
+        );
         if (!preEmitBubbles) continue;
         notHandedToSdk.add(txid);
-        final mime = resolveXFileMime(xfile);
         await emitPendingAttachment(
           room,
           buildPendingAttachmentSync(
@@ -934,14 +944,18 @@ class SendFileDialogState extends State<SendFileDialog> {
         isCancelled: (i) =>
             UploadProgressTracker.instance.isCancelled(txids[i]),
         waitForReconnect: () => _waitForReconnect(client),
-        onSent: (i) => UploadProgressTracker.instance.unregister(txids[i]),
+        onSent: (i) => UploadProgressTracker.instance
+          ..reportSent(txids[i])
+          ..unregister(txids[i]),
         onPrepareFailed: (i, e) {
           prepareFailures.add(e);
           Monitoring.breadcrumb(
             'send',
             'prepare-fail kind=${classifySendErrorCause(e).name}',
           );
-          UploadProgressTracker.instance.unregister(txids[i]);
+          UploadProgressTracker.instance
+            ..reportFailed(txids[i], 'prepare')
+            ..unregister(txids[i]);
           // Пузырь снимает внешний finally (txid остался в notHandedToSdk):
           // `cancelSend`, НЕ error — у события нет байтов (LABA-2239).
         },
@@ -951,7 +965,8 @@ class SendFileDialogState extends State<SendFileDialog> {
           // нет). Событие уже в EventStatus.error, байты у SDK.
           UploadProgressTracker.instance
             ..reportError(txids[i], _uploadErrorReason(e, l10n))
-            ..reportErrorKind(txids[i], kind);
+            ..reportErrorKind(txids[i], kind)
+            ..reportFailed(txids[i], kind.name);
           uploadFailures.add(e);
           Monitoring.breadcrumb(
             'send',

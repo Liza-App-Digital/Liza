@@ -141,6 +141,14 @@ class ChatPageWithRoom extends StatefulWidget {
   ChatController createState() => ChatController();
 }
 
+/// SDK при `EventTooLarge` уже пометил событие в ленте как неотправленное
+/// (красный статус) и пробросил ошибку наружу — без перехвата она улетала в
+/// мониторинг как необработанная. Остальные ошибки не глотаем.
+Null _ignoreEventTooLarge(Object error, StackTrace stack) {
+  if (error is! EventTooLarge) Error.throwWithStackTrace(error, stack);
+  return null;
+}
+
 class ChatController extends State<ChatPageWithRoom>
     with WidgetsBindingObserver {
   Room get room => sendingClient.getRoomById(roomId) ?? widget.room;
@@ -2092,6 +2100,10 @@ class ChatController extends State<ChatPageWithRoom>
       content.remove('format');
       // Remove any previous m.relates_to as sendEvent will add the edit relation
       content.remove('m.relates_to');
+      // Правка никого не пингует (как в Telegram): SDK кладёт content и наверх, и в
+      // m.new_content, а .m.rule.is_user_mention в Synapse стоит раньше
+      // .m.rule.suppress_edits — старый набор упоминаний подсветил бы адресатов снова.
+      content['m.mentions'] = <String, Object?>{};
       room.sendEvent(
         content,
         editEventId: editEvent?.eventId,
@@ -2125,28 +2137,46 @@ class ChatController extends State<ChatPageWithRoom>
           'format': 'org.matrix.custom.html',
           'formatted_body': formattedHtml,
         };
-        final mentions = TypedMentionResolver.buildMentions(
-          resolvedText,
-          room,
-          inReplyTo: replyEvent,
-        );
+        final mentions = editEvent != null
+            // Правка не пингует (см. ветку правки подписи выше).
+            ? <String, Object?>{}
+            : TypedMentionResolver.buildMentions(
+                resolvedText,
+                room,
+                inReplyTo: replyEvent,
+              );
         if (mentions != null) content['m.mentions'] = mentions;
         // ignore: unawaited_futures
-        room.sendEvent(
-          content,
-          inReplyTo: replyEvent,
-          editEventId: editEvent?.eventId,
-          threadRootEventId: activeThreadId,
-        );
+        room
+            .sendEvent(
+              content,
+              inReplyTo: replyEvent,
+              editEventId: editEvent?.eventId,
+              threadRootEventId: activeThreadId,
+            )
+            .catchError(_ignoreEventTooLarge);
+      } else if (editEvent != null && !isCommand) {
+        // Правка текста — без повторного пинга (см. editTextContent); SDK сам
+        // добавит m.new_content и «* »-фолбэк.
+        // ignore: unawaited_futures
+        room
+            .sendEvent(
+              TypedMentionResolver.editTextContent(resolvedText),
+              editEventId: editEvent?.eventId,
+              threadRootEventId: activeThreadId,
+            )
+            .catchError(_ignoreEventTooLarge);
       } else {
-        room.sendTextEvent(
-          resolvedText,
-          inReplyTo: replyEvent,
-          editEventId: editEvent?.eventId,
-          parseCommands: parseCommands,
-          parseMarkdown: false,
-          threadRootEventId: activeThreadId,
-        );
+        room
+            .sendTextEvent(
+              resolvedText,
+              inReplyTo: replyEvent,
+              editEventId: editEvent?.eventId,
+              parseCommands: parseCommands,
+              parseMarkdown: false,
+              threadRootEventId: activeThreadId,
+            )
+            .catchError(_ignoreEventTooLarge);
       }
     }
     sendController.value = TextEditingValue(
@@ -2449,6 +2479,10 @@ class ChatController extends State<ChatPageWithRoom>
           inReplyTo: voiceReplyEvent,
           threadRootEventId: activeThreadId,
           extraContent: {
+            ...TypedMentionResolver.replyMentionsExtra(
+              voiceReplyEvent,
+              room.client.userID,
+            ),
             'info': {...file.info, 'duration': duration},
             'org.matrix.msc3245.voice': {},
             'org.matrix.msc1767.audio': {
@@ -2935,6 +2969,7 @@ class ChatController extends State<ChatPageWithRoom>
     Matrix.of(context).store,
     room.client.userID ?? '',
     usage,
+    client: room.client,
   );
 
   void typeEmoji(Emoji? emoji) {
@@ -3375,6 +3410,7 @@ class ChatController extends State<ChatPageWithRoom>
         Matrix.of(context).store,
         event.room.client.userID ?? '',
         EmojiUsage.reaction,
+        client: event.room.client,
       );
       unawaited(
         event.room

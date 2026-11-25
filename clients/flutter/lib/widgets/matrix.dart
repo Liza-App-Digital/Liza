@@ -19,6 +19,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:universal_html/html.dart' as html;
 import 'package:url_launcher/url_launcher_string.dart';
 
+import 'package:liza/utils/emoji_history_store.dart';
+import 'package:liza/utils/media_qoe_reporter.dart';
 import 'package:liza/utils/push_contract.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
@@ -993,6 +995,7 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
       active: () => widget.clients.isEmpty ? null : client,
       lifecycle: () => WidgetsBinding.instance.lifecycleState?.name ?? 'detached',
     );
+    MediaQoeReporter.instance.start(clients: () => widget.clients);
     // reinitializeClients() зовёт initMatrix() повторно поверх живого состояния
     // (восстановление после Keychain-сбоя). Без dispose старые сервисы держат
     // StreamSubscription/Timer на onSyncStatus прежнего клиента → две живые
@@ -1142,10 +1145,15 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
     );
     _loggedLifecycle = state;
     _pushContract?.lifecycleChanged();
+    MediaQoeReporter.instance.lifecycleChanged(state);
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
       unawaited(Monitoring.flushAvatarReport());
+      // Иначе запись истории реакций ждёт debounce, а таймер в фоне замирает.
+      for (final client in widget.clients) {
+        unawaited(EmojiHistoryStore.flushSync(client));
+      }
     }
     final refreshHttpClients = _resumeHttpRefreshGate.onStateChange(state);
     // На iOS/Android `inactive` означает «приложение скоро уйдёт в фон»

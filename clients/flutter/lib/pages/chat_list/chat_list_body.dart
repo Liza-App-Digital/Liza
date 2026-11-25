@@ -23,6 +23,7 @@ import 'package:liza/pages/chat_list/search_users_horizontal_list.dart';
 import 'package:liza/pages/chat_list/space_view.dart';
 import '../stories/stories_bar.dart';
 import 'package:liza/pages/chat_list/update_banner.dart';
+import 'package:liza/pages/chat_list/mac_update_banner.dart';
 import 'package:liza/pages/chat_list/web_update_banner.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/utils/chat_topology.dart';
@@ -184,6 +185,7 @@ class ChatListViewBody extends StatelessWidget {
               key: const PageStorageKey('chatListScrollView'),
               controller: controller.scrollController,
               slivers: [
+                const SliverToBoxAdapter(child: MacUpdateBanner()),
                 const SliverToBoxAdapter(child: UpdateBanner()),
                 SliverToBoxAdapter(
                   child: WebUpdateBanner(

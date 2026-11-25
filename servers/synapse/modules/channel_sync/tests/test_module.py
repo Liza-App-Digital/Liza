@@ -495,11 +495,17 @@ class MirrorEditTest(unittest.TestCase):
         self.assertEqual(sent["type"], "m.room.message")
         self.assertEqual(sent["room_id"], "!disc:h")
         self.assertEqual(sent["sender"], "@a:h")
-        self.assertEqual(sent["content"]["body"], "edited")
+        # Валидный m.replace: «* »-фолбэк наверху, итог в m.new_content — иначе клиент
+        # показал бы правку отдельным сообщением вместо замены.
+        self.assertEqual(sent["content"]["body"], "* edited")
+        self.assertEqual(sent["content"]["m.new_content"]["body"], "edited")
         self.assertEqual(
             sent["content"]["m.relates_to"],
             {"rel_type": "m.replace", "event_id": "$mirror"},
         )
+        # AC:RL-server-mentions-intent/10 — правка зеркала не пингует никого
+        self.assertEqual(sent["content"]["m.mentions"], {})
+        self.assertEqual(sent["content"]["m.new_content"]["m.mentions"], {})
 
     def test_edit_of_unmirrored_post_ignored(self):
         m = _make_module()

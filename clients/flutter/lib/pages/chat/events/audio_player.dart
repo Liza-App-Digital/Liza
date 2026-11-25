@@ -453,6 +453,9 @@ class AudioPlayerState extends State<AudioPlayerWidget> {
             TranscriptionErrorKind.serviceBusy,
             TranscriptionErrorKind.timeout,
             TranscriptionErrorKind.network,
+            // Битый файл — сбой записи у отправителя; его сигналит клиент
+            // отправителя ([media-voice-record-broken]), а не каждый читатель.
+            TranscriptionErrorKind.emptyAudio,
           }.contains(e.kind) &&
           e.statusCode != 429) {
         Monitoring.reportAudioIssue(
@@ -505,6 +508,8 @@ class AudioPlayerState extends State<AudioPlayerWidget> {
               message = l10n.transcriptionServiceBusy;
             case TranscriptionErrorKind.decrypt:
               message = l10n.transcriptionDecryptFailed;
+            case TranscriptionErrorKind.emptyAudio:
+              message = l10n.transcriptionEmptyAudio;
             case TranscriptionErrorKind.server:
             case TranscriptionErrorKind.parse:
               message = l10n.transcriptionServerError;

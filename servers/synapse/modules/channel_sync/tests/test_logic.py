@@ -3,6 +3,7 @@ from synapse_modules.channel_sync._logic import (
     POST_REF_KEY,
     join_rules_content,
     build_mirror_content,
+    build_mirror_edit,
     channel_deleted_of,
     discussion_room_of,
     discussion_settings_for,
@@ -77,6 +78,27 @@ def test_build_mirror_content_copies_and_marks():
     assert out[POST_REF_KEY] == {"channel_id": "!chan:h", "post_event_id": "$post"}
     # исходный не мутируется
     assert POST_REF_KEY not in src
+
+
+def test_build_mirror_content_never_repings_post_mentions():
+    # AC:RL-server-mentions-intent/10 — упомянутые в посте уже получили пуш из канала
+    for mentions in ({"room": True}, {"user_ids": ["@a:h"]}, None):
+        src = {"body": "@room пост", "msgtype": "m.text"}
+        if mentions is not None:
+            src["m.mentions"] = mentions
+        out = build_mirror_content(src, "!chan:h", "$post")
+        assert out["m.mentions"] == {}
+
+
+def test_build_mirror_edit_valid_replace_with_html():
+    edit = {"body": "* x", "m.new_content": {"msgtype": "m.text", "body": "x", "format": "org.matrix.custom.html",
+                                              "formatted_body": "<b>x</b>", "m.mentions": {"room": True}},
+            "m.relates_to": {"rel_type": "m.replace", "event_id": "$post"}}
+    out = build_mirror_edit(edit, "$mirror")
+    assert out["formatted_body"] == "* <b>x</b>" and out["m.new_content"]["formatted_body"] == "<b>x</b>"
+    assert out["m.new_content"]["m.mentions"] == {} and out["m.mentions"] == {}
+    assert out["m.relates_to"] == {"rel_type": "m.replace", "event_id": "$mirror"}
+    assert build_mirror_edit({"body": "* x"}, "$mirror") is None
 
 
 def test_is_public_channel():

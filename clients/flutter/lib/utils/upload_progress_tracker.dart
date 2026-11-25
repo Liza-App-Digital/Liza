@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:matrix/matrix.dart';
 
+import 'package:liza/utils/media_qoe_session.dart';
 import 'package:liza/utils/upload_error_classifier.dart';
 
 /// Отменить отправку ещё не ушедшего сообщения — ЕДИНАЯ точка для крестика на
@@ -122,10 +123,30 @@ class UploadProgressTracker {
   final Set<String> _ownedBySeries = {};
   String? _activeTxid;
 
+  /// Маяк качества отправки (RL-media-qoe-beacon): одна попытка на
+  /// `register` с mime, итог — [reportSent]/[reportFailed]/[requestCancel].
+  /// `unregister` без итога попытку снимает, не засчитывая.
+  final MediaQoeSendTracker qoe = MediaQoeSendTracker();
+
   /// Создать notifier для указанного `txid` и положить его в реестр.
   /// Возвращает уже зарегистрированный notifier, если такой txid уже был —
   /// безопасно при повторных вызовах (например, retry на rate-limit).
-  ValueNotifier<double> register(String txid) {
+  ValueNotifier<double> register(
+    String txid, {
+    String? mime,
+    int? sizeBytes,
+    bool? e2ee,
+    bool? album,
+  }) {
+    if (mime != null) {
+      qoe.begin(
+        txid,
+        mime: mime,
+        sizeBytes: sizeBytes,
+        e2ee: e2ee,
+        album: album,
+      );
+    }
     // Свежая попытка по этому txid — снимаем причину прошлой ошибки, чтобы
     // не показать устаревший тултип поверх нового прогресса.
     _errorReasons.remove(txid);
@@ -146,6 +167,7 @@ class UploadProgressTracker {
   void reportPhase(String txid, UploadPhase phase) {
     final notifier = _phases[txid];
     if (notifier == null || notifier.value == phase) return;
+    qoe.phase(txid, phase.name);
     notifier.value = phase;
     _notifiers[txid]?.value = 0;
   }
@@ -170,6 +192,7 @@ class UploadProgressTracker {
   /// Удалить notifier (вызывается после complete/error). Disposed
   /// notifier более не используется виджетами.
   void unregister(String txid) {
+    qoe.drop(txid);
     final n = _notifiers.remove(txid);
     n?.dispose();
     _phases.remove(txid)?.dispose();
@@ -235,7 +258,18 @@ class UploadProgressTracker {
   /// `room.sendFileEvent` — иначе SDK повторял бы заливку до
   /// `sendTimelineEventTimeout`). Удаление самого pending-события из ленты —
   /// отдельно — [cancelPendingSend] делает оба шага разом.
-  void requestCancel(String txid) => _cancelledTxids.add(txid);
+  void requestCancel(String txid) {
+    _cancelledTxids.add(txid);
+    qoe.canceled(txid);
+  }
+
+  /// Файл серии ушёл на сервер — итог попытки для маяка.
+  void reportSent(String txid) => qoe.sent(txid);
+
+  /// Окончательный провал попытки (подготовка или заливка) — итог для маяка.
+  /// [kind] — закрытый класс (`terminal`/`transient`/`prepare`).
+  void reportFailed(String txid, String kind) =>
+      qoe.failed(txid, errorKind: kind);
 
   /// Запрошена ли отмена для этого `txid`.
   bool isCancelled(String txid) => _cancelledTxids.contains(txid);

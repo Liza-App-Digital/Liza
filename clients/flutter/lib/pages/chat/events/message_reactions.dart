@@ -7,6 +7,7 @@ import 'package:matrix/matrix.dart';
 import 'package:liza/config/app_config.dart';
 import 'package:liza/pages/chat/events/bubble_under_row.dart';
 import 'package:liza/utils/chat_topology.dart';
+import 'package:liza/utils/emoji_history_store.dart';
 import 'package:liza/utils/read_marker_logic.dart';
 import 'package:liza/utils/update_policy.dart';
 import 'package:liza/widgets/avatar.dart';
@@ -113,7 +114,23 @@ List<Widget> _buildChips(BuildContext context, Event event, Timeline timeline) {
                   }
                 } else {
                   HumanInputTracker.mark(event.room.id);
-                  event.room.sendReaction(event.eventId, r.key);
+                  // Тап по чужому чипу — тоже использование реакции: без учёта
+                  // порядок частых расходился с тем, как человек реагирует.
+                  final roomClient = event.room.client;
+                  final history = EmojiHistoryStore(
+                    Matrix.of(context).store,
+                    roomClient.userID ?? '',
+                    EmojiUsage.reaction,
+                    client: roomClient,
+                  );
+                  event.room
+                      .sendReaction(event.eventId, r.key)
+                      .then((eventId) async {
+                        if (eventId != null) await history.record(r.key);
+                      })
+                      .catchError((Object error, StackTrace stack) {
+                        Logs().w('Не удалось добавить реакцию', error, stack);
+                      });
                 }
               },
         onLongPress: () async {

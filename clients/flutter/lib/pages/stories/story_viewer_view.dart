@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_linkify/flutter_linkify.dart';
 import 'package:matrix/matrix.dart';
 
-import '../../config/app_config.dart';
 import '../../config/themes.dart';
 import '../../l10n/l10n.dart';
 import '../../utils/stories/stories_extension.dart';
@@ -812,8 +811,8 @@ class _OverlayLabel extends StatelessWidget {
   }
 }
 
-/// Ряд быстрых реакций (пилюля) над панелью зрителя: набор emoji из
-/// AppConfig.defaultReactions + кнопка выбора произвольного emoji.
+/// Ряд быстрых реакций (пилюля) над панелью зрителя: частые реакции аккаунта
+/// (общая история с чатами) + кнопка выбора произвольного emoji.
 class _StoryReactionRow extends StatelessWidget {
   const _StoryReactionRow({required this.controller});
 
@@ -832,7 +831,7 @@ class _StoryReactionRow extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          for (final emoji in AppConfig.defaultReactions)
+          for (final emoji in controller.quickReactions)
             IconButton(
               onPressed: () {
                 controller.toggleStoryReaction(emoji);

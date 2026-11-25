@@ -18,6 +18,9 @@ enum TranscriptionErrorKind {
   serviceBusy,
   decrypt,
   parse,
+  // 422 audio_empty/bad_audio: файл пустой или битый ещё у отправителя
+  // (RL-voice-empty-recording-guard). Повтор бесполезен — это не «ошибка сервера».
+  emptyAudio,
 }
 
 class TranscriptionException implements Exception {
@@ -65,6 +68,18 @@ class TranscriptionService {
 
   TranscriptionService(this.client)
       : _httpClient = CustomHttpClient.createHTTPClient();
+
+  /// 422 `audio_empty`/`bad_audio` от transcribe — брак самого файла, не сбой
+  /// сервера (RL-voice-empty-recording-guard).
+  @visibleForTesting
+  static TranscriptionException? rejectedInput(http.Response response) =>
+      response.statusCode == 422
+          ? TranscriptionException(
+              TranscriptionErrorKind.emptyAudio,
+              'Аудио пустое или повреждено',
+              statusCode: 422,
+            )
+          : null;
 
   static String _keyOf(Event event) => '${event.room.id}:${event.eventId}';
 
@@ -221,6 +236,14 @@ class TranscriptionService {
         'Сервис транскрибации занят (${response.statusCode})',
         statusCode: response.statusCode,
       );
+    }
+
+    final rejected = rejectedInput(response);
+    if (rejected != null) {
+      Logs().w(
+        '[Transcribe] Аудио пустое или битое: ${response.body.substring(0, response.body.length.clamp(0, 500))}',
+      );
+      throw rejected;
     }
 
     if (response.statusCode != 200) {

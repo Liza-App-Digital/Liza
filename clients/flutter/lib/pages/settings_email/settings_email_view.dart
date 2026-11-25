@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
+import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/demo_auth/demo_auth_flow.dart';
+import 'package:liza/pages/settings_email/sbp_methods.dart';
 import 'package:liza/pages/settings_email/settings_email.dart';
+import 'package:liza/widgets/matrix.dart';
 
 /// Человекочитаемый текст ошибки: сырой код от сервера показывать нельзя —
 /// человек увидел бы «invalid_code» вместо объяснения.
@@ -81,6 +84,14 @@ class _Overview extends StatelessWidget {
         ElevatedButton(
           onPressed: controller.isLoading ? null : controller.startChange,
           child: Text(l10n.settingsEmailChange),
+        ),
+        // Счета СБП живут здесь же: «Ваш ID» — про идентичность, а привязка
+        // счёта и есть разрешение платить по этому аккаунту в ботах.
+        SbpMethodsSection(
+          baseUrl: AppConfig.authProxyBaseUrl,
+          token: Matrix.of(context).client.accessToken ?? '',
+          serverName:
+              Matrix.of(context).client.userID?.split(':').last ?? '',
         ),
       ],
     );

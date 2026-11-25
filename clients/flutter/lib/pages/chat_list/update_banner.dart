@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
+import 'package:liza/utils/mac_update_checker.dart';
 import 'package:liza/utils/update_policy.dart';
 import 'package:liza/utils/version_gate_service.dart';
 import 'package:liza/widgets/matrix.dart';
@@ -47,7 +48,14 @@ class _UpdateBannerState extends State<UpdateBanner> {
           valueListenable: matrix.versionGateResult,
           builder: (context, result, _) {
             if (!result.needsUpdate) return const SizedBox.shrink();
-            return _PlainUpdateBanner(url: result.updateUrl);
+            // Процесс старше сборки на диске: ссылка в стор бесполезна, пока
+            // не перезапущен — говорит одна плашка «Liza обновилась».
+            return ValueListenableBuilder<bool>(
+              valueListenable: MacUpdateChecker.instance.updateAvailable,
+              builder: (context, stale, _) => stale
+                  ? const SizedBox.shrink()
+                  : _PlainUpdateBanner(url: result.updateUrl),
+            );
           },
         );
       },

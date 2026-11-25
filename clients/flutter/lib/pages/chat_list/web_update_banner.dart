@@ -14,9 +14,16 @@ class WebUpdateBanner extends StatefulWidget {
     super.key,
     required this.updateAvailable,
     this.reload = _reloadPage,
+    this.message,
+    this.actionLabel,
   });
 
   final ValueListenable<bool> updateAvailable;
+
+  /// Текст и подпись действия; null — Web-вариант «Доступна новая версия —
+  /// Обновить». macOS-плашка устаревшего процесса подставляет свои.
+  final String? message;
+  final String? actionLabel;
 
   /// Вынесено параметром ради тестируемости: в host-тестах окна браузера нет.
   final VoidCallback reload;
@@ -67,12 +74,12 @@ class _WebUpdateBannerState extends State<WebUpdateBanner> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        L10n.of(context).newVersionAvailable,
+                        widget.message ?? L10n.of(context).newVersionAvailable,
                         style: textStyle,
                       ),
                     ),
                     Text(
-                      L10n.of(context).webUpdateReload,
+                      widget.actionLabel ?? L10n.of(context).webUpdateReload,
                       style: textStyle?.copyWith(fontWeight: FontWeight.bold),
                     ),
                   ],

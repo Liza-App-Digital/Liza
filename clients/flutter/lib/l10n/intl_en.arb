@@ -4239,6 +4239,10 @@
   "@transcriptionDecryptFailed": {},
   "transcriptionServerError": "Server error. Try again later.",
   "@transcriptionServerError": {},
+  "transcriptionEmptyAudio": "Nothing to transcribe: this voice message has no sound. It was recorded with an error, ask the sender to record it again.",
+  "@transcriptionEmptyAudio": {
+    "description": "transcribe вернул 422 audio_empty/bad_audio — файл голосового пустой или битый у отправителя"
+  },
   "transcriptionServiceBusy": "Couldn't recognize text: service is busy right now",
   "@transcriptionServiceBusy": {},
   "accountNotFound": "Account not found",
@@ -4307,6 +4311,10 @@
   "@newVersionAvailable": {},
   "webUpdateReload": "Update",
   "@webUpdateReload": {},
+  "macUpdateRestartNeeded": "Liza has been updated — quit and open it again",
+  "@macUpdateRestartNeeded": {},
+  "macUpdateQuit": "Quit",
+  "@macUpdateQuit": {},
   "installAppBanner": "Install the Liza app",
   "@installAppBanner": {
     "description": "Top banner in the web client offering to install the native app"
@@ -5368,6 +5376,10 @@
   "@voiceRecordingFailedWindows": {
     "description": "Windows: запись голосового не стартовала (чаще всего микрофон запрещён в параметрах конфиденциальности)"
   },
+  "voiceRecordingBroken": "Recording failed: the microphone delivered no sound, so the voice message was not sent. Check the input device (headset, external microphone) and record again.",
+  "@voiceRecordingBroken": {
+    "description": "Файл записанного голосового пустой/битый (рекордер ОС перестал писать) — отправка отменена"
+  },
   "updateAnnounceTitle": "An important update is out",
   "@updateAnnounceTitle": {"description": "Обязательное обновление (howItWoks/lizaUpdates.md)"},
   "updateAnnounceBody": "From {date} this version will stop sending messages. Update in advance — it takes a couple of minutes.",
@@ -5653,5 +5665,37 @@
   "@emojiSearchNoResults": {},
   "emojiRecentAndFrequent": "Recent and frequent",
   "@emojiRecentAndFrequent": {},
-  "botCommandsEmpty": "This bot has no commands yet."
+  "botCommandsEmpty": "This bot has no commands yet.",
+  "settingsSbpTitle": "SBP accounts",
+  "@settingsSbpTitle": {},
+  "settingsSbpEmpty": "No accounts yet. Attach an SBP account to pay in bots in one tap.",
+  "@settingsSbpEmpty": {},
+  "settingsSbpAttach": "Attach SBP account",
+  "@settingsSbpAttach": {},
+  "settingsSbpCheck": "Check",
+  "@settingsSbpCheck": {},
+  "settingsSbpPending": "Awaiting bank confirmation",
+  "@settingsSbpPending": {},
+  "settingsSbpPendingHint": "Open the bank link, confirm the account, then return to the app.",
+  "@settingsSbpPendingHint": {},
+  "settingsSbpActive": "Active",
+  "@settingsSbpActive": {},
+  "settingsSbpRevoked": "Detached",
+  "@settingsSbpRevoked": {},
+  "settingsSbpExpired": "Link expired",
+  "@settingsSbpExpired": {},
+  "settingsSbpDetach": "Detach",
+  "@settingsSbpDetach": {},
+  "settingsSbpDetachConfirm": "Detach this account? Payments with it will stop.",
+  "@settingsSbpDetachConfirm": {},
+  "settingsSbpError": "Could not load payment methods.",
+  "@settingsSbpError": {},
+  "settingsSbpNoContact": "Confirm your email first — the bank requires a contact.",
+  "@settingsSbpNoContact": {},
+  "settingsSbpLimit": "Too many attached accounts. Detach one first.",
+  "@settingsSbpLimit": {},
+  "settingsSbpUnavailable": "Payment service is unavailable. Try again later.",
+  "@settingsSbpUnavailable": {},
+  "settingsSbpLinkFailed": "Could not open the bank link.",
+  "@settingsSbpLinkFailed": {}
 }

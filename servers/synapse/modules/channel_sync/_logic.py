@@ -99,13 +99,43 @@ def should_cleanup_mappings(
 
 
 def build_mirror_content(post_content: dict, channel_id: str, post_event_id: str) -> dict:
-    """Копия content поста + маркер обратной ссылки на оригинал."""
-    mirror = dict(post_content)
+    """Копия content поста + маркер обратной ссылки на оригинал.
+
+    m.mentions зеркала всегда {}: упомянутые в посте уже получили пуш из канала —
+    копия в чате обсуждения пинговала бы их второй раз (явный ключ также выключает
+    легаси-подсветку по имени; MSC3952/MSC4210, спека 2026-11-24-c-protocol-matrix-mentions).
+    """
+    mirror = {k: v for k, v in post_content.items() if k != "m.new_content"}
+    mirror["m.mentions"] = {}
     mirror[POST_REF_KEY] = {
         "channel_id": channel_id,
         "post_event_id": post_event_id,
     }
     return mirror
+
+
+def build_mirror_edit(edit_content: dict, mirror_event_id: str) -> dict | None:
+    """Валидная правка зеркала (m.replace по спеке): «* »-фолбэк наверху, итог в m.new_content.
+
+    Без m.new_content клиенты не применяют замену и показывают правку отдельным
+    сообщением. m.mentions {} и наверху, и внутри: правка зеркала не пингует никого.
+    """
+    new = edit_content.get("m.new_content")
+    if not isinstance(new, dict) or not new:
+        return None
+    new = {k: v for k, v in new.items() if k not in ("m.relates_to", "m.new_content")}
+    new["m.mentions"] = {}
+    out = {
+        "msgtype": new.get("msgtype", "m.text"),
+        "body": "* " + (new.get("body") or ""),
+        "m.new_content": new,
+        "m.mentions": {},
+        "m.relates_to": {"rel_type": "m.replace", "event_id": mirror_event_id},
+    }
+    if new.get("formatted_body"):
+        out["format"] = new.get("format", "org.matrix.custom.html")
+        out["formatted_body"] = "* " + new["formatted_body"]
+    return out
 
 
 def join_rule_of(content: dict | None) -> str | None:

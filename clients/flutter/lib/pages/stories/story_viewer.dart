@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:collection/collection.dart';
-import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -10,7 +9,9 @@ import 'package:liza/utils/direct_chat_draft.dart';
 import 'package:liza/utils/direct_chat_ensure.dart';
 import 'package:matrix/matrix.dart';
 
+import '../../config/app_config.dart';
 import '../../utils/adaptive_bottom_sheet.dart';
+import '../../utils/emoji_history_store.dart';
 import '../../utils/show_scaffold_dialog.dart';
 import '../../utils/stories/active_stories_provider.dart';
 import '../../utils/stories/deleted_stories_store.dart';
@@ -22,6 +23,7 @@ import '../../utils/stories/story_model.dart';
 import '../../utils/stories/story_reactions.dart';
 import '../../utils/stories/story_seen_logic.dart';
 import '../../utils/url_launcher.dart';
+import '../../widgets/liza_emoji_picker.dart';
 import '../../widgets/matrix.dart';
 import '../../widgets/share_scaffold_dialog.dart';
 import 'story_link_dialog.dart';
@@ -118,7 +120,23 @@ class StoryViewerController extends State<StoryViewer>
 
   bool reactionRowOpen = false;
 
+  /// Пять частых реакций аккаунта — та же история, что у меню реакций чата.
+  /// Снимок на время открытой полоски: кнопки не переставляются под пальцем.
+  List<String> quickReactions = AppConfig.defaultReactions.toList();
+
+  EmojiHistoryStore _reactionHistory(Client client) => EmojiHistoryStore(
+    Matrix.of(context).store,
+    client.userID ?? '',
+    EmojiUsage.reaction,
+    client: client,
+  );
+
   void toggleReactionRow() {
+    if (!reactionRowOpen && segments.isNotEmpty) {
+      quickReactions = _reactionHistory(
+        segments[index].room.client,
+      ).quickReactions(AppConfig.defaultReactions.toList());
+    }
     setState(() => reactionRowOpen = !reactionRowOpen);
     if (reactionRowOpen) {
       pause();
@@ -640,7 +658,10 @@ class StoryViewerController extends State<StoryViewer>
           ?.tryGet<String>('key');
       if (existing != null) await existing.redactEvent();
       if (existingKey != emoji) {
-        await segment.room.sendReaction(segment.eventId, emoji);
+        // Аккаунт захватываем до отправки; снятие реакции историю не трогает.
+        final history = _reactionHistory(segment.room.client);
+        final eventId = await segment.room.sendReaction(segment.eventId, emoji);
+        if (eventId != null) await history.record(emoji);
       }
       if (mounted) setState(() {});
     } catch (e, s) {
@@ -656,6 +677,8 @@ class StoryViewerController extends State<StoryViewer>
   }
 
   Future<void> pickCustomStoryReaction() async {
+    if (segments.isEmpty) return;
+    final history = _reactionHistory(segments[index].room.client);
     pause();
     final emoji = await showAdaptiveBottomSheet<String>(
       context: context,
@@ -666,22 +689,10 @@ class StoryViewerController extends State<StoryViewer>
         ),
         body: SizedBox(
           height: double.infinity,
-          child: EmojiPicker(
+          child: LizaEmojiPicker(
+            history: history,
             onEmojiSelected: (_, emoji) =>
                 Navigator.of(context).pop(emoji.emoji),
-            config: Config(
-              locale: Localizations.localeOf(context),
-              emojiViewConfig: const EmojiViewConfig(
-                backgroundColor: Colors.transparent,
-              ),
-              bottomActionBarConfig: const BottomActionBarConfig(
-                enabled: false,
-              ),
-              // По дефолту открывать смайлики, а не "недавние".
-              categoryViewConfig: const CategoryViewConfig(
-                initCategory: Category.SMILEYS,
-              ),
-            ),
           ),
         ),
       ),

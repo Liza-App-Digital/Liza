@@ -1443,7 +1443,11 @@ class MiniAppWebViewContentState extends State<MiniAppWebViewContent> {
     if (_resolvedUrl == null) {
       _resolveUrl();
     } else {
-      _controller?.reload();
+      // Канал нативного webview мог уже умереть (Windows: окно/WebView2
+      // пересоздаётся) — reload тогда бросает MissingPluginException в никуда.
+      _controller?.reload().catchError((Object _) {
+        if (mounted) setState(() => _hasError = true);
+      });
     }
   }
 

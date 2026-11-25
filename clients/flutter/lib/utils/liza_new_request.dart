@@ -47,6 +47,7 @@ Future<bool> sendNewLizaRequest(BuildContext context, String text) async {
       MatrixState.lizaMxid,
       title: title,
       firstMessage: true,
+      question: text,
     );
   } catch (e, s) {
     Logs().w('[LizaRequest] чат-запрос не создан', e, s);

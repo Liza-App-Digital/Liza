@@ -15,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/chat.dart';
 import 'package:liza/pages/chat/chat_emoji_picker.dart';
+import 'package:liza/pages/chat/events/message_reactions.dart';
 import 'package:liza/pages/chat/input_bar.dart';
 import 'package:liza/utils/emoji_history_store.dart';
 import 'package:liza/widgets/emoji_quick_reactions.dart';
@@ -87,6 +88,20 @@ int _count(EmojiHistoryStore history, String emoji) {
   return (data['entries'] as List)
       .where((e) => e['emoji'] == emoji)
       .fold<int>(0, (sum, entry) => sum + (entry['count'] as int));
+}
+
+void _acceptHistoryUpload(FakeMatrixApi api, Client client) {
+  final user = Uri.encodeComponent(client.userID!);
+  api.api['PUT']!['/client/v3/user/$user/account_data/'
+      '$emojiHistoryAccountDataType'] = (_) =>
+      <String, Object?>{};
+}
+
+List<Map> _synced(Client client) {
+  final reaction =
+      client.accountData[emojiHistoryAccountDataType]?.content['reaction'];
+  if (reaction is! Map) return const [];
+  return (reaction['entries'] as List).cast<Map>();
 }
 
 List<String> _visible(WidgetTester tester) => tester
@@ -187,8 +202,10 @@ void main() {
   group('реальный композер и контроллер', () {
     late Client client;
     setUp(() async {
-      client = await prepareTestClient(loggedIn: true);
+      final api = FakeMatrixApi();
+      client = await prepareTestClient(loggedIn: true, httpClient: api);
       client.backgroundSync = false;
+      _acceptHistoryUpload(api, client);
     });
     tearDown(() async => client.dispose(closeDatabase: true));
 
@@ -423,6 +440,7 @@ void main() {
         );
         expect(otherClient, isNotNull);
         otherClient!.backgroundSync = false;
+        _acceptHistoryUpload(api, otherClient);
         try {
           expect(
             otherClient.userID,
@@ -477,6 +495,12 @@ void main() {
           expect(_count(historyB, '👩🏽‍💻'), 0);
           expect(roomA.sent, 1);
           expect(roomB.sent, 0);
+          await tester.runAsync(() => EmojiHistoryStore.flushSync(client));
+          await tester.runAsync(() => EmojiHistoryStore.flushSync(otherClient));
+          // AC:RL-emoji-history-search/14 — в account data уходит только
+          // история аккаунта A; B ничего не получает.
+          expect(_synced(client).map((e) => e['emoji']), ['👩🏽‍💻']);
+          expect(otherClient.accountData[emojiHistoryAccountDataType], isNull);
         } finally {
           await tester.runAsync(() => otherClient.dispose(closeDatabase: true));
         }
@@ -563,6 +587,12 @@ void main() {
         expect(room.redacted, 1);
         expect(room.sent, 3);
         expect(prefs.getString(history.storageKey), before);
+        await tester.runAsync(() => EmojiHistoryStore.flushSync(client));
+        // AC:RL-emoji-history-search/11 — прод-toggleReaction доводит историю
+        // до account data: только успешная реакция, с её счётчиком.
+        expect(_synced(client), [
+          {'emoji': '🐈', 'count': 1, 'last': 1},
+        ]);
 
         final otherClient = await tester.runAsync(
           () => prepareTestClient(loggedIn: true, id: 'Liza stale account'),
@@ -594,6 +624,147 @@ void main() {
         } finally {
           await tester.runAsync(() => otherClient.dispose(closeDatabase: true));
         }
+      },
+    );
+
+    testWidgets(
+      'AC:RL-emoji-history-search/9 — ∀ два чата одного аккаунта: одна и та же полоска',
+      (tester) async {
+        final context = await provide(tester, const SizedBox());
+        final roomA = _ReactionRoom(client);
+        final roomB = Room(id: '!second:example.invalid', client: client);
+        final chatA = _TestChatController(roomA, context);
+        final event = Event(
+          eventId: r'$inA',
+          senderId: '@other:one',
+          originServerTs: DateTime(2026),
+          type: EventTypes.Message,
+          content: {'body': 'test', 'msgtype': 'm.text'},
+          room: roomA,
+        );
+        final timeline = Timeline(
+          room: roomA,
+          chunk: TimelineChunk(events: [event]),
+        );
+        addTearDown(timeline.cancelSubscriptions);
+        chatA.timeline = timeline;
+
+        // Каждый чат — свой контроллер со своим контекстом, как при переходе
+        // между комнатами; история берётся прод-методом emojiHistoryFor.
+        Future<List<String>> quickIn(Room room) async {
+          await tester.pumpWidget(_app(const SizedBox()));
+          await provide(
+            tester,
+            Builder(
+              builder: (context) => EmojiQuickReactions(
+                history: _TestChatController(
+                  room,
+                  context,
+                ).emojiHistoryFor(EmojiUsage.reaction),
+                defaults: _defaults,
+                sentReactions: const {},
+                onSelected: (_) {},
+                onMore: () {},
+              ),
+            ),
+          );
+          return _visible(tester);
+        }
+
+        // Реакция поставлена в чате A через прод-toggleReaction.
+        for (var i = 0; i < 2; i++) {
+          chatA.toggleReaction(event, '🚀');
+          await tester.pumpAndSettle();
+        }
+        final inA = await quickIn(roomA);
+        final inB = await quickIn(roomB);
+        expect(inA.first, '🚀');
+        // AC:RL-emoji-history-search/9 — полоска в чате B идентична A.
+        expect(inB, inA);
+
+        // Другое устройство того же аккаунта использовало 🎯 чаще — после
+        // /sync порядок одинаково меняется в обоих чатах.
+        client.accountData[emojiHistoryAccountDataType] = BasicEvent(
+          type: emojiHistoryAccountDataType,
+          content: {
+            'version': 1,
+            'reaction': {
+              'sequence': 40,
+              'entries': [
+                {'emoji': '🎯', 'count': 5, 'last': 40},
+              ],
+            },
+          },
+        );
+        final afterA = await quickIn(roomA);
+        final afterB = await quickIn(roomB);
+        expect(afterA.take(2), ['🎯', '🚀']);
+        expect(afterB, afterA);
+        await tester.runAsync(() => EmojiHistoryStore.flushSync(client));
+        expect(_synced(client).map((e) => e['emoji']).toSet(), {'🎯', '🚀'});
+      },
+    );
+
+    testWidgets(
+      'AC:RL-emoji-history-search/12 — тап по чипу «+1» учитывается, снятие — нет',
+      (tester) async {
+        final room = _ReactionRoom(client);
+        final event = Event(
+          eventId: r'$chipMessage',
+          senderId: '@other:one',
+          originServerTs: DateTime(2026),
+          type: EventTypes.Message,
+          content: {'body': 'test', 'msgtype': 'm.text'},
+          room: room,
+        );
+        final timeline = Timeline(
+          room: room,
+          chunk: TimelineChunk(events: [event]),
+        );
+        addTearDown(timeline.cancelSubscriptions);
+        Event reaction(String id, String sender, String key) => Event(
+          eventId: id,
+          senderId: sender,
+          originServerTs: DateTime(2026),
+          type: EventTypes.Reaction,
+          content: {
+            'm.relates_to': {
+              'rel_type': RelationshipTypes.reaction,
+              'event_id': event.eventId,
+              'key': key,
+            },
+          },
+          room: room,
+        );
+        timeline.addAggregatedEvent(reaction(r'$theirs', '@other:one', '👏'));
+        timeline.addAggregatedEvent(reaction(r'$mine', client.userID!, '🐈'));
+        await provide(tester, MessageReactions(event, timeline));
+        final history = EmojiHistoryStore(
+          prefs,
+          client.userID!,
+          EmojiUsage.reaction,
+        );
+
+        await tester.tap(find.text('👏'));
+        await tester.pumpAndSettle();
+        expect(room.sent, 1);
+        // AC:RL-emoji-history-search/12 — чужой чип = успешная реакция.
+        expect(_count(history, '👏'), 1);
+
+        final before = prefs.getString(history.storageKey);
+        room.result = () async => null;
+        await tester.tap(find.text('👏'));
+        await tester.pumpAndSettle();
+        expect(room.sent, 2);
+        expect(prefs.getString(history.storageKey), before);
+
+        // Своя реакция: тап снимает её и историю не трогает.
+        await tester.tap(find.text('🐈'));
+        await tester.pumpAndSettle();
+        expect(room.redacted, 1);
+        expect(prefs.getString(history.storageKey), before);
+        await tester.runAsync(() => EmojiHistoryStore.flushSync(client));
+        await tester.pump(const Duration(seconds: 5));
       },
     );
   });
