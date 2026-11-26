@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding;
 import 'package:http/http.dart' as http show ClientException;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:matrix/matrix.dart' show Client;
+import 'package:liza/utils/session_health_metrics.dart';
 import 'package:liza/utils/avatar_stats.dart';
 import 'package:liza/utils/push_rule_defaults.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
@@ -657,6 +658,55 @@ abstract final class Monitoring {
     }
   }
 
+  /// События локальной БД и сессии — нулевой уровень стоп-крана обновления
+  /// matrix SDK (`howItWoks/CheckListToDo/updateMatrix/01-plan.md` §4). [reason]
+  /// — из закрытых перечней (`DbStorageEvent`, `LogoutReason`): ни путей, ни
+  /// имён клиентов, ни текстов ошибок.
+  static const String dbStoragePrefix = '[db-storage]';
+  static const String sessionPrefix = '[session]';
+
+  static const Duration _storageWindow = Duration(minutes: 5);
+  static final Map<String, DateTime> _lastStorageByKey = {};
+
+  @visibleForTesting
+  static bool storageThrottleAllows(String key, DateTime now) {
+    final last = _lastStorageByKey[key];
+    if (last != null && now.difference(last) < _storageWindow) return false;
+    _lastStorageByKey[key] = now;
+    return true;
+  }
+
+  @visibleForTesting
+  static void resetStorageThrottle() => _lastStorageByKey.clear();
+
+  static final RegExp _wireReason = RegExp(r'^[a-z_-]{1,32}$');
+
+  @visibleForTesting
+  static String? dbStorageTitle(String reason) =>
+      _wireReason.hasMatch(reason) ? '$dbStoragePrefix reason=$reason' : null;
+
+  @visibleForTesting
+  static String? sessionLogoutTitle(String reason) =>
+      _wireReason.hasMatch(reason)
+      ? '$sessionPrefix logout reason=$reason'
+      : null;
+
+  static void reportDbStorage(String reason) =>
+      _reportStorage(dbStorageTitle(reason), 'db');
+
+  static void reportSessionLogout(String reason) =>
+      _reportStorage(sessionLogoutTitle(reason), 'session');
+
+  static void _reportStorage(String? title, String category) {
+    if (!_active || title == null) return;
+    if (!storageThrottleAllows(title, DateTime.now())) return;
+    Sentry.captureMessage(
+      title,
+      level: SentryLevel.warning,
+      withScope: (scope) => scope.setTag('liza.category', category),
+    );
+  }
+
   /// Префикс title heartbeat живости флота. Notifier ПОДАВЛЯЕТ этот маркер
   /// (в чат не постит) — heartbeat нужен как СЧЁТЧИК живых репортеров в самом
   /// GlitchTip (сколько устройств какой сборки шлют события), а не как алёрт.
@@ -712,10 +762,17 @@ abstract final class Monitoring {
       )) {
         return;
       }
+      // Счётчики шифрования — тегами, не в title: title — ключ группировки,
+      // числа в нём размножили бы heartbeat на тысячи issue.
+      final e2ee = await SessionHealthMetrics.take(prefs);
       Sentry.captureMessage(
         '$healthPrefix build=$currentBuild env=${AppConfig.monitoringEnv}',
         level: SentryLevel.info,
-        withScope: (scope) => scope.setTag('liza.category', 'health'),
+        withScope: (scope) {
+          scope.setTag('liza.category', 'health');
+          scope.setTag('liza.e2ee_received', '${e2ee.received}');
+          scope.setTag('liza.e2ee_utd', '${e2ee.utd}');
+        },
       );
       await prefs.setInt(_healthLastBuildKey, currentBuild);
       await prefs.setInt(_healthLastSentKey, now.millisecondsSinceEpoch);

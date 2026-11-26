@@ -1,27 +1,7 @@
-import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:liza/utils/xl_credentials.dart';
 
-/// Подменяет AES-CTR простым XOR: настоящая реализация из vodozemac требует
-/// нативную библиотеку, которая в host-тестах не грузится.
-Uint8List _fakeAesCtr({
-  required Uint8List input,
-  required Uint8List key,
-  required Uint8List iv,
-}) {
-  final out = Uint8List(input.length);
-  for (var i = 0; i < input.length; i++) {
-    out[i] = input[i] ^ key[i % key.length];
-  }
-  return out;
-}
-
 void main() {
-  final key = Uint8List.fromList(List<int>.generate(32, (i) => i + 1));
-  final iv = Uint8List.fromList(List<int>.filled(16, 7));
-
   group('XlCredentials.buildEvent', () {
     test('содержит msgtype, ключ и человекочитаемый fallback', () {
       final event = XlCredentials.buildEvent('eyJhbGciOiJIUzI1NiJ9');
@@ -37,42 +17,44 @@ void main() {
     });
   });
 
-  group('шифрование', () {
-    test('расшифровка возвращает исходный ключ', () {
-      const plain = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9';
-      final encoded =
-          XlCredentials.encryptKey(plain, key, iv, aesCtr: _fakeAesCtr);
-      final decoded =
-          XlCredentials.decryptKey(encoded, key, iv, aesCtr: _fakeAesCtr);
-
-      expect(decoded, plain);
+  group('XlStatusInfo (серверный статус)', () {
+    test('подключено: ключ сохранён и проверен', () {
+      final info = XlStatusInfo.fromContent({
+        'connected': true,
+        'key_saved': true,
+        'error': '',
+      });
+      expect(info.connected, isTrue);
+      expect(info.keySaved, isTrue);
+      expect(info.error, isEmpty);
     });
 
-    test('шифротекст не содержит исходный ключ в открытом виде', () {
-      const plain = 'eyJhbGciOiJIUzI1NiJ9';
-      final encoded =
-          XlCredentials.encryptKey(plain, key, iv, aesCtr: _fakeAesCtr);
-
-      expect(encoded, isNot(contains(plain)));
-      expect(utf8.decode(base64Decode(encoded), allowMalformed: true),
-          isNot(equals(plain)));
+    test('ключ сохранён, но сервис недоступен — карточка не врёт', () {
+      final info = XlStatusInfo.fromContent({
+        'connected': false,
+        'key_saved': true,
+        'error': 'unavailable',
+      });
+      expect(info.connected, isFalse);
+      expect(info.keySaved, isTrue);
+      expect(info.error, 'unavailable');
     });
 
-    test('пустой ключ шифруется и расшифровывается без ошибок', () {
-      final encoded = XlCredentials.encryptKey('', key, iv, aesCtr: _fakeAesCtr);
-      expect(XlCredentials.decryptKey(encoded, key, iv, aesCtr: _fakeAesCtr), '');
+    test('невалидный ключ', () {
+      final info = XlStatusInfo.fromContent({
+        'connected': false,
+        'key_saved': false,
+        'error': 'invalid_key',
+      });
+      expect(info.connected, isFalse);
+      expect(info.error, 'invalid_key');
     });
 
-    test('кириллица переживает цикл шифрования', () {
-      const plain = 'ключ-тест-Ключ';
-      final encoded =
-          XlCredentials.encryptKey(plain, key, iv, aesCtr: _fakeAesCtr);
-      expect(XlCredentials.decryptKey(encoded, key, iv, aesCtr: _fakeAesCtr),
-          plain);
+    test('без полей — отключено, без исключения', () {
+      final info = XlStatusInfo.fromContent({});
+      expect(info.connected, isFalse);
+      expect(info.keySaved, isFalse);
+      expect(info.error, isEmpty);
     });
-  });
-
-  test('статус XL — отдельное state-событие, не account_data', () {
-    expect(xlStatusStateType, 'com.liza.xl.status');
   });
 }

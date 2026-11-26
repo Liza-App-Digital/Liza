@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
@@ -37,14 +36,12 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
   /// «щёлкнул второй, пока не долетел первый» — реальные сценарии.
   final Set<String> pending = {};
 
-  /// `true`, если запись в account_data есть, но расшифровать ключ не
-  /// удалось (Keychain очистился после переустановки / переезда на новое
-  /// устройство). Отличаем от «не подключено» — иначе мерчант видит
-  /// «Подключено», пишет боту, получает «подключите интеграцию» и не
-  /// понимает, что для этого надо зайти в настройки и ввести ключ заново.
-  /// Серверное состояние XL из state-event в основном DM с Лизой. `null` —
-  /// ещё не спросили/сеть: тогда показываем локальный account_data.
-  bool? _serverXlConnected;
+  /// Серверный статус XL из state-event в основном DM с Лизой. Источник
+  /// истины — `liza-memory`: она проверяет ключ и пишет событие. Клиент только
+  /// читает; `false` до первого ответа (и при отсутствии события).
+  bool _serverXlConnected = false;
+  bool _serverXlKeySaved = false;
+  String _serverXlError = '';
 
   /// Какая карточка раскрыта ФОРМОЙ ВВОДА КЛЮЧА (у XL подключение — не тумблер).
   ///
@@ -69,18 +66,27 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
     });
   }
 
-  /// Подключён ли кабинет XL — судим по наличию записи в account_data, а не
-  /// по локальному состоянию поля (переживает пересоздание экрана).
-  bool get isConnected {
-    if (_serverXlConnected != null) return _serverXlConnected!;
-    final client = Matrix.of(context).client;
-    final content = client.accountData[xlCredentialsAccountDataType]?.content;
-    return content != null && content.isNotEmpty;
-  }
+  /// Подключён ли кабинет XL — только по серверному статусу.
+  bool get isConnected => _serverXlConnected;
 
-  /// Локальный Keychain больше не нужен: ключ хранится в XL-боте и живёт
-  /// после переустановки. Старую ошибку расшифровки не показываем.
-  bool get keyUnreadable => false;
+  /// Ключ сохранён, но не подтверждён (XL недоступен) — кнопка «Отключить» нужна.
+  bool get xlKeySaved => _serverXlKeySaved;
+
+  /// Человеческий текст серверной ошибки XL (пусто — ошибки нет).
+  String xlErrorText(L10n l10n) {
+    switch (_serverXlError) {
+      case 'invalid_key':
+        return l10n.settingsIntegrationsXlInvalidKey;
+      case 'unavailable':
+        return _serverXlKeySaved
+            ? l10n.settingsIntegrationsXlUnavailable
+            : l10n.settingsIntegrationsXlCheckFailed;
+      default:
+        return _serverXlKeySaved && !_serverXlConnected
+            ? l10n.settingsIntegrationsXlUnavailable
+            : '';
+    }
+  }
 
   /// Основной DM с Лизой ИИ — комната, где живёт state-event с подключениями.
   /// Не первый попавшийся DM с @liza: это мог быть запрос или mini App-чат, а
@@ -129,16 +135,7 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
       _refreshEnabled();
       // Правка с другого устройства/ботом: перечитываем авторитетно.
       _syncSub = Matrix.of(context).client.onSync.stream
-          .where(
-            (s) =>
-                McpConnections.syncAffectsConnections(s) ||
-                (s.rooms?.join?.values.any(
-                      (r) =>
-                          r.state?.any((e) => e.type == xlStatusStateType) ??
-                          false,
-                    ) ??
-                    false),
-          )
+          .where(McpConnections.syncAffectsConnections)
           .listen((_) {
             _refreshXlStatus();
             _refreshEnabled();
@@ -166,13 +163,15 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
     setState(() => _serverEnabled = fetched);
   }
 
-  /// Серверный статус XL; локальный account_data остаётся лишь запасным путём.
+  /// Серверный статус XL (Bot API → liza-memory). `null` — сеть: показанное не затираем.
   Future<void> _refreshXlStatus() async {
-    final room = lizaRoom;
-    if (room == null) return;
-    final connected = await XlStatus.fetch(room);
-    if (!mounted || connected == null) return;
-    setState(() => _serverXlConnected = connected);
+    final info = await XlApi.status(Matrix.of(context).client);
+    if (!mounted || info == null) return;
+    setState(() {
+      _serverXlConnected = info.connected;
+      _serverXlKeySaved = info.keySaved;
+      _serverXlError = info.error;
+    });
   }
 
   /// Включает/выключает беcключевое расширение (ВкусВилл).
@@ -236,74 +235,72 @@ class SettingsIntegrationsController extends State<SettingsIntegrationsPage> {
   void _snack(String text) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 
-  /// Ключ XL теперь едет в основной DM с Лизой — отдельного @xl_bot больше нет.
-  Room? get _xlRoom => lizaRoom;
-
   Future<void> save() async {
     final plainKey = keyController.text.trim();
     if (plainKey.isEmpty) return;
 
+    final l10n = L10n.of(context);
     final client = Matrix.of(context).client;
-    final result = await showFutureLoadingDialog(
+    final result = await showFutureLoadingDialog<XlStatusInfo?>(
       context: context,
-      future: () async {
-        // IV — свежий на КАЖДЫЙ save(), включая повторное подключение после
-        // disconnect()/ошибки. Переиспользовать сохранённый в account_data iv
-        // для нового шифрования нельзя — см. докстринг encryptKey.
-        final encryptionKey = await XlCredentials.getOrCreateEncryptionKey();
-        final iv = XlCredentials.generateIv();
-        final encoded = XlCredentials.encryptKey(plainKey, encryptionKey, iv);
-
-        // Сначала доставка ключа Лизе (она перешлёт его XL-боту), только
-        // потом локальный account_data и серверный статус.
-        final room = _xlRoom;
-        if (room == null) throw StateError('нет основного чата с Лизой');
-        await room.sendEvent(XlCredentials.buildEvent(plainKey));
-        await XlStatus.write(room, true);
-
-        await client.setAccountData(
-          client.userID!,
-          xlCredentialsAccountDataType,
-          {'key': encoded, 'iv': base64Encode(iv)},
-        );
-      },
+      future: () => XlApi.connect(client, plainKey),
     );
-    if (result.isError || !mounted) return;
+    if (!mounted) return;
+    if (result.isError) {
+      _snack(l10n.settingsIntegrationsXlCheckFailed);
+      return;
+    }
+
+    final info = result.isValue ? result.asValue!.value : null;
+    if (info != null) {
+      setState(() {
+        _serverXlConnected = info.connected;
+        _serverXlKeySaved = info.keySaved;
+        _serverXlError = info.error;
+      });
+    }
+    if (info == null || !info.connected) {
+      // Сервер не подтвердил ключ: форма остаётся открытой, карточка не врёт.
+      final message = info == null
+          ? l10n.settingsIntegrationsXlCheckFailed
+          : info.error == 'invalid_key'
+          ? l10n.settingsIntegrationsXlInvalidKey
+          : info.error == 'unavailable' && info.keySaved
+          ? l10n.settingsIntegrationsXlUnavailable
+          : l10n.settingsIntegrationsXlCheckFailed;
+      _snack(message);
+      return;
+    }
 
     keyController.clear();
-    setState(() {
-      _serverXlConnected = true;
-      expandedKeyForm = null;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(L10n.of(context).settingsIntegrationsSaved)),
-    );
+    setState(() => expandedKeyForm = null);
+    _snack(l10n.settingsIntegrationsSaved);
   }
 
   Future<void> disconnect() async {
+    final l10n = L10n.of(context);
     final client = Matrix.of(context).client;
-    final result = await showFutureLoadingDialog(
+    final result = await showFutureLoadingDialog<XlStatusInfo?>(
       context: context,
-      future: () async {
-        final room = _xlRoom;
-        if (room != null) {
-          // Пустой ключ — сигнал XL-боту удалить запись; статус в Matrix — для UI.
-          await room.sendEvent(XlCredentials.buildEvent(''));
-          await XlStatus.write(room, false);
-        }
-        await client.setAccountData(
-          client.userID!,
-          xlCredentialsAccountDataType,
-          {},
-        );
-      },
+      future: () => XlApi.connect(client, ''),
     );
-    if (result.isError || !mounted) return;
-
-    keyController.clear();
+    if (!mounted) return;
+    if (result.isError) {
+      _snack(l10n.settingsIntegrationsXlCheckFailed);
+      return;
+    }
+    final info = result.isValue ? result.asValue!.value : null;
+    if (info == null) {
+      // Сервер не ответил — не выдаём «отключено» за факт.
+      _snack(l10n.settingsIntegrationsXlCheckFailed);
+      return;
+    }
     setState(() {
-      _serverXlConnected = false;
+      _serverXlConnected = info.connected;
+      _serverXlKeySaved = info.keySaved;
+      _serverXlError = info.error;
     });
+    keyController.clear();
   }
 
   @override

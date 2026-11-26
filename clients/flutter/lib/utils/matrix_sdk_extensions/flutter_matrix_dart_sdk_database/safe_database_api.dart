@@ -27,7 +27,10 @@ import 'package:matrix/src/utils/queued_to_device_event.dart';
 class SafeDatabaseApi implements DatabaseApi {
   final DatabaseApi _inner;
 
-  SafeDatabaseApi(this._inner);
+  /// Вызывается после `clear()`/`delete()` — так SDK выходит из аккаунта.
+  final Future<void> Function()? onWiped;
+
+  SafeDatabaseApi(this._inner, {this.onWiped});
 
   // -- Методы с патчем -------------------------------------------------------
 
@@ -47,7 +50,10 @@ class SafeDatabaseApi implements DatabaseApi {
       // Windows: файл кэша залочен другим процессом (errno 32). Один такой
       // файл прерывает цикл уборки SDK — оставшиеся дочистятся следующим
       // проходом. Здесь важно НЕ дать исключению всплыть в root-zone.
-      Logs().w('deleteOldFiles: файл залочен ОС (errno ${e.osError?.errorCode})', e);
+      Logs().w(
+        'deleteOldFiles: файл залочен ОС (errno ${e.osError?.errorCode})',
+        e,
+      );
     }
   }
 
@@ -58,7 +64,10 @@ class SafeDatabaseApi implements DatabaseApi {
     } on PathNotFoundException catch (_) {
       return false;
     } on PathAccessException catch (e) {
-      Logs().w('deleteFile: файл залочен ОС (errno ${e.osError?.errorCode})', e);
+      Logs().w(
+        'deleteFile: файл залочен ОС (errno ${e.osError?.errorCode})',
+        e,
+      );
       return false;
     }
   }
@@ -84,7 +93,10 @@ class SafeDatabaseApi implements DatabaseApi {
     } on PathNotFoundException catch (e) {
       Logs().w('storeFile: директория кэша удалена ОС', e);
     } on PathAccessException catch (e) {
-      Logs().w('storeFile: файл/каталог залочен ОС (errno ${e.osError?.errorCode})', e);
+      Logs().w(
+        'storeFile: файл/каталог залочен ОС (errno ${e.osError?.errorCode})',
+        e,
+      );
     }
   }
 
@@ -105,18 +117,17 @@ class SafeDatabaseApi implements DatabaseApi {
     String? deviceName,
     String? prevBatch,
     String? olmAccount,
-  ) =>
-      _inner.updateClient(
-        homeserverUrl,
-        token,
-        tokenExpiresAt,
-        refreshToken,
-        userId,
-        deviceId,
-        deviceName,
-        prevBatch,
-        olmAccount,
-      );
+  ) => _inner.updateClient(
+    homeserverUrl,
+    token,
+    tokenExpiresAt,
+    refreshToken,
+    userId,
+    deviceId,
+    deviceName,
+    prevBatch,
+    olmAccount,
+  );
 
   @override
   Future insertClient(
@@ -130,19 +141,18 @@ class SafeDatabaseApi implements DatabaseApi {
     String? deviceName,
     String? prevBatch,
     String? olmAccount,
-  ) =>
-      _inner.insertClient(
-        name,
-        homeserverUrl,
-        token,
-        tokenExpiresAt,
-        refreshToken,
-        userId,
-        deviceId,
-        deviceName,
-        prevBatch,
-        olmAccount,
-      );
+  ) => _inner.insertClient(
+    name,
+    homeserverUrl,
+    token,
+    tokenExpiresAt,
+    refreshToken,
+    userId,
+    deviceId,
+    deviceName,
+    prevBatch,
+    olmAccount,
+  );
 
   @override
   Future<List<Room>> getRoomList(Client client) => _inner.getRoomList(client);
@@ -152,9 +162,11 @@ class SafeDatabaseApi implements DatabaseApi {
     Client client,
     String roomId, {
     bool loadImportantStates = true,
-  }) =>
-      _inner.getSingleRoom(client, roomId,
-          loadImportantStates: loadImportantStates);
+  }) => _inner.getSingleRoom(
+    client,
+    roomId,
+    loadImportantStates: loadImportantStates,
+  );
 
   @override
   Future<Map<String, BasicEvent>> getAccountData() => _inner.getAccountData();
@@ -165,8 +177,7 @@ class SafeDatabaseApi implements DatabaseApi {
     SyncRoomUpdate roomUpdate,
     Event? lastEvent,
     Client client,
-  ) =>
-      _inner.storeRoomUpdate(roomId, roomUpdate, lastEvent, client);
+  ) => _inner.storeRoomUpdate(roomId, roomUpdate, lastEvent, client);
 
   @override
   Future<void> deleteTimelineForRoom(String roomId) =>
@@ -178,8 +189,7 @@ class SafeDatabaseApi implements DatabaseApi {
     StrippedStateEvent event,
     EventUpdateType type,
     Client client,
-  ) =>
-      _inner.storeEventUpdate(roomId, event, type, client);
+  ) => _inner.storeEventUpdate(roomId, event, type, client);
 
   @override
   Future<Event?> getEventById(String eventId, Room room) =>
@@ -196,8 +206,7 @@ class SafeDatabaseApi implements DatabaseApi {
   Future<void> storeUserProfile(
     String userId,
     CachedProfileInformation profile,
-  ) =>
-      _inner.storeUserProfile(userId, profile);
+  ) => _inner.storeUserProfile(userId, profile);
 
   @override
   Future<void> markUserProfileAsOutdated(String userId) =>
@@ -207,7 +216,10 @@ class SafeDatabaseApi implements DatabaseApi {
   Future<void> clearCache() => _inner.clearCache();
 
   @override
-  Future<void> clear() => _inner.clear();
+  Future<void> clear() async {
+    await _inner.clear();
+    await onWiped?.call();
+  }
 
   @override
   Future<User?> getUser(String userId, Room room) =>
@@ -222,9 +234,12 @@ class SafeDatabaseApi implements DatabaseApi {
     int start = 0,
     bool onlySending = false,
     int? limit,
-  }) =>
-      _inner.getEventList(room,
-          start: start, onlySending: onlySending, limit: limit);
+  }) => _inner.getEventList(
+    room,
+    start: start,
+    onlySending: onlySending,
+    limit: limit,
+  );
 
   @override
   Future<List<String>> getEventIdList(
@@ -232,9 +247,12 @@ class SafeDatabaseApi implements DatabaseApi {
     int start = 0,
     bool includeSending = false,
     int? limit,
-  }) =>
-      _inner.getEventIdList(room,
-          start: start, includeSending: includeSending, limit: limit);
+  }) => _inner.getEventIdList(
+    room,
+    start: start,
+    includeSending: includeSending,
+    limit: limit,
+  );
 
   @override
   Future storeSyncFilterId(String syncFilterId) =>
@@ -259,8 +277,7 @@ class SafeDatabaseApi implements DatabaseApi {
   Future<OutboundGroupSession?> getOutboundGroupSession(
     String roomId,
     String userId,
-  ) =>
-      _inner.getOutboundGroupSession(roomId, userId);
+  ) => _inner.getOutboundGroupSession(roomId, userId);
 
   @override
   Future<List<StoredInboundGroupSession>> getAllInboundGroupSessions() =>
@@ -270,16 +287,14 @@ class SafeDatabaseApi implements DatabaseApi {
   Future<StoredInboundGroupSession?> getInboundGroupSession(
     String roomId,
     String sessionId,
-  ) =>
-      _inner.getInboundGroupSession(roomId, sessionId);
+  ) => _inner.getInboundGroupSession(roomId, sessionId);
 
   @override
   Future updateInboundGroupSessionIndexes(
     String indexes,
     String roomId,
     String sessionId,
-  ) =>
-      _inner.updateInboundGroupSessionIndexes(indexes, roomId, sessionId);
+  ) => _inner.updateInboundGroupSessionIndexes(indexes, roomId, sessionId);
 
   @override
   Future storeInboundGroupSession(
@@ -291,23 +306,19 @@ class SafeDatabaseApi implements DatabaseApi {
     String allowedAtIndex,
     String senderKey,
     String senderClaimedKey,
-  ) =>
-      _inner.storeInboundGroupSession(
-        roomId,
-        sessionId,
-        pickle,
-        content,
-        indexes,
-        allowedAtIndex,
-        senderKey,
-        senderClaimedKey,
-      );
+  ) => _inner.storeInboundGroupSession(
+    roomId,
+    sessionId,
+    pickle,
+    content,
+    indexes,
+    allowedAtIndex,
+    senderKey,
+    senderClaimedKey,
+  );
 
   @override
-  Future markInboundGroupSessionAsUploaded(
-    String roomId,
-    String sessionId,
-  ) =>
+  Future markInboundGroupSessionAsUploaded(String roomId, String sessionId) =>
       _inner.markInboundGroupSessionAsUploaded(roomId, sessionId);
 
   @override
@@ -315,9 +326,11 @@ class SafeDatabaseApi implements DatabaseApi {
     String allowedAtIndex,
     String roomId,
     String sessionId,
-  ) =>
-      _inner.updateInboundGroupSessionAllowedAtIndex(
-          allowedAtIndex, roomId, sessionId);
+  ) => _inner.updateInboundGroupSessionAllowedAtIndex(
+    allowedAtIndex,
+    roomId,
+    sessionId,
+  );
 
   @override
   Future removeOutboundGroupSession(String roomId) =>
@@ -342,16 +355,14 @@ class SafeDatabaseApi implements DatabaseApi {
     String sessionId,
     String pickle,
     int lastReceived,
-  ) =>
-      _inner.storeOlmSession(identityKey, sessionId, pickle, lastReceived);
+  ) => _inner.storeOlmSession(identityKey, sessionId, pickle, lastReceived);
 
   @override
   Future setLastActiveUserDeviceKey(
     int lastActive,
     String userId,
     String deviceId,
-  ) =>
-      _inner.setLastActiveUserDeviceKey(lastActive, userId, deviceId);
+  ) => _inner.setLastActiveUserDeviceKey(lastActive, userId, deviceId);
 
   @override
   Future setLastSentMessageUserDeviceKey(
@@ -359,8 +370,7 @@ class SafeDatabaseApi implements DatabaseApi {
     String userId,
     String deviceId,
   ) =>
-      _inner.setLastSentMessageUserDeviceKey(
-          lastSentMessage, userId, deviceId);
+      _inner.setLastSentMessageUserDeviceKey(lastSentMessage, userId, deviceId);
 
   @override
   Future clearSSSSCache() => _inner.clearSSSSCache();
@@ -371,8 +381,7 @@ class SafeDatabaseApi implements DatabaseApi {
     String keyId,
     String ciphertext,
     String content,
-  ) =>
-      _inner.storeSSSSCache(type, keyId, ciphertext, content);
+  ) => _inner.storeSSSSCache(type, keyId, ciphertext, content);
 
   @override
   Future markInboundGroupSessionsAsNeedingUpload() =>
@@ -393,9 +402,14 @@ class SafeDatabaseApi implements DatabaseApi {
     bool verified,
     bool blocked,
     int lastActive,
-  ) =>
-      _inner.storeUserDeviceKey(
-          userId, deviceId, content, verified, blocked, lastActive);
+  ) => _inner.storeUserDeviceKey(
+    userId,
+    deviceId,
+    content,
+    verified,
+    blocked,
+    lastActive,
+  );
 
   @override
   Future removeUserDeviceKey(String userId, String deviceId) =>
@@ -412,13 +426,16 @@ class SafeDatabaseApi implements DatabaseApi {
     String content,
     bool verified,
     bool blocked,
-  ) =>
-      _inner.storeUserCrossSigningKey(
-          userId, publicKey, content, verified, blocked);
+  ) => _inner.storeUserCrossSigningKey(
+    userId,
+    publicKey,
+    content,
+    verified,
+    blocked,
+  );
 
   @override
-  Future deleteFromToDeviceQueue(int id) =>
-      _inner.deleteFromToDeviceQueue(id);
+  Future deleteFromToDeviceQueue(int id) => _inner.deleteFromToDeviceQueue(id);
 
   @override
   Future removeEvent(String eventId, String roomId) =>
@@ -433,45 +450,37 @@ class SafeDatabaseApi implements DatabaseApi {
     bool verified,
     String userId,
     String publicKey,
-  ) =>
-      _inner.setVerifiedUserCrossSigningKey(verified, userId, publicKey);
+  ) => _inner.setVerifiedUserCrossSigningKey(verified, userId, publicKey);
 
   @override
   Future setBlockedUserCrossSigningKey(
     bool blocked,
     String userId,
     String publicKey,
-  ) =>
-      _inner.setBlockedUserCrossSigningKey(blocked, userId, publicKey);
+  ) => _inner.setBlockedUserCrossSigningKey(blocked, userId, publicKey);
 
   @override
   Future setVerifiedUserDeviceKey(
     bool verified,
     String userId,
     String deviceId,
-  ) =>
-      _inner.setVerifiedUserDeviceKey(verified, userId, deviceId);
+  ) => _inner.setVerifiedUserDeviceKey(verified, userId, deviceId);
 
   @override
   Future setBlockedUserDeviceKey(
     bool blocked,
     String userId,
     String deviceId,
-  ) =>
-      _inner.setBlockedUserDeviceKey(blocked, userId, deviceId);
+  ) => _inner.setBlockedUserDeviceKey(blocked, userId, deviceId);
 
   @override
   Future<List<Event>> getUnimportantRoomEventStatesForRoom(
     List<String> events,
     Room room,
-  ) =>
-      _inner.getUnimportantRoomEventStatesForRoom(events, room);
+  ) => _inner.getUnimportantRoomEventStatesForRoom(events, room);
 
   @override
-  Future<List<OlmSession>> getOlmSessions(
-    String identityKey,
-    String userId,
-  ) =>
+  Future<List<OlmSession>> getOlmSessions(String identityKey, String userId) =>
       _inner.getOlmSessions(identityKey, userId);
 
   @override
@@ -481,40 +490,32 @@ class SafeDatabaseApi implements DatabaseApi {
   Future<List<OlmSession>> getOlmSessionsForDevices(
     List<String> identityKeys,
     String userId,
-  ) =>
-      _inner.getOlmSessionsForDevices(identityKeys, userId);
+  ) => _inner.getOlmSessionsForDevices(identityKeys, userId);
 
   @override
   Future<List<QueuedToDeviceEvent>> getToDeviceEventQueue() =>
       _inner.getToDeviceEventQueue();
 
   @override
-  Future insertIntoToDeviceQueue(
-    String type,
-    String txnId,
-    String content,
-  ) =>
+  Future insertIntoToDeviceQueue(String type, String txnId, String content) =>
       _inner.insertIntoToDeviceQueue(type, txnId, content);
 
   @override
   Future<List<String>> getLastSentMessageUserDeviceKey(
     String userId,
     String deviceId,
-  ) =>
-      _inner.getLastSentMessageUserDeviceKey(userId, deviceId);
+  ) => _inner.getLastSentMessageUserDeviceKey(userId, deviceId);
 
   @override
-  Future<List<StoredInboundGroupSession>>
-      getInboundGroupSessionsToUpload() =>
-          _inner.getInboundGroupSessionsToUpload();
+  Future<List<StoredInboundGroupSession>> getInboundGroupSessionsToUpload() =>
+      _inner.getInboundGroupSessionsToUpload();
 
   @override
   Future<void> addSeenDeviceId(
     String userId,
     String deviceId,
     String publicKeys,
-  ) =>
-      _inner.addSeenDeviceId(userId, deviceId, publicKeys);
+  ) => _inner.addSeenDeviceId(userId, deviceId, publicKeys);
 
   @override
   Future<void> addSeenPublicKey(String publicKey, String deviceId) =>
@@ -550,13 +551,15 @@ class SafeDatabaseApi implements DatabaseApi {
       _inner.getPresence(userId);
 
   @override
-  Future<void> storeWellKnown(
-          DiscoveryInformation? discoveryInformation) =>
+  Future<void> storeWellKnown(DiscoveryInformation? discoveryInformation) =>
       _inner.storeWellKnown(discoveryInformation);
 
   @override
   Future<DiscoveryInformation?> getWellKnown() => _inner.getWellKnown();
 
   @override
-  Future<void> delete() => _inner.delete();
+  Future<void> delete() async {
+    await _inner.delete();
+    await onWiped?.call();
+  }
 }

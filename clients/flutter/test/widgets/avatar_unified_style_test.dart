@@ -108,10 +108,10 @@ void main() {
     }
   });
 
-  test('AC-8: палитра клиента = PALETTE запросов Лизы (request_avatar.py) — '
+  test('AC-8: палитра клиента = PALETTE запросов Лизы (liza-memory request_avatar.py) — '
       'AC:RL-avatar-unified-style/8', () {
     final py = File(
-      '../../servers/bots/liza/request_avatar.py',
+      '../../servers/liza-memory/liza_memory/request_avatar.py',
     ).readAsStringSync();
     final tuple = RegExp(
       r'^PALETTE = \(([^)]*)\)',

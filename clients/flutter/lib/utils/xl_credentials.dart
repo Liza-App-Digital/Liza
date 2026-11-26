@@ -1,167 +1,127 @@
 import 'dart:convert';
-import 'dart:math';
-import 'dart:typed_data';
 
+import 'package:http/http.dart' as http;
 import 'package:matrix/matrix.dart';
-// ignore: depend_on_referenced_packages
-import 'package:vodozemac/vodozemac.dart';
 
-import 'package:liza/utils/secure_storage.dart';
+import 'package:liza/config/app_config.dart';
 
-/// Подпись AES-CTR из vodozemac. Вынесена в typedef, чтобы тесты подменяли
-/// реализацию: нативная библиотека в host-`flutter test` не грузится
-/// (тот же приём, что в `e2ee_media_proxy.dart`).
-typedef AesCtrFn =
-    Uint8List Function({
-      required Uint8List input,
-      required Uint8List key,
-      required Uint8List iv,
-    });
-
-/// Тип account_data, где лежит зашифрованный API-ключ XL.
-const String xlCredentialsAccountDataType = 'com.liza.xl.credentials';
-
-/// msgtype служебного события, которым ключ доезжает до бота.
+/// msgtype служебного события СТАРОГО пути (клиенты ≤ 2.4.0): ключ ехал в чат.
+///
+/// Новые клиенты отправляют ключ через [XlApi] (HTTPS, без сообщения в
+/// переписке). Константа нужна, чтобы исторические события не показывались в
+/// таймлайне как обычные сообщения.
 const String xlCredentialsMsgtype = 'com.liza.xl.credentials';
 
-/// Состояние XL на сервере (state-event в основном DM с Лизой). Источник
-/// истины для карточки: локальный account_data может не расшифроваться после
-/// переустановки, а ключ в XL-боте при этом жив.
-const String xlStatusStateType = 'com.liza.xl.status';
-
-/// Ключ в `flutterSecureStorage`, под которым хранится локальный AES-ключ
-/// шифрования account_data-записи с ключом XL.
-const String _xlEncryptionKeyStorageKey = 'xl_credentials_encryption_key';
-
-/// Работа с API-ключом XL: шифрование для account_data и упаковка в событие.
+/// Старый способ доставки ключа (клиенты ≤ 2.4.0): служебное событие в чат.
 ///
-/// Ключ равносилен полному доступу к кабинету мерчанта, поэтому в
-/// account_data кладётся только шифротекст, а до бота он едет служебным
-/// событием внутри E2EE-комнаты.
+/// Новый клиент его не отправляет — ключ идёт через [XlApi]. Оставлено для
+/// совместимости формата и тестов фильтра таймлайна.
 abstract final class XlCredentials {
-  /// Служебное событие с ключом для бота.
+  /// Служебное событие с ключом для Лизы.
   static Map<String, Object?> buildEvent(String apiKey) => {
     'msgtype': xlCredentialsMsgtype,
     'body': 'Подключение интеграции XL',
     'xl_api_key': apiKey.trim(),
   };
+}
 
-  /// Шифрует ключ и кодирует в base64 для хранения в account_data.
-  ///
-  /// ⚠️ [iv] ОБЯЗАН быть свежим случайным значением на КАЖДЫЙ вызов с тем же
-  /// [key]. AES-CTR — потоковый шифр: повторное использование пары (key, iv)
-  /// для разных данных вскрывает исходный текст через XOR шифротекстов.
-  /// Сохранённый в account_data iv годится ТОЛЬКО для расшифровки уже
-  /// записанного значения — для нового шифрования генерируй новый.
-  static String encryptKey(
-    String plain,
-    Uint8List key,
-    Uint8List iv, {
-    AesCtrFn? aesCtr,
-  }) {
-    final impl = aesCtr ?? _defaultAesCtr;
-    final cipher = impl(
-      input: Uint8List.fromList(utf8.encode(plain)),
-      key: key,
-      iv: iv,
+/// Серверный статус XL из ответа Bot API (после проверки ключа).
+///
+/// * [connected] — ключ сохранён и проверен `initialize` + `tools/list`;
+/// * [keySaved] — ключ лежит в PG, даже если проверить не удалось (XL недоступен);
+/// * [error] — `''`, `invalid_key` или `unavailable`.
+class XlStatusInfo {
+  const XlStatusInfo({
+    required this.connected,
+    required this.keySaved,
+    required this.error,
+  });
+
+  final bool connected;
+  final bool keySaved;
+  final String error;
+
+  /// Отключённое состояние (ключа нет / сервер не подтверждал).
+  static const XlStatusInfo disconnected = XlStatusInfo(
+    connected: false,
+    keySaved: false,
+    error: '',
+  );
+
+  factory XlStatusInfo.fromContent(Map<String, dynamic> content) =>
+      XlStatusInfo(
+        connected: content['connected'] == true,
+        keySaved: content['key_saved'] == true,
+        error: content['error'] is String ? content['error'] as String : '',
+      );
+}
+
+/// Клиентские эндпоинты XL в Liza Bot API.
+///
+/// Ключ больше не едет сообщением в переписку и не хранится в account_data:
+/// `POST /liza/v1/xl/connect` кладёт его в PG Лизы (шифротекст) и возвращает
+/// серверный статус; `GET /liza/v1/xl/status` читает его при открытии карточки.
+/// Аутентификация — Matrix access-token пользователя (whoami на его homeserver),
+/// как у `/liza/mybots`.
+abstract final class XlApi {
+  static const Duration _connectTimeout = Duration(seconds: 60);
+  static const Duration _statusTimeout = Duration(seconds: 10);
+
+  /// Сохранить/удалить ключ. `null` — сеть/сервер не ответил (статус не трогаем).
+  static Future<XlStatusInfo?> connect(Client client, String key) async {
+    final data = await _request(
+      client,
+      'POST',
+      '/liza/v1/xl/connect',
+      body: {'key': key},
+      timeout: _connectTimeout,
     );
-    return base64Encode(cipher);
+    return data == null ? null : XlStatusInfo.fromContent(data);
   }
 
-  /// Обратная операция к [encryptKey].
-  ///
-  /// [iv] здесь — тот, что сохранён рядом с шифротекстом. Для нового
-  /// шифрования его переиспользовать нельзя (см. предупреждение в [encryptKey]).
-  static String decryptKey(
-    String encoded,
-    Uint8List key,
-    Uint8List iv, {
-    AesCtrFn? aesCtr,
-  }) {
-    final impl = aesCtr ?? _defaultAesCtr;
-    final plain = impl(input: base64Decode(encoded), key: key, iv: iv);
-    return utf8.decode(plain);
-  }
-
-  static AesCtrFn get _defaultAesCtr => _vodozemacAesCtr;
-
-  /// Локальный AES-ключ шифрования account_data-записи. Живёт в Keychain/
-  /// secure storage устройства (НЕ в account_data — иначе шифрование теряет
-  /// смысл), генерируется один раз и переиспользуется на все последующие
-  /// `save()`. IV — в отличие от ключа — генерируется заново на каждый вызов
-  /// [encryptKey], см. предупреждение там.
-  static Future<Uint8List> getOrCreateEncryptionKey() async {
-    final stored = await flutterSecureStorage.read(
-      key: _xlEncryptionKeyStorageKey,
+  /// Серверный статус карточки. `null` — сеть/сервер не ответил.
+  static Future<XlStatusInfo?> status(Client client) async {
+    final data = await _request(
+      client,
+      'GET',
+      '/liza/v1/xl/status',
+      timeout: _statusTimeout,
     );
-    if (stored != null) return base64Decode(stored);
-
-    final rng = Random.secure();
-    final key = Uint8List(32);
-    key.setAll(0, Iterable.generate(key.length, (_) => rng.nextInt(256)));
-    await flutterSecureStorage.write(
-      key: _xlEncryptionKeyStorageKey,
-      value: base64Encode(key),
-    );
-    return key;
+    return data == null ? null : XlStatusInfo.fromContent(data);
   }
 
-  /// Свежий случайный IV для очередного [encryptKey] (не путать с ключом
-  /// шифрования — см. [getOrCreateEncryptionKey]).
-  static Uint8List generateIv() {
-    final rng = Random.secure();
-    final iv = Uint8List(16);
-    iv.setAll(0, Iterable.generate(iv.length, (_) => rng.nextInt(256)));
-    return iv;
-  }
-
-  /// Читает и расшифровывает сохранённый ключ XL из account_data клиента.
-  ///
-  /// `null`, если интеграция не подключена ИЛИ запись повреждена (ключ/IV не
-  /// совпали с локальным AES-ключом — например, Keychain очистился после
-  /// переустановки приложения). Во втором случае вызывающая сторона обязана
-  /// трактовать это как «подключите заново», а не ронять экран/чат.
-  static Future<String?> readStoredKey(Client client) async {
-    final content = client.accountData[xlCredentialsAccountDataType]?.content;
-    final encoded = content?.tryGet<String>('key');
-    final ivBase64 = content?.tryGet<String>('iv');
-    if (encoded == null || ivBase64 == null) return null;
-
-    final encryptionKey = await getOrCreateEncryptionKey();
+  static Future<Map<String, dynamic>?> _request(
+    Client client,
+    String method,
+    String path, {
+    Map<String, dynamic>? body,
+    required Duration timeout,
+  }) async {
+    final token = client.accessToken;
+    if (token == null || token.isEmpty) return null;
+    final base = AppConfig.lizaBotApiBaseForHomeserver(client.homeserver?.host);
+    final uri = Uri.parse('$base$path');
+    final headers = <String, String>{
+      'Authorization': 'Bearer $token',
+      'Content-Type': 'application/json',
+      if (client.homeserver != null)
+        'X-Liza-Homeserver': client.homeserver.toString(),
+    };
     try {
-      return decryptKey(encoded, encryptionKey, base64Decode(ivBase64));
-    } on FormatException {
+      final response = method == 'POST'
+          ? await http
+                .post(uri, headers: headers, body: jsonEncode(body ?? {}))
+                .timeout(timeout)
+          : await http.get(uri, headers: headers).timeout(timeout);
+      if (response.statusCode != 200) {
+        Logs().w('XL: $path → ${response.statusCode}');
+        return null;
+      }
+      final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+      return decoded is Map<String, dynamic> ? decoded : null;
+    } catch (e) {
+      Logs().w('XL: $path failed: $e');
       return null;
     }
   }
 }
-
-/// Состояние подключения XL в Matrix: так карточка не зависит от локального Keychain.
-abstract final class XlStatus {
-  static Future<bool?> fetch(Room room) async {
-    try {
-      final content = await room.client
-          .getRoomStateWithKey(room.id, xlStatusStateType, '')
-          .timeout(const Duration(seconds: 15));
-      return content['connected'] == true;
-    } on MatrixException catch (e) {
-      if (e.errcode == 'M_NOT_FOUND') return null;
-      return null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  static Future<void> write(Room room, bool connected) =>
-      room.client.setRoomStateWithKey(room.id, xlStatusStateType, '', {
-        'connected': connected,
-      });
-}
-
-/// Боевая реализация: AES-256-CTR из vodozemac (тот же примитив, что у
-/// зашифрованных вложений).
-Uint8List _vodozemacAesCtr({
-  required Uint8List input,
-  required Uint8List key,
-  required Uint8List iv,
-}) => CryptoUtils.aesCtr(input: input, key: key, iv: iv);

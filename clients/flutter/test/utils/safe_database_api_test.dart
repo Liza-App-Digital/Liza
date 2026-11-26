@@ -60,16 +60,16 @@ class _ThrowingDb extends DatabaseApi {
 // ---------------------------------------------------------------------------
 
 PathNotFoundException _makeNotFound() => PathNotFoundException(
-      '/cache/file',
-      OSError('No such file or directory', 2),
-      '/cache/file',
-    );
+  '/cache/file',
+  OSError('No such file or directory', 2),
+  '/cache/file',
+);
 
 PathAccessException _makeAccessDenied() => PathAccessException(
-      '/cache/file',
-      OSError('Sharing violation', 32),
-      '/cache/file',
-    );
+  '/cache/file',
+  OSError('Sharing violation', 32),
+  '/cache/file',
+);
 
 StateError _makeStateError() => StateError('unexpected state');
 
@@ -127,15 +127,19 @@ void main() {
         expect(result, isFalse);
       });
 
-      test('deleteOldFiles → возвращает без throw (Windows: файл залочен)',
-          () async {
-        await expectLater(sut.deleteOldFiles(0), completes);
-      });
+      test(
+        'deleteOldFiles → возвращает без throw (Windows: файл залочен)',
+        () async {
+          await expectLater(sut.deleteOldFiles(0), completes);
+        },
+      );
 
-      test('storeFile → возвращает без throw (Windows: файл залочен)',
-          () async {
-        await expectLater(sut.storeFile(mxc, bytes, 0), completes);
-      });
+      test(
+        'storeFile → возвращает без throw (Windows: файл залочен)',
+        () async {
+          await expectLater(sut.storeFile(mxc, bytes, 0), completes);
+        },
+      );
     },
   );
 
@@ -167,28 +171,54 @@ void main() {
 
   // ---- AC-3 дополнение: обычный Exception тоже пробрасывается ---------------
 
-  group(
-    'AC:RL-safedb-path-access-guard/3 (Exception) — пробрасывается',
-    () {
-      late SafeDatabaseApi sut;
-      setUp(() => sut =
-          SafeDatabaseApi(_ThrowingDb(Exception('unexpected db error'))));
+  group('AC:RL-safedb-path-access-guard/3 (Exception) — пробрасывается', () {
+    late SafeDatabaseApi sut;
+    setUp(
+      () =>
+          sut = SafeDatabaseApi(_ThrowingDb(Exception('unexpected db error'))),
+    );
 
-      test('getFile → пробрасывает Exception', () async {
-        await expectLater(sut.getFile(mxc), throwsException);
-      });
+    test('getFile → пробрасывает Exception', () async {
+      await expectLater(sut.getFile(mxc), throwsException);
+    });
 
-      test('deleteFile → пробрасывает Exception', () async {
-        await expectLater(sut.deleteFile(mxc), throwsException);
-      });
+    test('deleteFile → пробрасывает Exception', () async {
+      await expectLater(sut.deleteFile(mxc), throwsException);
+    });
 
-      test('deleteOldFiles → пробрасывает Exception', () async {
-        await expectLater(sut.deleteOldFiles(0), throwsException);
-      });
+    test('deleteOldFiles → пробрасывает Exception', () async {
+      await expectLater(sut.deleteOldFiles(0), throwsException);
+    });
 
-      test('storeFile → пробрасывает Exception', () async {
-        await expectLater(sut.storeFile(mxc, bytes, 0), throwsException);
+    test('storeFile → пробрасывает Exception', () async {
+      await expectLater(sut.storeFile(mxc, bytes, 0), throwsException);
+    });
+  });
+
+  // Выход из аккаунта (SDK зовёт clear(), при сбое — delete()) обязан убрать
+  // карантинные копии БД: ledger:RL-db-quarantine-not-delete.
+  group('AC:RL-db-quarantine-not-delete/12 — onWiped после clear/delete', () {
+    for (final wipe in ['clear', 'delete']) {
+      test('$wipe → onWiped после очистки', () async {
+        final calls = <String>[];
+        final sut = SafeDatabaseApi(
+          _WipeDb(calls),
+          onWiped: () async => calls.add('onWiped'),
+        );
+        await (wipe == 'clear' ? sut.clear() : sut.delete());
+        expect(calls, [wipe, 'onWiped']);
       });
-    },
-  );
+    }
+  });
+}
+
+class _WipeDb extends _ThrowingDb {
+  _WipeDb(this.calls) : super(Exception('unused'));
+  final List<String> calls;
+
+  @override
+  Future<void> clear() async => calls.add('clear');
+
+  @override
+  Future<void> delete() async => calls.add('delete');
 }

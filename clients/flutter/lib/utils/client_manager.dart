@@ -61,7 +61,12 @@ abstract class ClientManager {
     final clients = <Client>[];
     for (final name in clientNames) {
       try {
-        final client = await createClient(name, store);
+        // initialize:false — фоновые изоляты пуша: файлы БД там не трогаем.
+        final client = await createClient(
+          name,
+          store,
+          allowDatabaseQuarantine: initialize,
+        );
         if (observePushContractStartup && clients.length < 16) {
           PushContractScheduler.beforeForegroundInit(client);
         }
@@ -154,8 +159,9 @@ abstract class ClientManager {
 
   static Future<Client> createClient(
     String clientName,
-    SharedPreferences store,
-  ) async {
+    SharedPreferences store, {
+    bool allowDatabaseQuarantine = true,
+  }) async {
     final shareKeysWith = AppSettings.shareKeysWith.value;
     final enableSoftLogout = AppSettings.enableSoftLogout.value;
 
@@ -186,8 +192,6 @@ abstract class ClientManager {
         // Маркер чата-запроса к Лизе: на нём держится закрепление основного
         // чата с Лизой (isLizaAssistantRoom) в списке — partial-комнаты.
         'com.liza.assistant.request',
-        // Серверный статус XL: карточка настроек не должна зависеть от Keychain.
-        'com.liza.xl.status',
         // Скрытие отдельных участников из списка (LABA-2381) держится на этом
         // room state. Без записи здесь partial-комната вернула бы getState=null
         // и скрытый участник всплывал бы в списке (тот же класс, что topology).
@@ -249,7 +253,10 @@ abstract class ClientManager {
         ),
       ),
       logLevel: kReleaseMode ? Level.warning : Level.verbose,
-      database: await flutterMatrixSdkDatabaseBuilder(clientName),
+      database: await flutterMatrixSdkDatabaseBuilder(
+        clientName,
+        allowQuarantine: allowDatabaseQuarantine,
+      ),
       supportedLoginTypes: {
         AuthenticationTypes.password,
         AuthenticationTypes.sso,

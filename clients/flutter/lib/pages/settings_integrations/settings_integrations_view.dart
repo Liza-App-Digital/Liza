@@ -1,14 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'package:matrix/matrix.dart';
-
 import 'package:liza/config/themes.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/settings_integrations/settings_integrations.dart';
 import 'package:liza/utils/mcp_connections.dart';
-import 'package:liza/utils/xl_credentials.dart';
-import 'package:liza/widgets/matrix.dart';
 
 /// Витрина MCP-подключений: «Подключенные» + «Каталог расширений».
 class SettingsIntegrationsView extends StatelessWidget {
@@ -19,7 +15,6 @@ class SettingsIntegrationsView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = L10n.of(context);
-    final client = Matrix.of(context).client;
     final isColumnMode = LizaThemes.isColumnMode(context);
 
     return Scaffold(
@@ -30,32 +25,12 @@ class SettingsIntegrationsView extends StatelessWidget {
         automaticallyImplyLeading: !isColumnMode,
         title: Text(l10n.settingsMcpTitle),
       ),
-      // Ключ XL живёт в account_data и может смениться НЕ с этого экрана
-      // (другое устройство) — за ним следим здесь. Образец —
-      // settings_ignore_list_view.dart.
-      //
-      // ⚠️ Состояние MCP-подключений здесь НЕ слушаем, хотя раньше слушали.
-      // Его владелец — контроллер: он спрашивает сервер и делает `setState`
-      // сам. Если оставить оба слушателя, на каждое релевантное событие
-      // приходит ДВА ребилда, причём первый (от этого StreamBuilder) рисует
-      // ещё СТАРЫЕ данные — фетч в тот момент только стартовал. Один писатель
-      // числа — одна точка перерисовки.
-      //
-      // Фильтр обязателен: голый `onSync.stream` эмитит на КАЖДЫЙ цикл синка,
-      // и список карточек пересобирался бы десятки раз в минуту просто от
-      // чужого трафика. Тот же приём — chat_settings_popup_menu.dart.
-      body: StreamBuilder(
-        stream: client.onSync.stream.where(_affectsXlKey),
-        builder: (context, _) => _body(context),
-      ),
+      // Состояние карточек — у контроллера: он сам спрашивает сервер и делает
+      // `setState`. Второй слушатель здесь давал бы двойной ребилд и мигал
+      // старыми данными.
+      body: _body(context),
     );
   }
-
-  /// Сменился ли ключ XL (единственный источник, который перерисовывает
-  /// витрину помимо `setState` контроллера).
-  static bool _affectsXlKey(SyncUpdate sync) =>
-      sync.accountData?.any((e) => e.type == xlCredentialsAccountDataType) ??
-      false;
 
   Widget _body(BuildContext context) {
     final l10n = L10n.of(context);
@@ -188,15 +163,22 @@ class _McpCard extends StatelessWidget {
             subtitle: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  controller.keyUnreadable && server.requiresKey
-                      ? l10n.settingsIntegrationsKeyUnreadable
-                      : mcpServerDescription(l10n, server.id),
-                  style: TextStyle(
-                    color: controller.keyUnreadable && server.requiresKey
-                        ? theme.colorScheme.error
-                        : theme.colorScheme.onSurfaceVariant,
-                  ),
+                Builder(
+                  builder: (context) {
+                    final xlError = server.requiresKey
+                        ? controller.xlErrorText(l10n)
+                        : '';
+                    return Text(
+                      xlError.isNotEmpty
+                          ? xlError
+                          : mcpServerDescription(l10n, server.id),
+                      style: TextStyle(
+                        color: xlError.isNotEmpty
+                            ? theme.colorScheme.error
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                    );
+                  },
                 ),
                 const SizedBox(height: 6),
                 Row(
@@ -291,7 +273,7 @@ class _McpCard extends StatelessWidget {
                     onPressed: controller.save,
                     child: Text(l10n.settingsIntegrationsSave),
                   ),
-                  if (on) ...[
+                  if (on || (server.requiresKey && controller.xlKeySaved)) ...[
                     const SizedBox(height: 8),
                     OutlinedButton(
                       onPressed: controller.disconnect,
@@ -356,8 +338,7 @@ class _McpDetails extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (about != null)
-            Text(about, style: theme.textTheme.bodyMedium),
+          if (about != null) Text(about, style: theme.textTheme.bodyMedium),
           if (server.topics.isNotEmpty) ...[
             const SizedBox(height: 12),
             _DetailsLabel(text: l10n.settingsMcpTopics),

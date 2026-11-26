@@ -26,6 +26,7 @@ import 'package:liza/config/app_config.dart';
 import 'package:liza/l10n/l10n.dart';
 import 'package:liza/pages/chat/mini_app_manager.dart';
 import 'package:liza/utils/app_badge.dart';
+import 'package:liza/utils/session_health_metrics.dart';
 import 'package:liza/utils/unseen_messages.dart';
 import 'package:liza/utils/push_rule_defaults.dart';
 import 'package:liza/utils/client_manager.dart';
@@ -666,7 +667,13 @@ class MatrixState extends State<Matrix> with WidgetsBindingObserver {
                 context,
           );
         });
+    SessionHealthMetrics.attach(c);
     Future<void> handleLoginStateChange(LoginState state) async {
+      SessionHealthMetrics.noteLoginState(
+        c,
+        state,
+        explicit: _isExplicitLogout,
+      );
       final loggedInWithMultipleClients = widget.clients.length > 1;
       if (state == LoginState.softLoggedOut) _pushContract?.detach(c, logout: true);
       if (state == LoginState.loggedIn && c.userID != null) {

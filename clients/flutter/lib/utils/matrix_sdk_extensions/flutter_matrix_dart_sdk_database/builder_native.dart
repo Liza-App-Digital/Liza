@@ -10,57 +10,88 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqlite3/open.dart';
 
+import 'package:liza/utils/monitoring.dart';
 import 'package:liza/utils/platform_infos.dart';
 import 'cipher.dart';
+import 'db_file_guard.dart';
 import 'safe_database_api.dart';
 
 import 'sqlcipher_stub.dart'
     if (dart.library.io) 'package:sqlcipher_flutter_libs/sqlcipher_flutter_libs.dart';
 
-Future<DatabaseApi> flutterMatrixSdkDatabaseBuilder(String clientName) async {
-  MatrixSdkDatabase? database;
+/// В фоновых изолятах мониторинг не поднят — там событие остаётся только в логе.
+void _onDbStorageEvent(DbStorageEvent event) {
+  Logs().w('DB storage event: ${event.wire}');
+  Monitoring.reportDbStorage(event.wire);
+}
+
+/// [allowQuarantine] = false в фоновых изолятах (пуш, тап по уведомлению):
+/// основной изолят может держать БД открытой, и разбирать файлы из-под него
+/// нельзя. Сбойную БД уберёт следующий запуск основного изолята.
+Future<DatabaseApi> flutterMatrixSdkDatabaseBuilder(
+  String clientName, {
+  bool allowQuarantine = true,
+}) async {
   try {
-    database = await _constructDatabase(clientName);
-    await database.open();
-    return SafeDatabaseApi(database);
-  } on PlatformException catch (e, s) {
-    Logs().wtf(
-      'Unable to construct database (temporary platform error)!',
-      e,
-      s,
+    final database = await _constructDatabase(
+      clientName,
+      allowQuarantine: allowQuarantine,
     );
-    rethrow;
+    try {
+      await database.open();
+    } catch (_) {
+      await database.close().catchError((_) {});
+      rethrow;
+    }
+    final path = await _getDatabasePath(clientName);
+    if (allowQuarantine) await pruneQuarantinedDatabases(path);
+    return SafeDatabaseApi(
+      database,
+      onWiped: () => deleteQuarantinedDatabases(path),
+    );
   } catch (e, s) {
     Logs().wtf('Unable to construct database!', e, s);
-
-    database?.delete().catchError(
-      (e, s) => Logs().wtf(
-        'Unable to delete database, after failed construction',
-        e,
-        s,
-      ),
-    );
-
-    final dbFile = File(await _getDatabasePath(clientName));
-    if (await dbFile.exists()) await dbFile.delete();
-
+    switch (decideOpenFailure(e, allowQuarantine: allowQuarantine)) {
+      case OpenFailureAction.keepPlatform:
+        _onDbStorageEvent(DbStorageEvent.platformException);
+      case OpenFailureAction.keepCipherUnavailable:
+        _onDbStorageEvent(DbStorageEvent.cipherUnavailable);
+      case OpenFailureAction.keep:
+        break;
+      case OpenFailureAction.quarantine:
+        await _quarantineOrThrow(
+          await _getDatabasePath(clientName),
+          DbStorageEvent.quarantineOpen,
+          e,
+        );
+    }
     rethrow;
   }
 }
 
-Future<MatrixSdkDatabase> _constructDatabase(String clientName) async {
+Future<void> _quarantineOrThrow(
+  String path,
+  DbStorageEvent reason,
+  Object cause,
+) async {
+  _onDbStorageEvent(reason);
+  final freed = await quarantineDatabaseFiles(path, onEvent: _onDbStorageEvent);
+  if (!freed) throw DatabasePathNotFreedException(cause);
+}
+
+Future<MatrixSdkDatabase> _constructDatabase(
+  String clientName, {
+  required bool allowQuarantine,
+}) async {
   final path = await _getDatabasePath(clientName);
   String? cipher;
 
   try {
     cipher = await getDatabaseCipher();
   } on MissingPluginException catch (e, s) {
-    Logs().e('Platform has no secure storage, deleting database', e, s);
-    final dbFile = File(path);
-    if (await dbFile.exists()) {
-      await dbFile.delete();
-      Logs().i('Deleted unreadable encrypted database at $path');
-    }
+    Logs().e('Platform has no secure storage, quarantining database', e, s);
+    if (!allowQuarantine) rethrow;
+    await _quarantineOrThrow(path, DbStorageEvent.quarantineNoKeystore, e);
     const FlutterSecureStorage()
         .delete(key: 'database_password')
         .catchError((_) {});
@@ -87,7 +118,10 @@ Future<MatrixSdkDatabase> _constructDatabase(String clientName) async {
     } on PathAccessException catch (e) {
       // Каталог залочен/readonly (iOS background-purge, Windows lock) —
       // деградируем к базовому temp, но НЕ падаем в database-clear диалог.
-      Logs().w('Cannot create media cache subdir, falling back to temp root', e);
+      Logs().w(
+        'Cannot create media cache subdir, falling back to temp root',
+        e,
+      );
       fileStorageLocation = tmp;
     }
   } on MissingPlatformDirectoryException catch (_) {
@@ -99,9 +133,7 @@ Future<MatrixSdkDatabase> _constructDatabase(String clientName) async {
   // fix dlopen for old Android
   await applyWorkaroundToOpenSqlCipherOnOldAndroidVersions();
   // import the SQLite / SQLCipher shared objects / dynamic libraries
-  final factory = createDatabaseFactoryFfi(
-    ffiInit: _ffiInit,
-  );
+  final factory = createDatabaseFactoryFfi(ffiInit: _ffiInit);
 
   // required for [getDatabasesPath]
   databaseFactory = factory;
@@ -119,11 +151,18 @@ Future<MatrixSdkDatabase> _constructDatabase(String clientName) async {
   try {
     await helper?.ensureDatabaseFileEncrypted();
   } catch (e, s) {
-    Logs().w('Database file appears corrupted, deleting and recreating', e, s);
-    final dbFile = File(path);
-    if (await dbFile.exists()) {
-      await dbFile.delete();
+    Logs().w(
+      'Database file appears corrupted, quarantining and recreating',
+      e,
+      s,
+    );
+    // Без SQLCipher / при залоченном Keychain файл исправен: решение и
+    // событие — во внешнем catch, как для ошибки open().
+    if (decideOpenFailure(e, allowQuarantine: allowQuarantine) !=
+        OpenFailureAction.quarantine) {
+      rethrow;
     }
+    await _quarantineOrThrow(path, DbStorageEvent.quarantineEncrypt, e);
     await helper?.ensureDatabaseFileEncrypted();
   }
 
@@ -139,13 +178,20 @@ Future<MatrixSdkDatabase> _constructDatabase(String clientName) async {
     ),
   );
 
-  return await MatrixSdkDatabase.init(
-    clientName,
-    database: database,
-    maxFileSize: 1000 * 1000 * 10,
-    fileStorageLocation: fileStorageLocation?.uri,
-    deleteFilesAfterDuration: const Duration(days: 30),
-  );
+  try {
+    return await MatrixSdkDatabase.init(
+      clientName,
+      database: database,
+      maxFileSize: 1000 * 1000 * 10,
+      fileStorageLocation: fileStorageLocation?.uri,
+      deleteFilesAfterDuration: const Duration(days: 30),
+    );
+  } catch (_) {
+    // init() сам зовёт open(); при его падении соединение остаётся открытым,
+    // и на Windows файл нельзя ни переименовать, ни удалить.
+    await database.close().catchError((_) {});
+    rethrow;
+  }
 }
 
 Future<String> _getDatabasePath(String clientName) async {
@@ -194,9 +240,8 @@ void _ffiInit() {
   } else if (Platform.isMacOS) {
     open.overrideFor(
       OperatingSystem.macOS,
-      () => DynamicLibrary.open(
-        'SQLCipher.framework/Versions/Current/SQLCipher',
-      ),
+      () =>
+          DynamicLibrary.open('SQLCipher.framework/Versions/Current/SQLCipher'),
     );
   } else {
     SQfLiteEncryptionHelper.ffiInit();

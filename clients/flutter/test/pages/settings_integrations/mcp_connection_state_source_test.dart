@@ -28,6 +28,7 @@
 // ignore_for_file: depend_on_referenced_packages
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -285,7 +286,9 @@ void main() {
     );
     expect(card, findsOneWidget, reason: 'карточка $id не найдена');
     return tester
-        .widgetList<Icon>(find.descendant(of: card, matching: find.byType(Icon)))
+        .widgetList<Icon>(
+          find.descendant(of: card, matching: find.byType(Icon)),
+        )
         .any((i) => i.icon == Icons.check_circle);
   }
 
@@ -310,7 +313,8 @@ void main() {
       expect(
         find.text(l10n.settingsMcpConnectedSection),
         findsOneWidget,
-        reason: 'ВкусВилл включён на сервере — секция «Подключенные» обязана '
+        reason:
+            'ВкусВилл включён на сервере — секция «Подключенные» обязана '
             'появиться, иначе экран врёт про состояние',
       );
       expect(cardShowsConnected(tester, 'vkusvill'), isTrue);
@@ -343,17 +347,16 @@ void main() {
       await settleWithNetwork(tester);
 
       expect(writes, 1, reason: 'запись на сервер не ушла вовсе');
-      expect(
-        serverEnabled,
-        ['vkusvill'],
-        reason: 'на сервер уехало не то значение',
-      );
+      expect(serverEnabled, [
+        'vkusvill',
+      ], reason: 'на сервер уехало не то значение');
       // Ключевой ассерт: sync НИЧЕГО не прислал (как при дедупликации), а
       // экран обязан всё равно показать подключение.
       expect(
         cardShowsConnected(tester, 'vkusvill'),
         isTrue,
-        reason: 'после успешной записи карточка обязана показать подключение, '
+        reason:
+            'после успешной записи карточка обязана показать подключение, '
             'не дожидаясь эха sync: Synapse его законно может не прислать',
       );
       expect(find.text(l10n.settingsMcpConnectedSection), findsOneWidget);
@@ -397,15 +400,14 @@ void main() {
       expect(
         cardShowsConnected(tester, 'vkusvill'),
         isTrue,
-        reason: 'ответ, отправленный ДО тапа, откатил состояние — для '
+        reason:
+            'ответ, отправленный ДО тапа, откатил состояние — для '
             'пользователя это снова «нажал плюсик, ничего не произошло», '
             'только по другой причине',
       );
-      expect(
-        serverEnabled,
-        ['vkusvill'],
-        reason: 'на сервере запись должна была сохраниться',
-      );
+      expect(serverEnabled, [
+        'vkusvill',
+      ], reason: 'на сервере запись должна была сохраниться');
 
       await teardownTree(tester);
     },
@@ -425,5 +427,18 @@ void main() {
     expect(tester.takeException(), isNull);
 
     await teardownTree(tester);
+  });
+
+  // AC:RL-mcp-xl-status-server-truth/1
+  test('карточка XL не выставляет «подключено» сама', () {
+    final src = File(
+      'lib/pages/settings_integrations/settings_integrations.dart',
+    ).readAsStringSync();
+    // Статус и ключ — через серверный HTTP (Bot API → liza-memory), не state.
+    expect(src, isNot(contains('XlStatus.write')));
+    expect(src, isNot(contains('_serverXlConnected = true')));
+    expect(src, contains('XlApi.connect'));
+    // Ключ больше не отправляется сообщением в переписку.
+    expect(src, isNot(contains('sendEvent(XlCredentials.buildEvent')));
   });
 }
